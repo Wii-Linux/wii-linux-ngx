@@ -256,6 +256,7 @@ static int __init rsw_of_probe(struct platform_device *odev)
 {
 	struct resource mem;
 	int retval;
+	int irq;
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &mem);
 	if (retval) {
@@ -263,8 +264,13 @@ static int __init rsw_of_probe(struct platform_device *odev)
 		return -ENODEV;
 	}
 
-	return rsw_do_probe(&odev->dev,
-			    &mem, irq_of_parse_and_map(odev->dev.of_node, 0));
+	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
+	if (irq == NO_IRQ) {
+		drv_printk(KERN_ERR, "no irq found\n");
+		return -ENODEV;
+	}
+
+	return rsw_do_probe(&odev->dev, &mem, irq);
 }
 
 static int __exit rsw_of_remove(struct platform_device *odev)
