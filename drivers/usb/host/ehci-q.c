@@ -1098,7 +1098,7 @@ static struct ehci_qh *qh_append_tds (
 
 /*-------------------------------------------------------------------------*/
 
-int
+static int
 submit_async (
 	struct ehci_hcd		*ehci,
 	struct urb		*urb,
@@ -1125,21 +1125,7 @@ submit_async (
 	}
 #endif
 
-#ifdef CONFIG_USB_EHCI_HCD_HLWD
-	// XXX: we need to print here, but WHY??????
-	// I have no idea why this is necessary, but if we don't,
-	// the spinlock will hang!
-	// Nothing that I've tried other than a printk works.
-	// INVESTIGATE!
-	pr_debug("ehci-q: submit_async starting irqsave\r\n");
-#endif
 	spin_lock_irqsave (&ehci->lock, flags);
-
-#ifdef CONFIG_USB_EHCI_HCD_HLWD
-	pr_debug("ehci-q: submit_async irqsave done\r\n");
-#endif
-
-
 	if (unlikely(!HCD_HW_ACCESSIBLE(ehci_to_hcd(ehci)))) {
 		rc = -ESHUTDOWN;
 		goto done;
@@ -1161,14 +1147,7 @@ submit_async (
 	if (likely (qh->qh_state == QH_STATE_IDLE))
 		qh_link_async(ehci, qh);
  done:
-#ifdef CONFIG_USB_EHCI_HCD_HLWD
-	pr_debug("ehci-q: submit_async starting irqrestore\r\n");
-#endif
 	spin_unlock_irqrestore (&ehci->lock, flags);
-#ifdef CONFIG_USB_EHCI_HCD_HLWD
-	pr_debug("ehci-q: submit_async irqrestore done\r\n");
-#endif
-
 	if (unlikely (qh == NULL))
 		qtd_list_free (ehci, urb, qtd_list);
 	return rc;

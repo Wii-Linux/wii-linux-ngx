@@ -925,7 +925,7 @@ done:
 	return status;
 }
 
-int intr_submit (
+static int intr_submit (
 	struct ehci_hcd		*ehci,
 	struct urb		*urb,
 	struct list_head	*qtd_list,
@@ -940,7 +940,7 @@ int intr_submit (
 	/* get endpoint and transfer/schedule data */
 	epnum = urb->ep->desc.bEndpointAddress;
 
-	/*spin_lock_irqsave (&ehci->lock, flags);*/
+	spin_lock_irqsave (&ehci->lock, flags);
 
 	if (unlikely(!HCD_HW_ACCESSIBLE(ehci_to_hcd(ehci)))) {
 		status = -ESHUTDOWN;
@@ -982,7 +982,7 @@ done:
 	if (unlikely(status))
 		usb_hcd_unlink_urb_from_ep(ehci_to_hcd(ehci), urb);
 done_not_linked:
-	/*spin_unlock_irqrestore (&ehci->lock, flags);*/
+	spin_unlock_irqrestore (&ehci->lock, flags);
 	if (status)
 		qtd_list_free (ehci, urb, qtd_list);
 
@@ -1936,7 +1936,7 @@ done:
 
 /*-------------------------------------------------------------------------*/
 
-int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
+static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 	gfp_t mem_flags)
 {
 	int			status = -EINVAL;
@@ -2316,7 +2316,7 @@ done:
 }
 
 
-int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
+static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 	gfp_t mem_flags)
 {
 	int			status = -EINVAL;
