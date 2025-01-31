@@ -6,6 +6,7 @@
  * Copyright (C) 2004 Michael Steil <mist@c64.org>
  * Copyright (C) 2004,2005 Todd Jeffreys <todd@voidpointer.org>
  * Copyright (C) 2006,2007,2008,2009 Albert Herranz
+ * Copyright (C) 2025,2025 Michael "Techflash" Garofalo
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
  *
@@ -66,8 +67,12 @@
  *          - tons of general cleanup and modernization
  *
  * 2.3t - Techflash (6/3/2024) - Corrected nostalgic mode height from 480 to 448, added this changelog
+ *
+ * 2.4t - Techflash (1/26/2025) - Remove the red/blue swap hack, fixup tons of the AVE init code, since
+          it actually was silently failing previously, causing the red/blue swap problem in the first place
+          whenever the AVE was configured for composite, but the kernel is trying to use component
  */
-static char vifb_driver_version[] = "2.3t";
+static char vifb_driver_version[] = "2.4t";
 
 #define drv_printk(level, format, arg...) \
 	 printk(level DRV_MODULE_NAME ": " format , ## arg)
@@ -577,7 +582,7 @@ static u32 pseudo_palette[17];
 
 /*
  * Explanation of all the buffering going on here:
- * 
+ *
  * 0 - this is the hardware, Hollywood/Flipper GPU, it shares memory with CPU as instructed via ioctls and renders what finds there
  * 1 - gx_fb_start: this is the physical memory address (a.k.a. xfb-start) for the video card
  * 2 - fb_mem: this is the iomapped virtual address for the physical address, same size as physical memory used by video card
@@ -585,7 +590,7 @@ static u32 pseudo_palette[17];
  * 3 - info->fix.smem_start: this is the virtual framebuffer, VM'allocated, with format specified by 'vfb_format'
  * 4 - userland has its own memory buffers and can mmap into previous virtual framebuffer,
  *     or otherwise write there via file/memory operations.
- * 
+ *
  * gx_fb_size: size of the physical framebuffer
  * vfb_mem: pointer to the virtual framebuffer, used only in RGB88 or RGB565 modes
  * vfb_len: size of the virtual framebuffer, used only in RGB88 or RGB565 modes
@@ -656,23 +661,9 @@ static inline uint32_t rgbrgb16toycbycr(uint32_t rgb1rgb2)
 		return 0x00800080;	/* black, black */
 
 	/* RGB565 */
-
-	// XXX: HACK HACK HACK!!!
-	// PROGRESSIVE HACK:
-	//
-	// For some reason in progressive scan only, red and blue get swapped somewhere.
-	// I don't have enough time to figure out where, so just reverse them
-	// intentionally here, such that when they get reversed unintentionally
-	// elsewhere, it all ends up working out in the end.
-	if (force_scan == VI_SCAN_PROGRESSIVE) {
-		r1 = ((rgb1 >> 0) & 0x1f);
-		g1 = ((rgb1 >> 5) & 0x3f);
-		b1 = ((rgb1 >> 11) & 0x1f);
-	} else {
-		r1 = ((rgb1 >> 11) & 0x1f);
-		g1 = ((rgb1 >> 5) & 0x3f);
-		b1 = ((rgb1 >> 0) & 0x1f);
-	}
+	r1 = ((rgb1 >> 11) & 0x1f);
+	g1 = ((rgb1 >> 5) & 0x3f);
+	b1 = ((rgb1 >> 0) & 0x1f);
 
 	/* fast (approximated) scaling to 8 bits, thanks to Masken */
 	r1 = (r1 << 3) | (r1 >> 2);
@@ -689,15 +680,9 @@ static inline uint32_t rgbrgb16toycbycr(uint32_t rgb1rgb2)
 		b = b1;
 	} else {
 		/* same as we did for r1 before */
-		if (force_scan == VI_SCAN_PROGRESSIVE) {
-			r2 = ((rgb2 >> 0) & 0x1f);
-			g2 = ((rgb2 >> 5) & 0x3f);
-			b2 = ((rgb2 >> 11) & 0x1f);
-		} else {
-			r2 = ((rgb2 >> 11) & 0x1f);
-			g2 = ((rgb2 >> 5) & 0x3f);
-			b2 = ((rgb2 >> 0) & 0x1f);
-		}
+		r2 = ((rgb2 >> 11) & 0x1f);
+		g2 = ((rgb2 >> 5) & 0x3f);
+		b2 = ((rgb2 >> 0) & 0x1f);
 		r2 = (r2 << 3) | (r2 >> 2);
 		g2 = (g2 << 2) | (g2 >> 4);
 		b2 = (b2 << 3) | (b2 >> 2);
@@ -736,24 +721,9 @@ static inline uint32_t rgb32rgb32toycbycr(union double_rgba_pixel_t k)
 		return 0x00800080;	/* black, black */
 
 	/* RGB888 */
-
-	// XXX: HACK HACK HACK!!!
-	// PROGRESSIVE HACK:
-	//
-	// For some reason in progressive scan only, red and blue get swapped somewhere.
-	// I don't have enough time to figure out where, so just reverse them
-	// intentionally here, such that when they get reversed unintentionally
-	// elsewhere, it all ends up working out in the end.
-	if (force_scan == VI_SCAN_PROGRESSIVE) {
-		r1 = ((k.k32.left >> 0) & 0xff);
-		g1 = ((k.k32.left >> 8) & 0xff);
-		b1 = ((k.k32.left >> 16) & 0xff);
-	} else {
-		r1 = ((k.k32.left >> 16) & 0xff);
-		g1 = ((k.k32.left >> 8) & 0xff);
-		b1 = ((k.k32.left >> 0) & 0xff);
-	}
-
+	r1 = ((k.k32.left >> 16) & 0xff);
+	g1 = ((k.k32.left >> 8) & 0xff);
+	b1 = ((k.k32.left >> 0) & 0xff);
 
 	Y1 = clamp(((Yr * r1 + Yg * g1 + Yb * b1) >> RGB2YUV_SHIFT)
 		   + RGB2YUV_LUMA, 32, 235);
@@ -765,15 +735,9 @@ static inline uint32_t rgb32rgb32toycbycr(union double_rgba_pixel_t k)
 		b = b1;
 	} else {
 		/* same as we did for r1 before */
-		if (force_scan == VI_SCAN_PROGRESSIVE) {
-			r2 = ((k.k32.right >> 0) & 0xff);
-			g2 = ((k.k32.right >> 8) & 0xff);
-			b2 = ((k.k32.right >> 16) & 0xff);
-		} else {
-			r2 = ((k.k32.right >> 16) & 0xff);
-			g2 = ((k.k32.right >> 8) & 0xff);
-			b2 = ((k.k32.right >> 0) & 0xff);
-		}
+		r2 = ((k.k32.right >> 16) & 0xff);
+		g2 = ((k.k32.right >> 8) & 0xff);
+		b2 = ((k.k32.right >> 0) & 0xff);
 
 		Y2 = clamp(((Yr * r2 + Yg * g2 + Yb * b2) >> RGB2YUV_SHIFT)
 			   + RGB2YUV_LUMA,
@@ -1231,6 +1195,8 @@ static void vi_setup_tv_mode(struct vi_ctl *ctl)
 	int has_component_cable;
 	u16 std, ppl;
 
+	drv_printk(KERN_DEBUG, "vi_setup_tv_mode called\n");
+
 	/* we need to re-detect the tv mode if the cable type changes */
 	has_component_cable = vi_has_component_cable(ctl);
 	if ((ctl->has_component_cable && !has_component_cable) ||
@@ -1312,8 +1278,11 @@ static void vi_setup_tv_mode(struct vi_ctl *ctl)
 	out_be32(io_base + VI_UNK3, 0x00ff00ff);
 
 #ifdef CONFIG_WII_AVE_RVL
-	if (ctl->i2c_client)
-		vi_ave_setup(ctl);
+	if (!ctl->i2c_client) {
+		drv_printk(KERN_ERR, "RVL-AVE: ctl->i2c_client is NULL, can't setup AVE!\n");
+		return;
+	}
+	vi_ave_setup(ctl);
 #endif
 }
 
@@ -1399,7 +1368,7 @@ static void vi_transcode_RGB565(struct vi_ctl *ctl)
 	uint32_t *src = (uint32_t *)info->screen_base;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
 	width = info->fix.line_length >> 2;
 
@@ -1427,7 +1396,7 @@ static void vi_transcode_RGB565_diff(struct vi_ctl *ctl)
 	uint32_t *src_diff;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
 	width = info->fix.line_length >> 2;
 	src_diff = src + width * height;
@@ -1458,7 +1427,7 @@ static void vi_transcode_RGB888(struct vi_ctl *ctl)
 	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
 	width = info->fix.line_length >> 3;
 
@@ -1486,7 +1455,7 @@ static void vi_transcode_RGB888_diff(struct vi_ctl *ctl)
 	union double_rgba_pixel_t *src_diff;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
 	width = info->fix.line_length >> 3;
 	src_diff = src + width * height;
@@ -1536,7 +1505,7 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	val = in_be32(io_base + VI_DI1);
 	if (vi_dix_get_irq(val)) {
 		ctl->in_vtrace = 1;
-		
+
 		switch (vfb_format) {
 			case V4L2_PIX_FMT_YUYV:
 				/* do nothing */
@@ -1559,7 +1528,7 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 				BUG();
 				break;
 		}
-			
+
 		vi_dispatch_vtrace(ctl);
 
 		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
@@ -1729,6 +1698,7 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	u8 macrovision[26];
 	u8 component, format, pal60;
 
+	drv_printk(KERN_DEBUG, "RVL-AVE: vi_ave_setup called\n");
 	client = ctl->i2c_client;
 	memset(macrovision, 0, sizeof(macrovision));
 
@@ -1769,8 +1739,14 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	vi_ave_out8(client, 0x03, 1);
 
 	/* clear bit 1 otherwise red and blue get swapped  */
-	if (ctl->has_component_cable)
+	if (ctl->has_component_cable) {
+		printk(KERN_ERR "vi: has component cable\n");
 		vi_ave_out8(client, 0x62, 0);
+	}
+	else {
+		printk(KERN_ERR "vi: NO component cable\n");
+		vi_ave_out8(client, 0x62, 0);
+	}
 
 	/* PAL 480i/60 supposedly needs a "filter" */
 	pal60 = !!(format == 2 && ctl->mode->lines == 525);
@@ -1782,10 +1758,15 @@ static struct i2c_client *first_vi_ave;
 
 static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
 {
-	if (!ctl)
+	printk(KERN_DEBUG "AVE-RVL: vi_attach_ave called\n");
+	if (!ctl) {
+		printk(KERN_ERR "AVE-RVL: vi_attach_ave !ctl\n");
 		return -ENODEV;
-	if (!client)
+	}
+	if (!client) {
+		printk(KERN_ERR "AVE-RVL: vi_attach_ave !client\n");
 		return -EINVAL;
+	}
 
 	spin_lock(&ctl->lock);
 	if (!ctl->i2c_client) {
@@ -1821,13 +1802,17 @@ static int vi_ave_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	int error = 0;
+	drv_printk(KERN_DEBUG, "AVE-RVL: vi_ave_probe called\n");
 
 	/* attach first a/v encoder to first framebuffer */
 	if (!first_vi_ave) {
+		printk(KERN_ERR, "AVE-RVL: setting first_vi_ave\n");
 		first_vi_ave = client;
 		error = vi_attach_ave(first_vi_ctl, client);
+		drv_printk(KERN_ERR, "AVE-RVL: vi_attach_ave done: %d\n", error);
 		if (!error) {
 			/* setup again the video mode using the a/v encoder */
+			drv_printk(KERN_DEBUG, "AVE-RVL: about to detect & setup tv mode from vi_ave_probe\n");
 			vi_detect_tv_mode(first_vi_ctl);
 			vi_setup_tv_mode(first_vi_ctl);
 		}
@@ -1844,12 +1829,20 @@ static int vi_ave_remove(struct i2c_client *client)
 
 static const struct i2c_device_id vi_ave_id[] = {
 	{ "wii-ave-rvl", 0 },
+	{ "nintendo,wii-ave-rvl", 0 },
 	{ }
 };
 
+static const struct of_device_id vi_ave_of_match[] = {
+	{ .compatible = "nintendo,wii-ave-rvl" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, vi_ave_of_match);
+
 static struct i2c_driver vi_ave_driver = {
 	.driver = {
-		.name	= DRV_MODULE_NAME,
+		.name	= "ave-rvl",
+		.of_match_table = vi_ave_of_match,
 	},
 	.probe		= vi_ave_probe,
 	.remove		= vi_ave_remove,
@@ -1963,13 +1956,13 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		drv_printk(KERN_ERR, "Non-zero x/y offsets are not supported\n");
 		return -EINVAL;
 	}
-	
+
 	if (vifb_format_is_fourcc(var)) {
 		/* only the native YUYV format is supported */
 		if (var->grayscale != V4L2_PIX_FMT_YUYV) {
 			return -EINVAL;
 		}
-		
+
 		/* YUYV a.k.a. YUY2 */
 		var->bits_per_pixel = 16;
 		var->colorspace = V4L2_PIX_FMT_YUYV; /* only for FOURCC-based modes */
@@ -2112,6 +2105,8 @@ static int vifb_set_par(struct fb_info *info)
 	unsigned long flags;
 	int gx_ll;
 
+	printk(KERN_DEBUG, "vifb_set_par called\n");
+
 	/* horizontal line in bytes, refers to virtual framebuffer */
 	info->fix.line_length = var->xres_virtual * (var->bits_per_pixel / 8);
 
@@ -2163,7 +2158,7 @@ static int vifb_set_par(struct fb_info *info)
 		info->fix.xpanstep = 0;
 		info->fix.ypanstep = 0;
 	}
-	
+
 	/* always clear framebuffer and screen when changing modes */
 	vifb_clear_all();
 
@@ -2299,6 +2294,8 @@ static int vifb_do_probe(struct device *dev,
 	unsigned long adr, size;
 	uint32_t *j;
 
+	drv_printk(KERN_DEBUG, "vifb_do_probe called\n");
+
 	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
 	if (!info)
 		return -EINVAL;;
@@ -2314,7 +2311,7 @@ static int vifb_do_probe(struct device *dev,
 	ctl->io_base = ioremap(mem->start, mem->end - mem->start + 1);
 	ctl->irq = irq;
 
-	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions 
+	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions
 	 * always as big as the largest mode supported
 	 * TODO: reallocate framebuffer as needed
 	 */
@@ -2354,14 +2351,14 @@ static int vifb_do_probe(struct device *dev,
 	if (!request_mem_region(xfb_start, xfb_size,
 				DRV_MODULE_NAME)) {
 		drv_printk(KERN_WARNING,
-			   "failed to request video memory at %p\n",
+			   "failed to request video memory at 0x%p\n",
 			   (void *)xfb_start);
 	}
 
 	/* store global variables for the physical framebuffer */
 	gx_fb_start = xfb_start;
 	gx_fb_size = xfb_size;
-	
+
 	fb_mem = ioremap(xfb_start, xfb_size);
 	if (!fb_mem) {
 		drv_printk(KERN_ERR,
@@ -2405,7 +2402,7 @@ static int vifb_do_probe(struct device *dev,
 
 	ctl->visible_page = 0;
 	ctl->flip_pending = 0;
-	
+
 	video_cmap_len = 16;
 	info->pseudo_palette = pseudo_palette;
 	if (fb_alloc_cmap(&info->cmap, video_cmap_len, 0)) {
@@ -2421,32 +2418,48 @@ static int vifb_do_probe(struct device *dev,
 		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
 
 	dev_set_drvdata(dev, info);
+	drv_printk(KERN_DEBUG, "driver data set\n");
 
 	vi_enable_interrupts(ctl, 0);
+	drv_printk(KERN_DEBUG, "interrupts enabled\n");
 
 	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
 	if (error) {
 		drv_printk(KERN_ERR, "unable to register IRQ %u\n", ctl->irq);
 		goto err_request_irq;
 	}
+	drv_printk(KERN_DEBUG, "irq requested\n");
 
 	/* now register us */
 	if (register_framebuffer(info) < 0) {
 		error = -EINVAL;
 		goto err_register_framebuffer;
 	}
+	drv_printk(KERN_DEBUG, "framebuffer registered\n");
 
 #ifdef CONFIG_WII_AVE_RVL
-	if (!first_vi_ctl)
+	if (!first_vi_ctl && !ctl) {
+		drv_printk(KERN_ERR, "RVL-AVE: !first_vi_ctl && !ctl, giving up trying to attach AVE\n");
+		goto skip_vi_attach;
+	}
+
+	else if (!first_vi_ctl && ctl) {
+		drv_printk(KERN_WARNING, "RVL-AVE: !first_vi_ctl, but ctl is valid, trying to set it to ctl\n");
 		first_vi_ctl = ctl;
+	}
 
 	/* try to attach the a/v encoder now */
+	drv_printk(KERN_DEBUG, "attaching ave\n");
 	vi_attach_ave(ctl, first_vi_ave);
+	drv_printk(KERN_DEBUG, "done attaching ave\n");
+
+skip_vi_attach:
 #endif
 
 	printk(KERN_INFO "fb%d: %s frame buffer device\n",
 	       info->node, info->fix.id);
 
+	drv_printk(KERN_DEBUG, "vifb_do_probe returning with success\n");
 	return 0;
 
 err_register_framebuffer:
@@ -2464,6 +2477,7 @@ err_ioremap:
 	iounmap(ctl->io_base);
 	framebuffer_release(info);
 
+	drv_printk(KERN_DEBUG, "vifb_do_probe returning with error (%d)\n", error);
 	return error;
 }
 
@@ -2498,10 +2512,10 @@ static int vifb_do_remove(struct device *dev)
 static void vifb_release_virtual_fb() {
 	unsigned long size;
 	unsigned long adr = (unsigned long)vfb_mem;
-	
+
 	/* release memory mapping region */
 	release_mem_region(gx_fb_start, gx_fb_size);
-	
+
 	/* release the virtual framebuffer's reserved pages */
 	size = PAGE_ALIGN(vfb_len);
 	while ((long) size > 0) {
