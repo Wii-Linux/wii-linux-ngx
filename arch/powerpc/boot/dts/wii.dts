@@ -4,6 +4,7 @@
  * Nintendo Wii platform device tree source
  * Copyright (C) 2008-2009 The GameCube Linux Team
  * Copyright (C) 2008,2009 Albert Herranz
+ * Copyright (C) 2024,2025 Michael "Techflash" Garofalo
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -72,15 +73,11 @@
 	hollywood {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		#interrupt-cells = <1>;
-		model = "hollywood";
 		compatible = "nintendo,hollywood";
-		clock-frequency = <243000000>; /* 243MHz */
-		ranges = <0x0c000000 0x0c000000 0x00010000
-		          0x0d000000 0x0d000000 0x00010000
-		          0x0d040000 0x0d040000 0x00050000
-		          0x0d800000 0x0d800000 0x00007000
-		          0x133e0000 0x133e0000 0x00c20000>;
+                ranges = <0x0c000000 0x0c000000 0x01000000
+			  0x0d000000 0x0d000000 0x00800000
+			  0x0d800000 0x0d800000 0x00800000>;
+		interrupt-parent = <&PIC1>;
 
 		video@0c002000 {
 			compatible = "nintendo,hollywood-vi",
@@ -135,144 +132,108 @@
 			interrupt-parent = <&PIC0>;
 		};
 
-		/*
-		 * Firmware interfaces accessible through Nintendo IOS IPC.
-		 */
-		ios@0d000000 {
-			compatible = "nintendo,starlet-ios-ipc";
-			reg = <0x0d000000 0x40		/* IPC */
-			       0x133e0000 0x20000>;	/* MEM2 ioh 128K */
-			interrupts = <14>;
-			interrupt-parent = <&PIC0>;
 
-			starlet-ios-es {
-				compatible = "nintendo,starlet-ios-es";
-			};
-
-			starlet-ios-sd {
-				compatible = "nintendo,starlet-ios-sd";
-			};
-
-			starlet-ios-hcd {
-				compatible = "nintendo,starlet-ios-hcd";
-			};
-
-			starlet-ios-keyboard {
-				compatible = "nintendo,starlet-ios-keyboard";
-			};
+		usb@0d040000 {
+			compatible = "nintendo,hollywood-usb-ehci",
+				     "usb-ehci";
+			reg = <0x0d040000 0x100
+			       0x133e0000 0x80000>; /* 512 KB */
+			interrupts = <4>;
+			interrupt-parent = <&PIC1>;
 		};
 
-		/*
-		 * Hardware accessible through Team Twiizers 'mini' firmware
-		 * replacement for Starlet.
-		 */
-		mini@0d000000 {
-			#address-cells = <1>;
-			#size-cells = <1>;
+		usb@0d050000 {
+			compatible = "nintendo,hollywood-usb-ohci",
+				     "usb-ohci";
+			reg = <0x0d050000 0x100
+			       0x13460000 0x80000>; /* 512 KB */
+			interrupts = <5>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		usb@0d060000 {
+			compatible = "nintendo,hollywood-usb-ohci",
+				     "usb-ohci";
+			reg = <0x0d060000 0x100
+			       0x134e0000 0x80000>; /* 512 KB */
+			interrupts = <6>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		sd@0d070000 {
+			compatible = "nintendo,hollywood-sdhci",
+				     "sdhci";
+			reg = <0x0d070000 0x200>;
+			interrupts = <7>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		sdio@0d080000 {
+			compatible = "nintendo,hollywood-sdhci",
+				     "sdhci";
+			reg = <0x0d080000 0x200>;
+			interrupts = <8>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		ipc@0d000000 {
+			compatible = "nintendo,hollywood-ipc";
+			reg = <0x0d000000 0x10>;
+			interrupts = <30>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		PIC1: pic1@0d800030 {
 			#interrupt-cells = <1>;
-			compatible = "twiizers,starlet-mini-ipc";
-			reg = <0x0d000000 0x40	/* IPC */
-			       0x13fffffc 0x4>;	/* mini header pointer */
+			compatible = "nintendo,hollywood-pic";
+			reg = <0x0d800030 0x10>;
+			interrupt-controller;
+			interrupts = <14>;
+			interrupt-parent = <&PIC0>;
+		};
 
-			ranges = <0x0d040000 0x0d040000 0x00050000
-			          0x0d800000 0x0d800000 0x00007000
-			          0x133e0000 0x133e0000 0x00c20000>;
+		GPIO: gpio@0d8000c0 {
+			#gpio-cells = <2>;
+			compatible = "nintendo,hollywood-gpio";
+			reg = <0x0d8000c0 0x40>;
+			gpio-controller;
 
-			usb@0d040000 {
-				compatible = "nintendo,hollywood-usb-ehci",
-				             "usb-ehci";
-				reg = <0x0d040000 0x100
-				       0x133e0000 0x80000>; /* 512 KB */
-				interrupts = <4>;
-				interrupt-parent = <&PIC1>;
+		};
+
+		gpio-leds {
+			compatible = "gpio-leds";
+
+			slot {
+				label = "Slot";
+				gpios = <&GPIO 26 0>;
+				linux,default-trigger = "mmc0";
 			};
 
-			usb@0d050000 {
-				compatible = "nintendo,hollywood-usb-ohci",
-				             "usb-ohci";
-				reg = <0x0d050000 0x100
-				       0x13460000 0x80000>; /* 512 KB */
-				interrupts = <5>;
-				interrupt-parent = <&PIC1>;
+			sensor {
+				label = "Sensorbar";
+				gpios = <&GPIO 23 0>;
+				linux,default-trigger = "default-on";
+				default-state="on";
 			};
 
-			usb@0d060000 {
-				compatible = "nintendo,hollywood-usb-ohci",
-				             "usb-ohci";
-				reg = <0x0d060000 0x100
-				       0x134e0000 0x80000>; /* 512 KB */
-				interrupts = <6>;
-				interrupt-parent = <&PIC1>;
-			};
+		};
 
-			sd@0d070000 {
-				compatible = "nintendo,hollywood-sdhci",
-				             "sdhci";
-				reg = <0x0d070000 0x200>;
-				interrupts = <7>;
-				interrupt-parent = <&PIC1>;
-			};
+		i2c-video {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			compatible = "virtual,i2c-gpio";
 
-			sdio@0d080000 {
-				compatible = "nintendo,hollywood-sdhci",
-				             "sdhci";
-				reg = <0x0d080000 0x200>;
-				interrupts = <8>;
-				interrupt-parent = <&PIC1>;
-			};
+			gpios = <&GPIO 16 0     /* 31-15 */
+				 &GPIO 17 0>;   /* 31-14 */
+			scl-is-open-drain = <1>;
+			sda-is-open-drain = <1>;
+			sda-enforce-dir = <1>;
+			scl-is-output-only = <1>;
+			udelay = <2>;
 
-			PIC1: pic1@0d800030 {
-				#interrupt-cells = <1>;
-				compatible = "nintendo,hollywood-pic";
-				reg = <0x0d800030 0x10>;
-				interrupt-controller;
-				interrupts = <14>;
-				interrupt-parent = <&PIC0>;
-			};
-
-			GPIO: gpio@0d8000c0 {
-				#gpio-cells = <2>;
-				compatible = "nintendo,hollywood-gpio";
-				reg = <0x0d8000c0 0x40>;
-				gpio-controller;
-
-			};
-
-			gpio-leds {
-				compatible = "gpio-leds";
-
-				slot {
-					label = "Slot";
-					gpios = <&GPIO 26 0>;
-					linux,default-trigger = "mmc0";
-				};
-
-				sensor {
-					label = "Sensorbar";
-					gpios = <&GPIO 23 0>;
-					linux,default-trigger = "default-on";
-					default-state="on";
-				};
-
-			};
-
-			i2c-video {
-				#address-cells = <1>;
-				#size-cells = <0>;
-				compatible = "virtual,i2c-gpio";
-
-				gpios = <&GPIO 16 0     /* 31-15 */
-				         &GPIO 17 0>;   /* 31-14 */
-				scl-is-open-drain = <1>;
-				sda-is-open-drain = <1>;
-				sda-enforce-dir = <1>;
-				scl-is-output-only = <1>;
-				udelay = <2>;
-
-				AVE: audio-video-encoder@70 {
-					compatible = "nintendo,wii-ave-rvl";
-					reg = <0x70>;
-				};
+			AVE: audio-video-encoder@70 {
+				compatible = "nintendo,wii-ave-rvl";
+				reg = <0x70>;
 			};
 		};
 
@@ -285,7 +246,6 @@
 			compatible = "nintendo,hollywood-di";
 			reg = <0x0d806000 0x40>;
 			interrupts = <2>;
-			interrupt-parent = <&PIC0>;
 		};
 	};
 };

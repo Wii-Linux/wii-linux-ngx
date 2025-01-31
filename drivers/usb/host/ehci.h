@@ -723,8 +723,6 @@ ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
 
 #ifdef CONFIG_USB_EHCI_HCD_HLWD
 
-#include <asm/starlet-mini.h>
-
 /*
  * The Nintendo Wii video game console has no PCI hardware.
  * The USB controllers are part of the "Hollywood" chipset and are

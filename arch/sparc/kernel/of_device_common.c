@@ -16,8 +16,10 @@ unsigned int irq_of_parse_and_map(struct device_node *node, int index)
 {
 	struct platform_device *op = of_find_device_by_node(node);
 
-	if (!op || index >= op->archdata.num_irqs)
+	if (!op || index >= op->archdata.num_irqs) {
+		printk(KERN_ERR "irq_of_parse_and_map: wtf\n");
 		return 0;
+	}
 
 	return op->archdata.irqs[index];
 }

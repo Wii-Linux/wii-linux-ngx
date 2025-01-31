@@ -93,25 +93,9 @@ config GAMECUBE_DI
 	  To compile this driver as a module, choose M here: the
 	  module will be called gcn-di.
 
-config WII_SD
-	tristate "Nintendo Wii front slot MMC/SD"
-	depends on STARLET_IOS
-	help
-	  This enables support for MMC/SD cards using the front SD card
-	  slot of the Nintendo Wii.
-
-	  You probably want to compile FAT support, and the required
-	  codepages, or mount will complain. See Filesystems -> DOS/FAT/NT
-	  filesystems and Filesystems -> Native Language Support
-
-	  Say Y if you want to include this driver in the kernel.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called rvl-stsd.
-
 config WII_DI
 	tristate "Nintendo Wii Disk Interface (DI)"
-	depends on STARLET_MINI
+	depends on WII
 	help
 	  This enables support for using the DVD drive unit found
 	  in the Nintendo Wii.

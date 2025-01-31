@@ -576,8 +576,6 @@ static inline struct usb_hcd *ohci_to_hcd (const struct ohci_hcd *ohci)
 
 #ifdef CONFIG_USB_OHCI_HCD_HLWD
 
-#include <asm/starlet-mini.h>
-
 static inline unsigned int _ohci_readl(const struct ohci_hcd *ohci,
 				       __hc32 __iomem *regs)
 {
