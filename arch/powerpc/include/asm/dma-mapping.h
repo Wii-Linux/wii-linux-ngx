@@ -17,6 +17,7 @@
 #include <linux/dma-debug.h>
 #include <asm/io.h>
 #include <asm/swiotlb.h>
+#include <linux/dma-mapping.h>
 
 #ifdef CONFIG_PPC64
 #define DMA_ERROR_CODE		(~(dma_addr_t)0x0)

@@ -359,10 +359,16 @@ CHECK		= sparse
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
-CFLAGS_MODULE   =
+ifdef CONFIG_GAMECUBE_COMMON
+MODFLAGS	= -fsched-spec-load -fforce-addr -fsingle-precision-constant \
+		-fivopts -fbranch-target-load-optimize -pipe -mtune=750 -mcpu=750
+else
+MODFLAGS	= -fsched-spec-load -fivopts -fbranch-target-load-optimize -pipe
+endif
+CFLAGS_MODULE   = $(MODFLAGS)
 AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
-CFLAGS_KERNEL	=
+CFLAGS_KERNEL	= $(MODFLAGS)
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 CFLAGS_KCOV	= -fsanitize-coverage=trace-pc
@@ -790,8 +796,8 @@ KBUILD_ARFLAGS := $(call ar-option,D)
 
 # check for 'asm goto'
 ifeq ($(shell $(CONFIG_SHELL) $(srctree)/scripts/gcc-goto.sh $(CC)), y)
-	KBUILD_CFLAGS += -DCC_HAVE_ASM_GOTO
-	KBUILD_AFLAGS += -DCC_HAVE_ASM_GOTO
+#	KBUILD_CFLAGS += -DCC_HAVE_ASM_GOTO
+#	KBUILD_AFLAGS += -DCC_HAVE_ASM_GOTO
 endif
 
 include scripts/Makefile.kasan
