@@ -1237,7 +1237,7 @@ out:
 }
 
 /* Submit the packet */
-static int netcp_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
+static netdev_tx_t netcp_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct netcp_intf *netcp = netdev_priv(ndev);
 	int subqueue = skb_get_queue_mapping(skb);
@@ -1325,9 +1325,9 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 	tx_pipe->dma_queue = knav_queue_open(name, tx_pipe->dma_queue_id,
 					     KNAV_QUEUE_SHARED);
 	if (IS_ERR(tx_pipe->dma_queue)) {
+		ret = PTR_ERR(tx_pipe->dma_queue);
 		dev_err(dev, "Could not open DMA queue for channel \"%s\": %d\n",
 			name, ret);
-		ret = PTR_ERR(tx_pipe->dma_queue);
 		goto err;
 	}
 

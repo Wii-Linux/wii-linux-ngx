@@ -104,7 +104,7 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	if (!inode_owner_or_capable(inode) || !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	inode_bl = ext4_iget(sb, EXT4_BOOT_LOADER_INO);
+	inode_bl = ext4_iget(sb, EXT4_BOOT_LOADER_INO, EXT4_IGET_SPECIAL);
 	if (IS_ERR(inode_bl))
 		return PTR_ERR(inode_bl);
 	ei_bl = EXT4_I(inode_bl);
@@ -134,7 +134,7 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	/* Protect extent tree against block allocations via delalloc */
 	ext4_double_down_write_data_sem(inode, inode_bl);
 
-	if (inode_bl->i_nlink == 0) {
+	if (is_bad_inode(inode_bl) || !S_ISREG(inode_bl->i_mode)) {
 		/* this inode has never been used as a BOOT_LOADER */
 		set_nlink(inode_bl, 1);
 		i_uid_write(inode_bl, 0);
@@ -333,6 +333,10 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 	if (IS_NOQUOTA(inode))
 		goto out_unlock;
 
+	err = dquot_initialize(inode);
+	if (err)
+		goto out_unlock;
+
 	err = ext4_get_inode_loc(inode, &iloc);
 	if (err)
 		goto out_unlock;
@@ -344,10 +348,6 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 		goto out_unlock;
 	}
 	brelse(iloc.bh);
-
-	err = dquot_initialize(inode);
-	if (err)
-		return err;
 
 	handle = ext4_journal_start(inode, EXT4_HT_QUOTA,
 		EXT4_QUOTA_INIT_BLOCKS(sb) +
@@ -760,8 +760,6 @@ resizefs_out:
 		    sizeof(range)))
 			return -EFAULT;
 
-		range.minlen = max((unsigned int)range.minlen,
-				   q->limits.discard_granularity);
 		ret = ext4_trim_fs(sb, &range);
 		if (ret < 0)
 			return ret;
@@ -774,22 +772,12 @@ resizefs_out:
 	}
 	case EXT4_IOC_PRECACHE_EXTENTS:
 		return ext4_ext_precache(inode);
-	case EXT4_IOC_SET_ENCRYPTION_POLICY: {
-#ifdef CONFIG_EXT4_FS_ENCRYPTION
-		struct fscrypt_policy policy;
 
+	case EXT4_IOC_SET_ENCRYPTION_POLICY:
 		if (!ext4_has_feature_encrypt(sb))
 			return -EOPNOTSUPP;
+		return fscrypt_ioctl_set_policy(filp, (const void __user *)arg);
 
-		if (copy_from_user(&policy,
-				   (struct fscrypt_policy __user *)arg,
-				   sizeof(policy)))
-			return -EFAULT;
-		return fscrypt_process_policy(filp, &policy);
-#else
-		return -EOPNOTSUPP;
-#endif
-	}
 	case EXT4_IOC_GET_ENCRYPTION_PWSALT: {
 		int err, err2;
 		struct ext4_sb_info *sbi = EXT4_SB(sb);
@@ -809,7 +797,10 @@ resizefs_out:
 			err = ext4_journal_get_write_access(handle, sbi->s_sbh);
 			if (err)
 				goto pwsalt_err_journal;
+			lock_buffer(sbi->s_sbh);
 			generate_random_uuid(sbi->s_es->s_encrypt_pw_salt);
+			ext4_superblock_csum_set(sb);
+			unlock_buffer(sbi->s_sbh);
 			err = ext4_handle_dirty_metadata(handle, NULL,
 							 sbi->s_sbh);
 		pwsalt_err_journal:
@@ -826,23 +817,9 @@ resizefs_out:
 			return -EFAULT;
 		return 0;
 	}
-	case EXT4_IOC_GET_ENCRYPTION_POLICY: {
-#ifdef CONFIG_EXT4_FS_ENCRYPTION
-		struct fscrypt_policy policy;
-		int err = 0;
+	case EXT4_IOC_GET_ENCRYPTION_POLICY:
+		return fscrypt_ioctl_get_policy(filp, (void __user *)arg);
 
-		if (!ext4_encrypted_inode(inode))
-			return -ENOENT;
-		err = fscrypt_get_policy(inode, &policy);
-		if (err)
-			return err;
-		if (copy_to_user((void __user *)arg, &policy, sizeof(policy)))
-			return -EFAULT;
-		return 0;
-#else
-		return -EOPNOTSUPP;
-#endif
-	}
 	case EXT4_IOC_FSGETXATTR:
 	{
 		struct fsxattr fa;

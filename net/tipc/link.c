@@ -877,9 +877,8 @@ void tipc_link_reset(struct tipc_link *l)
 int tipc_link_xmit(struct tipc_link *l, struct sk_buff_head *list,
 		   struct sk_buff_head *xmitq)
 {
-	struct tipc_msg *hdr = buf_msg(skb_peek(list));
 	unsigned int maxwin = l->window;
-	unsigned int i, imp = msg_importance(hdr);
+	unsigned int i;
 	unsigned int mtu = l->mtu;
 	u16 ack = l->rcv_nxt - 1;
 	u16 seqno = l->snd_nxt;
@@ -888,7 +887,14 @@ int tipc_link_xmit(struct tipc_link *l, struct sk_buff_head *list,
 	struct sk_buff_head *backlogq = &l->backlogq;
 	struct sk_buff *skb, *_skb, *bskb;
 	int pkt_cnt = skb_queue_len(list);
+	struct tipc_msg *hdr;
+	int imp;
 
+	if (pkt_cnt <= 0)
+		return 0;
+
+	hdr = buf_msg(skb_peek(list));
+	imp = msg_importance(hdr);
 	/* Match msg importance against this and all higher backlog limits: */
 	if (!skb_queue_empty(backlogq)) {
 		for (i = imp; i <= TIPC_SYSTEM_IMPORTANCE; i++) {
@@ -896,6 +902,7 @@ int tipc_link_xmit(struct tipc_link *l, struct sk_buff_head *list,
 				return link_schedule_user(l, list);
 		}
 	}
+
 	if (unlikely(msg_size(hdr) > mtu)) {
 		skb_queue_purge(list);
 		return -EMSGSIZE;
@@ -1434,11 +1441,14 @@ static int tipc_link_proto_rcv(struct tipc_link *l, struct sk_buff *skb,
 	u16 peers_tol = msg_link_tolerance(hdr);
 	u16 peers_prio = msg_linkprio(hdr);
 	u16 rcv_nxt = l->rcv_nxt;
-	u16 dlen = msg_data_sz(hdr);
+	u32 dlen = msg_data_sz(hdr);
 	int mtyp = msg_type(hdr);
 	void *data;
 	char *if_name;
 	int rc = 0;
+
+	if (dlen > U16_MAX)
+		goto exit;
 
 	if (tipc_link_is_blocked(l) || !xmitq)
 		goto exit;
@@ -1446,7 +1456,9 @@ static int tipc_link_proto_rcv(struct tipc_link *l, struct sk_buff *skb,
 	if (tipc_own_addr(l->net) > msg_prevnode(hdr))
 		l->net_plane = msg_net_plane(hdr);
 
-	skb_linearize(skb);
+	if (skb_linearize(skb))
+		goto exit;
+
 	hdr = buf_msg(skb);
 	data = msg_data(hdr);
 
