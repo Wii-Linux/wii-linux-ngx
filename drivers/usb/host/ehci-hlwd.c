@@ -154,13 +154,14 @@ static int ehci_hcd_hlwd_probe(struct platform_device *op)
 	} else {
 		coherent_mem_addr = res.start;
 		coherent_mem_size = res.end - res.start + 1;
-		if (!dma_declare_coherent_memory(&op->dev, coherent_mem_addr,
+		error = dma_declare_coherent_memory(&op->dev, coherent_mem_addr,
 						 coherent_mem_addr,
 						 coherent_mem_size,
-						 DMA_MEMORY_EXCLUSIVE)) {
-			dev_err(&op->dev, "error declaring %u bytes of"
+						 DMA_MEMORY_EXCLUSIVE);
+		if (error) {
+			dev_err(&op->dev, "error %d declaring %u bytes of"
 				" coherent memory at 0x%p\n",
-				coherent_mem_size, (void *)coherent_mem_addr);
+				error, coherent_mem_size, (void *)coherent_mem_addr);
 			error = -EBUSY;
 			goto err_decl_coherent;
 		}
