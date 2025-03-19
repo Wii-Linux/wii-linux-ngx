@@ -428,7 +428,6 @@ struct ohci_hcd {
 	unsigned		restart_work:1;
 
 	unsigned long		flags;		/* for HC bugs */
-#define	OHCI_QUIRK_WII		0x1000			/* Hollywood chipset */
 #define	OHCI_QUIRK_AMD756	0x01			/* erratum #4 */
 #define	OHCI_QUIRK_SUPERIO	0x02			/* natsemi */
 #define	OHCI_QUIRK_INITRESET	0x04			/* SiS, OPTi, ... */
@@ -441,6 +440,9 @@ struct ohci_hcd {
 #define	OHCI_QUIRK_AMD_PLL	0x200			/* AMD PLL quirk*/
 #define	OHCI_QUIRK_AMD_PREFETCH	0x400			/* pre-fetch for ISO transfer */
 #define	OHCI_QUIRK_GLOBAL_SUSPEND	0x800		/* must suspend ports */
+#define	OHCI_QUIRK_QEMU		0x1000			/* relax timing expectations */
+#define	OHCI_QUIRK_WII		0x2000			/* Hollywood chipset */
+
 	// there are also chip quirks/bugs in init logic
 
 	unsigned		prev_frame_no;
