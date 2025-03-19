@@ -1118,7 +1118,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	lock_sock(sk);
 
 	flags = msg->msg_flags;
-	if (flags & MSG_FASTOPEN) {
+	if ((flags & MSG_FASTOPEN) && !tp->repair) {
 		err = tcp_sendmsg_fastopen(sk, msg, &copied_syn, size);
 		if (err == -EINPROGRESS && copied_syn > 0)
 			goto out;
@@ -1696,7 +1696,7 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 			 * shouldn't happen.
 			 */
 			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
-				 "recvmsg bug: copied %X seq %X rcvnxt %X fl %X\n",
+				 "TCP recvmsg seq # bug: copied %X, seq %X, rcvnxt %X, fl %X\n",
 				 *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				 flags))
 				break;
@@ -1711,7 +1711,7 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 			if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
 				goto found_fin_ok;
 			WARN(!(flags & MSG_PEEK),
-			     "recvmsg bug 2: copied %X seq %X rcvnxt %X fl %X\n",
+			     "TCP recvmsg seq # bug 2: copied %X, seq %X, rcvnxt %X, fl %X\n",
 			     *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt, flags);
 		}
 
@@ -2292,16 +2292,17 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tp->write_seq += tp->max_window + 2;
 	if (tp->write_seq == 0)
 		tp->write_seq = 1;
-	icsk->icsk_backoff = 0;
 	tp->snd_cwnd = 2;
 	icsk->icsk_probes_out = 0;
 	tp->packets_out = 0;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	tp->snd_cwnd_cnt = 0;
 	tp->window_clamp = 0;
+	tp->delivered = 0;
 	tcp_set_ca_state(sk, TCP_CA_Open);
 	tp->is_sack_reneg = 0;
 	tcp_clear_retrans(tp);
+	tp->total_retrans = 0;
 	inet_csk_delack_init(sk);
 	/* Initialize rcv_mss to TCP_MIN_MSS to avoid division by 0
 	 * issue in __tcp_select_window()
@@ -2313,6 +2314,12 @@ int tcp_disconnect(struct sock *sk, int flags)
 	dst_release(sk->sk_rx_dst);
 	sk->sk_rx_dst = NULL;
 	tcp_saved_syn_free(tp);
+	tp->segs_in = 0;
+	tp->segs_out = 0;
+	tp->bytes_acked = 0;
+	tp->bytes_received = 0;
+	tp->data_segs_in = 0;
+	tp->data_segs_out = 0;
 
 	WARN_ON(inet->inet_num && !icsk->icsk_bind_hash);
 
@@ -2523,7 +2530,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 	case TCP_REPAIR_QUEUE:
 		if (!tp->repair)
 			err = -EPERM;
-		else if (val < TCP_QUEUES_NR)
+		else if ((unsigned int)val < TCP_QUEUES_NR)
 			tp->repair_queue = val;
 		else
 			err = -EINVAL;
@@ -2662,8 +2669,10 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 
 #ifdef CONFIG_TCP_MD5SIG
 	case TCP_MD5SIG:
-		/* Read the IP->Key mappings from userspace */
-		err = tp->af_specific->md5_parse(sk, optval, optlen);
+		if ((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN))
+			err = tp->af_specific->md5_parse(sk, optval, optlen);
+		else
+			err = -EINVAL;
 		break;
 #endif
 	case TCP_USER_TIMEOUT:
@@ -3236,8 +3245,7 @@ int tcp_abort(struct sock *sk, int err)
 			struct request_sock *req = inet_reqsk(sk);
 
 			local_bh_disable();
-			inet_csk_reqsk_queue_drop_and_put(req->rsk_listener,
-							  req);
+			inet_csk_reqsk_queue_drop(req->rsk_listener, req);
 			local_bh_enable();
 			return 0;
 		}
@@ -3307,6 +3315,7 @@ void __init tcp_init(void)
 	unsigned long limit;
 	unsigned int i;
 
+	BUILD_BUG_ON(TCP_MIN_SND_MSS <= MAX_TCP_OPTION_SPACE);
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) >
 		     FIELD_SIZEOF(struct sk_buff, cb));
 

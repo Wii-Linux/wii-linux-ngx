@@ -650,7 +650,7 @@ struct xhci_ring *xhci_stream_id_to_ring(
 	if (!ep->stream_info)
 		return NULL;
 
-	if (stream_id > ep->stream_info->num_streams)
+	if (stream_id >= ep->stream_info->num_streams)
 		return NULL;
 	return ep->stream_info->stream_rings[stream_id];
 }
@@ -975,6 +975,8 @@ void xhci_free_virt_device(struct xhci_hcd *xhci, int slot_id)
 	if (dev->out_ctx)
 		xhci_free_container_ctx(xhci, dev->out_ctx);
 
+	if (dev->udev && dev->udev->slot_id)
+		dev->udev->slot_id = 0;
 	kfree(xhci->devs[slot_id]);
 	xhci->devs[slot_id] = NULL;
 }
@@ -1530,9 +1532,15 @@ int xhci_endpoint_init(struct xhci_hcd *xhci,
 	/* Allow 3 retries for everything but isoc, set CErr = 3 */
 	if (!usb_endpoint_xfer_isoc(&ep->desc))
 		err_count = 3;
-	/* Some devices get this wrong */
-	if (usb_endpoint_xfer_bulk(&ep->desc) && udev->speed == USB_SPEED_HIGH)
-		max_packet = 512;
+	/* HS bulk max packet should be 512, FS bulk supports 8, 16, 32 or 64 */
+	if (usb_endpoint_xfer_bulk(&ep->desc)) {
+		if (udev->speed == USB_SPEED_HIGH)
+			max_packet = 512;
+		if (udev->speed == USB_SPEED_FULL) {
+			max_packet = rounddown_pow_of_two(max_packet);
+			max_packet = clamp_val(max_packet, 8, 64);
+		}
+	}
 	/* xHCI 1.0 and 1.1 indicates that ctrl ep avg TRB Length should be 8 */
 	if (usb_endpoint_xfer_control(&ep->desc) && xhci->hci_version >= 0x100)
 		avg_trb_len = 8;
@@ -1938,10 +1946,14 @@ no_bw:
 	kfree(xhci->port_array);
 	kfree(xhci->rh_bw);
 	kfree(xhci->ext_caps);
+	kfree(xhci->usb2_rhub.psi);
+	kfree(xhci->usb3_rhub.psi);
 
 	xhci->usb2_ports = NULL;
 	xhci->usb3_ports = NULL;
 	xhci->port_array = NULL;
+	xhci->usb2_rhub.psi = NULL;
+	xhci->usb3_rhub.psi = NULL;
 	xhci->rh_bw = NULL;
 	xhci->ext_caps = NULL;
 

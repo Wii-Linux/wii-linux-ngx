@@ -1774,6 +1774,7 @@ musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 	int		vbus;
 	u8		devctl;
 
+	pm_runtime_get_sync(dev);
 	spin_lock_irqsave(&musb->lock, flags);
 	val = musb->a_wait_bcon;
 	vbus = musb_platform_get_vbus_status(musb);
@@ -1787,6 +1788,7 @@ musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 			vbus = 0;
 	}
 	spin_unlock_irqrestore(&musb->lock, flags);
+	pm_runtime_put_sync(dev);
 
 	return sprintf(buf, "Vbus %s, timeout %lu msec\n",
 			vbus ? "on" : "off", val);
@@ -1830,6 +1832,9 @@ static const struct attribute_group musb_attr_group = {
 #define MUSB_QUIRK_B_INVALID_VBUS_91	(MUSB_DEVCTL_BDEVICE | \
 					 (2 << MUSB_DEVCTL_VBUS_SHIFT) | \
 					 MUSB_DEVCTL_SESSION)
+#define MUSB_QUIRK_B_DISCONNECT_99	(MUSB_DEVCTL_BDEVICE | \
+					 (3 << MUSB_DEVCTL_VBUS_SHIFT) | \
+					 MUSB_DEVCTL_SESSION)
 #define MUSB_QUIRK_A_DISCONNECT_19	((3 << MUSB_DEVCTL_VBUS_SHIFT) | \
 					 MUSB_DEVCTL_SESSION)
 
@@ -1852,6 +1857,11 @@ static void musb_pm_runtime_check_session(struct musb *musb)
 	s = MUSB_DEVCTL_FSDEV | MUSB_DEVCTL_LSDEV |
 		MUSB_DEVCTL_HR;
 	switch (devctl & ~s) {
+	case MUSB_QUIRK_B_DISCONNECT_99:
+		musb_dbg(musb, "Poll devctl in case of suspend after disconnect\n");
+		schedule_delayed_work(&musb->irq_work,
+				      msecs_to_jiffies(1000));
+		break;
 	case MUSB_QUIRK_B_INVALID_VBUS_91:
 		if (musb->quirk_retries--) {
 			musb_dbg(musb,
@@ -2043,6 +2053,7 @@ struct musb_pending_work {
 	struct list_head node;
 };
 
+#ifdef CONFIG_PM
 /*
  * Called from musb_runtime_resume(), musb_resume(), and
  * musb_queue_resume_work(). Callers must take musb->lock.
@@ -2070,6 +2081,7 @@ static int musb_run_resume_work(struct musb *musb)
 
 	return error;
 }
+#endif
 
 /*
  * Called to run work if device is active or else queue the work to happen
@@ -2305,6 +2317,9 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	musb_platform_disable(musb);
 	musb_generic_disable(musb);
 
+	/* MUSB_POWER_SOFTCONN might be already set, JZ4740 does this. */
+	musb_writeb(musb->mregs, MUSB_POWER, 0);
+
 	/* Init IRQ workqueue before request_irq */
 	INIT_DELAYED_WORK(&musb->irq_work, musb_irq_work);
 	INIT_DELAYED_WORK(&musb->deassert_reset_work, musb_deassert_reset);
@@ -2481,10 +2496,11 @@ static int musb_remove(struct platform_device *pdev)
 	musb_generic_disable(musb);
 	spin_unlock_irqrestore(&musb->lock, flags);
 	musb_writeb(musb->mregs, MUSB_DEVCTL, 0);
+	musb_platform_exit(musb);
+
 	pm_runtime_dont_use_autosuspend(musb->controller);
 	pm_runtime_put_sync(musb->controller);
 	pm_runtime_disable(musb->controller);
-	musb_platform_exit(musb);
 	musb_phy_callback = NULL;
 	if (musb->dma_controller)
 		musb_dma_controller_destroy(musb->dma_controller);
@@ -2708,7 +2724,8 @@ static int musb_resume(struct device *dev)
 	if ((devctl & mask) != (musb->context.devctl & mask))
 		musb->port1_status = 0;
 
-	musb_start(musb);
+	musb_enable_interrupts(musb);
+	musb_platform_enable(musb);
 
 	spin_lock_irqsave(&musb->lock, flags);
 	error = musb_run_resume_work(musb);

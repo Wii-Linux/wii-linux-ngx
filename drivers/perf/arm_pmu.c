@@ -322,10 +322,16 @@ validate_group(struct perf_event *event)
 	return 0;
 }
 
+static struct arm_pmu_platdata *armpmu_get_platdata(struct arm_pmu *armpmu)
+{
+	struct platform_device *pdev = armpmu->plat_device;
+
+	return pdev ? dev_get_platdata(&pdev->dev) : NULL;
+}
+
 static irqreturn_t armpmu_dispatch_irq(int irq, void *dev)
 {
 	struct arm_pmu *armpmu;
-	struct platform_device *plat_device;
 	struct arm_pmu_platdata *plat;
 	int ret;
 	u64 start_clock, finish_clock;
@@ -337,8 +343,8 @@ static irqreturn_t armpmu_dispatch_irq(int irq, void *dev)
 	 * dereference.
 	 */
 	armpmu = *(void **)dev;
-	plat_device = armpmu->plat_device;
-	plat = dev_get_platdata(&plat_device->dev);
+
+	plat = armpmu_get_platdata(armpmu);
 
 	start_clock = sched_clock();
 	if (plat && plat->handle_irq)
@@ -798,8 +804,8 @@ static int cpu_pm_pmu_notify(struct notifier_block *b, unsigned long cmd,
 		cpu_pm_pmu_setup(armpmu, cmd);
 		break;
 	case CPU_PM_EXIT:
-		cpu_pm_pmu_setup(armpmu, cmd);
 	case CPU_PM_ENTER_FAILED:
+		cpu_pm_pmu_setup(armpmu, cmd);
 		armpmu->start(armpmu);
 		break;
 	default:

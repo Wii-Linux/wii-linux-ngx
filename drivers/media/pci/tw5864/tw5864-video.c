@@ -708,6 +708,8 @@ static void tw5864_frame_interval_set(struct tw5864_input *input)
 static int tw5864_frameinterval_get(struct tw5864_input *input,
 				    struct v4l2_fract *frameinterval)
 {
+	struct tw5864_dev *dev = input->root;
+
 	switch (input->std) {
 	case STD_NTSC:
 		frameinterval->numerator = 1001;
@@ -719,8 +721,8 @@ static int tw5864_frameinterval_get(struct tw5864_input *input,
 		frameinterval->denominator = 25;
 		break;
 	default:
-		WARN(1, "tw5864_frameinterval_get requested for unknown std %d\n",
-		     input->std);
+	        dev_warn(&dev->pci->dev, "tw5864_frameinterval_get requested for unknown std %d\n",
+			 input->std);
 		return -EINVAL;
 	}
 
@@ -1384,12 +1386,12 @@ static void tw5864_handle_frame(struct tw5864_h264_frame *frame)
 	input->vb = NULL;
 	spin_unlock_irqrestore(&input->slock, flags);
 
-	v4l2_buf = to_vb2_v4l2_buffer(&vb->vb.vb2_buf);
-
 	if (!vb) { /* Gone because of disabling */
 		dev_dbg(&dev->pci->dev, "vb is empty, dropping frame\n");
 		return;
 	}
+
+	v4l2_buf = to_vb2_v4l2_buffer(&vb->vb.vb2_buf);
 
 	/*
 	 * Check for space.

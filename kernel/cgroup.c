@@ -4386,7 +4386,11 @@ int cgroup_transfer_tasks(struct cgroup *to, struct cgroup *from)
 	 */
 	do {
 		css_task_iter_start(&from->self, &it);
-		task = css_task_iter_next(&it);
+
+		do {
+			task = css_task_iter_next(&it);
+		} while (task && (task->flags & PF_EXITING));
+
 		if (task)
 			get_task_struct(task);
 		css_task_iter_end(&it);
@@ -6330,6 +6334,10 @@ void cgroup_sk_alloc(struct sock_cgroup_data *skcd)
 		cgroup_get(sock_cgroup_ptr(skcd));
 		return;
 	}
+
+	/* Don't associate the sock with unrelated interrupted task's cgroup. */
+	if (in_interrupt())
+		return;
 
 	rcu_read_lock();
 

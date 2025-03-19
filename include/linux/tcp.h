@@ -337,7 +337,7 @@ struct tcp_sock {
 
 /* Receiver queue space */
 	struct {
-		int	space;
+		u32	space;
 		u32	seq;
 		u32	time;
 	} rcvq_space;
@@ -432,5 +432,8 @@ static inline void tcp_saved_syn_free(struct tcp_sock *tp)
 	kfree(tp->saved_syn);
 	tp->saved_syn = NULL;
 }
+
+int tcp_skb_shift(struct sk_buff *to, struct sk_buff *from, int pcount,
+		  int shiftlen);
 
 #endif	/* _LINUX_TCP_H */

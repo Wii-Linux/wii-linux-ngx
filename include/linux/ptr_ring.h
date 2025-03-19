@@ -351,6 +351,8 @@ static inline void *ptr_ring_consume_bh(struct ptr_ring *r)
 
 static inline void **__ptr_ring_init_queue_alloc(unsigned int size, gfp_t gfp)
 {
+	if (size > KMALLOC_MAX_SIZE / sizeof(void *))
+		return NULL;
 	return kcalloc(size, sizeof(void *), gfp);
 }
 
@@ -382,6 +384,8 @@ static inline void **__ptr_ring_swap_queue(struct ptr_ring *r, void **queue,
 		else if (destroy)
 			destroy(ptr);
 
+	if (producer >= size)
+		producer = 0;
 	r->size = size;
 	r->producer = producer;
 	r->consumer = 0;

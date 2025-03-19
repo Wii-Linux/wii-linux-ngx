@@ -195,6 +195,11 @@ static long tce_iommu_register_pages(struct tce_container *container,
 		return ret;
 
 	tcemem = kzalloc(sizeof(*tcemem), GFP_KERNEL);
+	if (!tcemem) {
+		mm_iommu_put(container->mm, mem);
+		return -ENOMEM;
+	}
+
 	tcemem->mem = mem;
 	list_add(&tcemem->next, &container->prereg_list);
 
@@ -401,6 +406,7 @@ static void tce_iommu_release(void *iommu_data)
 {
 	struct tce_container *container = iommu_data;
 	struct tce_iommu_group *tcegrp;
+	struct tce_iommu_prereg *tcemem, *tmtmp;
 	long i;
 
 	while (tce_groups_attached(container)) {
@@ -423,13 +429,8 @@ static void tce_iommu_release(void *iommu_data)
 		tce_iommu_free_table(container, tbl);
 	}
 
-	while (!list_empty(&container->prereg_list)) {
-		struct tce_iommu_prereg *tcemem;
-
-		tcemem = list_first_entry(&container->prereg_list,
-				struct tce_iommu_prereg, next);
-		WARN_ON_ONCE(tce_iommu_prereg_free(container, tcemem));
-	}
+	list_for_each_entry_safe(tcemem, tmtmp, &container->prereg_list, next)
+		WARN_ON(tce_iommu_prereg_free(container, tcemem));
 
 	tce_iommu_disable(container);
 	if (container->mm)
@@ -1332,8 +1333,16 @@ static int tce_iommu_attach_group(void *iommu_data,
 
 	if (!table_group->ops || !table_group->ops->take_ownership ||
 			!table_group->ops->release_ownership) {
+		if (container->v2) {
+			ret = -EPERM;
+			goto unlock_exit;
+		}
 		ret = tce_iommu_take_ownership(container, table_group);
 	} else {
+		if (!container->v2) {
+			ret = -EPERM;
+			goto unlock_exit;
+		}
 		ret = tce_iommu_take_ownership_ddw(container, table_group);
 		if (!tce_groups_attached(container) && !container->tables[0])
 			container->def_window_pending = true;

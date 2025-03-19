@@ -240,6 +240,10 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 	struct page *page = fio->encrypted_page ?
 			fio->encrypted_page : fio->page;
 
+	if (!f2fs_is_valid_blkaddr(fio->sbi, fio->new_blkaddr,
+			__is_meta_io(fio) ? META_GENERIC : DATA_GENERIC))
+		return -EFAULT;
+
 	trace_f2fs_submit_page_bio(page, fio);
 	f2fs_trace_ios(fio, 0);
 
@@ -266,9 +270,9 @@ void f2fs_submit_page_mbio(struct f2fs_io_info *fio)
 
 	io = is_read ? &sbi->read_io : &sbi->write_io[btype];
 
-	if (fio->old_blkaddr != NEW_ADDR)
-		verify_block_addr(sbi, fio->old_blkaddr);
-	verify_block_addr(sbi, fio->new_blkaddr);
+	if (__is_valid_data_blkaddr(fio->old_blkaddr))
+		verify_block_addr(fio, fio->old_blkaddr);
+	verify_block_addr(fio, fio->new_blkaddr);
 
 	down_write(&io->io_rwsem);
 
@@ -722,7 +726,13 @@ next_dnode:
 next_block:
 	blkaddr = datablock_addr(dn.node_page, dn.ofs_in_node);
 
-	if (blkaddr == NEW_ADDR || blkaddr == NULL_ADDR) {
+	if (__is_valid_data_blkaddr(blkaddr) &&
+		!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC)) {
+		err = -EFAULT;
+		goto sync_out;
+	}
+
+	if (!is_valid_data_blkaddr(sbi, blkaddr)) {
 		if (create) {
 			if (unlikely(f2fs_cp_error(sbi))) {
 				err = -EIO;
@@ -844,7 +854,7 @@ static int __get_data_block(struct inode *inode, sector_t iblock,
 	if (!ret) {
 		map_bh(bh, inode->i_sb, map.m_pblk);
 		bh->b_state = (bh->b_state & ~F2FS_MAP_FLAGS) | map.m_flags;
-		bh->b_size = map.m_len << inode->i_blkbits;
+		bh->b_size = (u64)map.m_len << inode->i_blkbits;
 	}
 	return ret;
 }
@@ -985,6 +995,9 @@ static struct bio *f2fs_grab_bio(struct inode *inode, block_t blkaddr,
 	struct block_device *bdev = sbi->sb->s_bdev;
 	struct bio *bio;
 
+	if (!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC))
+		return ERR_PTR(-EFAULT);
+
 	if (f2fs_encrypted_inode(inode) && S_ISREG(inode->i_mode)) {
 		ctx = fscrypt_get_ctx(inode, GFP_NOFS);
 		if (IS_ERR(ctx))
@@ -1084,6 +1097,10 @@ got_it:
 				SetPageUptodate(page);
 				goto confused;
 			}
+
+			if (!f2fs_is_valid_blkaddr(F2FS_I_SB(inode), block_nr,
+								DATA_GENERIC))
+				goto set_error_page;
 		} else {
 			zero_user_segment(page, 0, PAGE_SIZE);
 			if (!PageUptodate(page))
@@ -1184,6 +1201,7 @@ int do_write_data_page(struct f2fs_io_info *fio)
 	/* This page is already truncated */
 	if (fio->old_blkaddr == NULL_ADDR) {
 		ClearPageUptodate(page);
+		clear_cold_data(page);
 		goto out_writepage;
 	}
 
@@ -1212,11 +1230,17 @@ retry_encrypt:
 
 	set_page_writeback(page);
 
+	if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
+		!f2fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
+							DATA_GENERIC)) {
+		err = -EFAULT;
+		goto out_writepage;
+	}
 	/*
 	 * If current allocation needs SSR,
 	 * it had better in-place writes for updated data.
 	 */
-	if (unlikely(fio->old_blkaddr != NEW_ADDR &&
+	if (unlikely(is_valid_data_blkaddr(fio->sbi, fio->old_blkaddr) &&
 			!is_cold_data(page) &&
 			!IS_ATOMIC_WRITTEN_PAGE(page) &&
 			need_inplace_update(inode))) {
@@ -1243,7 +1267,7 @@ static int f2fs_write_data_page(struct page *page,
 	loff_t i_size = i_size_read(inode);
 	const pgoff_t end_index = ((unsigned long long) i_size)
 							>> PAGE_SHIFT;
-	loff_t psize = (page->index + 1) << PAGE_SHIFT;
+	loff_t psize = (loff_t)(page->index + 1) << PAGE_SHIFT;
 	unsigned offset = 0;
 	bool need_balance_fs = false;
 	int err = 0;
@@ -1314,8 +1338,10 @@ done:
 	clear_cold_data(page);
 out:
 	inode_dec_dirty_pages(inode);
-	if (err)
+	if (err) {
 		ClearPageUptodate(page);
+		clear_cold_data(page);
+	}
 
 	if (wbc->for_reclaim) {
 		f2fs_submit_merged_bio_cond(sbi, NULL, page, 0, DATA, WRITE);
@@ -1798,6 +1824,8 @@ void f2fs_invalidate_page(struct page *page, unsigned int offset,
 			inode_dec_dirty_pages(inode);
 	}
 
+	clear_cold_data(page);
+
 	/* This is atomic written page, keep Private */
 	if (IS_ATOMIC_WRITTEN_PAGE(page))
 		return;
@@ -1816,6 +1844,7 @@ int f2fs_release_page(struct page *page, gfp_t wait)
 	if (IS_ATOMIC_WRITTEN_PAGE(page))
 		return 0;
 
+	clear_cold_data(page);
 	set_page_private(page, 0);
 	ClearPagePrivate(page);
 	return 1;

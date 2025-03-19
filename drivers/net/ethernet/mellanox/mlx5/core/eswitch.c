@@ -92,8 +92,7 @@ static int arm_vport_context_events_cmd(struct mlx5_core_dev *dev, u16 vport,
 		 opcode, MLX5_CMD_OP_MODIFY_NIC_VPORT_CONTEXT);
 	MLX5_SET(modify_nic_vport_context_in, in, field_select.change_event, 1);
 	MLX5_SET(modify_nic_vport_context_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(modify_nic_vport_context_in, in, other_vport, 1);
+	MLX5_SET(modify_nic_vport_context_in, in, other_vport, 1);
 	nic_vport_ctx = MLX5_ADDR_OF(modify_nic_vport_context_in,
 				     in, nic_vport_context);
 
@@ -121,8 +120,7 @@ static int modify_esw_vport_context_cmd(struct mlx5_core_dev *dev, u16 vport,
 	MLX5_SET(modify_esw_vport_context_in, in, opcode,
 		 MLX5_CMD_OP_MODIFY_ESW_VPORT_CONTEXT);
 	MLX5_SET(modify_esw_vport_context_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(modify_esw_vport_context_in, in, other_vport, 1);
+	MLX5_SET(modify_esw_vport_context_in, in, other_vport, 1);
 	return mlx5_cmd_exec(dev, in, inlen, out, sizeof(out));
 }
 
@@ -1216,14 +1214,6 @@ static int esw_vport_ingress_config(struct mlx5_eswitch *esw,
 	int err = 0;
 	u8 *smac_v;
 
-	if (vport->info.spoofchk && !is_valid_ether_addr(vport->info.mac)) {
-		mlx5_core_warn(esw->dev,
-			       "vport[%d] configure ingress rules failed, illegal mac with spoofchk\n",
-			       vport->vport);
-		return -EPERM;
-
-	}
-
 	esw_vport_cleanup_ingress_rules(esw, vport);
 
 	if (!vport->info.vlan && !vport->info.qos && !vport->info.spoofchk) {
@@ -1709,13 +1699,10 @@ int mlx5_eswitch_set_vport_mac(struct mlx5_eswitch *esw,
 	mutex_lock(&esw->state_lock);
 	evport = &esw->vports[vport];
 
-	if (evport->info.spoofchk && !is_valid_ether_addr(mac)) {
+	if (evport->info.spoofchk && !is_valid_ether_addr(mac))
 		mlx5_core_warn(esw->dev,
-			       "MAC invalidation is not allowed when spoofchk is on, vport(%d)\n",
+			       "Set invalid MAC while spoofchk is on, vport(%d)\n",
 			       vport);
-		err = -EPERM;
-		goto unlock;
-	}
 
 	err = mlx5_modify_nic_vport_mac_address(esw->dev, vport, mac);
 	if (err) {
@@ -1770,7 +1757,7 @@ int mlx5_eswitch_set_vport_state(struct mlx5_eswitch *esw,
 
 unlock:
 	mutex_unlock(&esw->state_lock);
-	return 0;
+	return err;
 }
 
 int mlx5_eswitch_get_vport_config(struct mlx5_eswitch *esw,
@@ -1859,6 +1846,10 @@ int mlx5_eswitch_set_vport_spoofchk(struct mlx5_eswitch *esw,
 	evport = &esw->vports[vport];
 	pschk = evport->info.spoofchk;
 	evport->info.spoofchk = spoofchk;
+	if (pschk && !is_valid_ether_addr(evport->info.mac))
+		mlx5_core_warn(esw->dev,
+			       "Spoofchk in set while MAC is invalid, vport(%d)\n",
+			       evport->vport);
 	if (evport->enabled && esw->mode == SRIOV_LEGACY)
 		err = esw_vport_ingress_config(esw, evport);
 	if (err)
@@ -1924,26 +1915,35 @@ int mlx5_eswitch_get_vport_stats(struct mlx5_eswitch *esw,
 	memset(vf_stats, 0, sizeof(*vf_stats));
 	vf_stats->rx_packets =
 		MLX5_GET_CTR(out, received_eth_unicast.packets) +
+		MLX5_GET_CTR(out, received_ib_unicast.packets) +
 		MLX5_GET_CTR(out, received_eth_multicast.packets) +
+		MLX5_GET_CTR(out, received_ib_multicast.packets) +
 		MLX5_GET_CTR(out, received_eth_broadcast.packets);
 
 	vf_stats->rx_bytes =
 		MLX5_GET_CTR(out, received_eth_unicast.octets) +
+		MLX5_GET_CTR(out, received_ib_unicast.octets) +
 		MLX5_GET_CTR(out, received_eth_multicast.octets) +
+		MLX5_GET_CTR(out, received_ib_multicast.octets) +
 		MLX5_GET_CTR(out, received_eth_broadcast.octets);
 
 	vf_stats->tx_packets =
 		MLX5_GET_CTR(out, transmitted_eth_unicast.packets) +
+		MLX5_GET_CTR(out, transmitted_ib_unicast.packets) +
 		MLX5_GET_CTR(out, transmitted_eth_multicast.packets) +
+		MLX5_GET_CTR(out, transmitted_ib_multicast.packets) +
 		MLX5_GET_CTR(out, transmitted_eth_broadcast.packets);
 
 	vf_stats->tx_bytes =
 		MLX5_GET_CTR(out, transmitted_eth_unicast.octets) +
+		MLX5_GET_CTR(out, transmitted_ib_unicast.octets) +
 		MLX5_GET_CTR(out, transmitted_eth_multicast.octets) +
+		MLX5_GET_CTR(out, transmitted_ib_multicast.octets) +
 		MLX5_GET_CTR(out, transmitted_eth_broadcast.octets);
 
 	vf_stats->multicast =
-		MLX5_GET_CTR(out, received_eth_multicast.packets);
+		MLX5_GET_CTR(out, received_eth_multicast.packets) +
+		MLX5_GET_CTR(out, received_ib_multicast.packets);
 
 	vf_stats->broadcast =
 		MLX5_GET_CTR(out, received_eth_broadcast.packets);

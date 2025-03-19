@@ -110,6 +110,8 @@
 
 #define ENA_IO_TXQ_IDX(q)	(2 * (q))
 #define ENA_IO_RXQ_IDX(q)	(2 * (q) + 1)
+#define ENA_IO_TXQ_IDX_TO_COMBINED_IDX(q)	((q) / 2)
+#define ENA_IO_RXQ_IDX_TO_COMBINED_IDX(q)	(((q) - 1) / 2)
 
 #define ENA_MGMNT_IRQ_IDX		0
 #define ENA_IO_IRQ_FIRST_IDX		1
@@ -320,5 +322,16 @@ void ena_dump_stats_to_dmesg(struct ena_adapter *adapter);
 void ena_dump_stats_to_buf(struct ena_adapter *adapter, u8 *buf);
 
 int ena_get_sset_count(struct net_device *netdev, int sset);
+
+/* The ENA buffer length fields is 16 bit long. So when PAGE_SIZE == 64kB the
+ * driver passas 0.
+ * Since the max packet size the ENA handles is ~9kB limit the buffer length to
+ * 16kB.
+ */
+#if PAGE_SIZE > SZ_16K
+#define ENA_PAGE_SIZE SZ_16K
+#else
+#define ENA_PAGE_SIZE PAGE_SIZE
+#endif
 
 #endif /* !(ENA_H) */

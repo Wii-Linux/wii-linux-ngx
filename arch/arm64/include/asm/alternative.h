@@ -4,12 +4,16 @@
 #include <asm/cpucaps.h>
 #include <asm/insn.h>
 
+#define ARM64_CB_PATCH ARM64_NCAPS
+
 #ifndef __ASSEMBLY__
 
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/stddef.h>
 #include <linux/stringify.h>
+
+extern int alternatives_applied;
 
 struct alt_instr {
 	s32 orig_offset;	/* offset to original instruction */
@@ -19,12 +23,22 @@ struct alt_instr {
 	u8  alt_len;		/* size of new instruction(s), <= orig_len */
 };
 
+typedef void (*alternative_cb_t)(struct alt_instr *alt,
+				 __le32 *origptr, __le32 *updptr, int nr_inst);
+
 void __init apply_alternatives_all(void);
 void apply_alternatives(void *start, size_t length);
 
-#define ALTINSTR_ENTRY(feature)						      \
+#define ALTINSTR_ENTRY(feature)					              \
 	" .word 661b - .\n"				/* label           */ \
 	" .word 663f - .\n"				/* new instruction */ \
+	" .hword " __stringify(feature) "\n"		/* feature bit     */ \
+	" .byte 662b-661b\n"				/* source len      */ \
+	" .byte 664f-663f\n"				/* replacement len */
+
+#define ALTINSTR_ENTRY_CB(feature, cb)					      \
+	" .word 661b - .\n"				/* label           */ \
+	" .word " __stringify(cb) "- .\n"		/* callback */	      \
 	" .hword " __stringify(feature) "\n"		/* feature bit     */ \
 	" .byte 662b-661b\n"				/* source len      */ \
 	" .byte 664f-663f\n"				/* replacement len */
@@ -42,6 +56,8 @@ void apply_alternatives(void *start, size_t length);
  * but most assemblers die if insn1 or insn2 have a .inst. This should
  * be fixed in a binutils release posterior to 2.25.51.0.2 (anything
  * containing commit 4e4d08cf7399b606 or c1baaddf8861).
+ *
+ * Alternatives with callbacks do not generate replacement instructions.
  */
 #define __ALTERNATIVE_CFG(oldinstr, newinstr, feature, cfg_enabled)	\
 	".if "__stringify(cfg_enabled)" == 1\n"				\
@@ -60,9 +76,23 @@ void apply_alternatives(void *start, size_t length);
 	".org	. - (662b-661b) + (664b-663b)\n"			\
 	".endif\n"
 
+#define __ALTERNATIVE_CFG_CB(oldinstr, feature, cfg_enabled, cb)	\
+	".if "__stringify(cfg_enabled)" == 1\n"				\
+	"661:\n\t"							\
+	oldinstr "\n"							\
+	"662:\n"							\
+	".pushsection .altinstructions,\"a\"\n"				\
+	ALTINSTR_ENTRY_CB(feature, cb)					\
+	".popsection\n"							\
+	"663:\n\t"							\
+	"664:\n\t"							\
+	".endif\n"
+
 #define _ALTERNATIVE_CFG(oldinstr, newinstr, feature, cfg, ...)	\
 	__ALTERNATIVE_CFG(oldinstr, newinstr, feature, IS_ENABLED(cfg))
 
+#define ALTERNATIVE_CB(oldinstr, cb) \
+	__ALTERNATIVE_CFG_CB(oldinstr, ARM64_CB_PATCH, 1, cb)
 #else
 
 #include <asm/assembler.h>
@@ -129,6 +159,14 @@ void apply_alternatives(void *start, size_t length);
 661:
 .endm
 
+.macro alternative_cb cb
+	.set .Lasm_alt_mode, 0
+	.pushsection .altinstructions, "a"
+	altinstruction_entry 661f, \cb, ARM64_CB_PATCH, 662f-661f, 0
+	.popsection
+661:
+.endm
+
 /*
  * Provide the other half of the alternative code sequence.
  */
@@ -152,6 +190,13 @@ void apply_alternatives(void *start, size_t length);
 	.endif
 	.org	. - (664b-663b) + (662b-661b)
 	.org	. - (662b-661b) + (664b-663b)
+.endm
+
+/*
+ * Callback-based alternative epilogue
+ */
+.macro alternative_cb_end
+662:
 .endm
 
 /*

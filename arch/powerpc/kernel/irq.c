@@ -372,6 +372,14 @@ void force_external_irq_replay(void)
 	 */
 	WARN_ON(!arch_irqs_disabled());
 
+	/*
+	 * Interrupts must always be hard disabled before irq_happened is
+	 * modified (to prevent lost update in case of interrupt between
+	 * load and store).
+	 */
+	__hard_irq_disable();
+	local_paca->irq_happened |= PACA_IRQ_HARD_DIS;
+
 	/* Indicate in the PACA that we have an interrupt to replay */
 	local_paca->irq_happened |= PACA_IRQ_EE;
 }
@@ -519,8 +527,6 @@ void __do_irq(struct pt_regs *regs)
 
 	trace_irq_entry(regs);
 
-	check_stack_overflow();
-
 	/*
 	 * Query the platform PIC for the interrupt & ack it.
 	 *
@@ -551,6 +557,8 @@ void do_IRQ(struct pt_regs *regs)
 	curtp = current_thread_info();
 	irqtp = hardirq_ctx[raw_smp_processor_id()];
 	sirqtp = softirq_ctx[raw_smp_processor_id()];
+
+	check_stack_overflow();
 
 	/* Already there ? */
 	if (unlikely(curtp == irqtp || curtp == sirqtp)) {

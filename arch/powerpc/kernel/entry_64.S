@@ -26,6 +26,7 @@
 #include <asm/page.h>
 #include <asm/mmu.h>
 #include <asm/thread_info.h>
+#include <asm/code-patching-asm.h>
 #include <asm/ppc_asm.h>
 #include <asm/asm-offsets.h>
 #include <asm/cputable.h>
@@ -38,7 +39,13 @@
 #include <asm/context_tracking.h>
 #include <asm/tm.h>
 #include <asm/ppc-opcode.h>
+#include <asm/barrier.h>
 #include <asm/export.h>
+#ifdef CONFIG_PPC_BOOK3S
+#include <asm/exception-64s.h>
+#else
+#include <asm/exception-64e.h>
+#endif
 
 /*
  * System calls.
@@ -73,6 +80,11 @@ END_FTR_SECTION_IFSET(CPU_FTR_TM)
 	std	r0,GPR0(r1)
 	std	r10,GPR1(r1)
 	beq	2f			/* if from kernel mode */
+#ifdef CONFIG_PPC_FSL_BOOK3E
+START_BTB_FLUSH_SECTION
+	BTB_FLUSH(r10)
+END_BTB_FLUSH_SECTION
+#endif
 	ACCOUNT_CPU_USER_ENTRY(r13, r10, r11)
 2:	std	r2,GPR2(r1)
 	std	r3,GPR3(r1)
@@ -175,6 +187,15 @@ system_call:			/* label this so stack traces look sane */
 	clrldi	r8,r8,32
 15:
 	slwi	r0,r0,4
+
+	barrier_nospec_asm
+	/*
+	 * Prevent the load of the handler below (based on the user-passed
+	 * system call number) being speculatively executed until the test
+	 * against NR_syscalls and branch to .Lsyscall_enosys above has
+	 * committed.
+	 */
+
 	ldx	r12,r11,r0	/* Fetch system call handler [ptr] */
 	mtctr   r12
 	bctrl			/* Call handler */
@@ -396,8 +417,7 @@ tabort_syscall:
 	mtmsrd	r10, 1
 	mtspr	SPRN_SRR0, r11
 	mtspr	SPRN_SRR1, r12
-
-	rfid
+	RFI_TO_USER
 	b	.	/* prevent speculative execution */
 #endif
 
@@ -469,6 +489,63 @@ _GLOBAL(ret_from_kernel_thread)
 	li	r3,0
 	b	.Lsyscall_exit
 
+#ifdef CONFIG_PPC_BOOK3S_64
+
+#define FLUSH_COUNT_CACHE	\
+1:	nop;			\
+	patch_site 1b, patch__call_flush_count_cache
+
+
+#define BCCTR_FLUSH	.long 0x4c400420
+
+.macro nops number
+	.rept \number
+	nop
+	.endr
+.endm
+
+.balign 32
+.global flush_count_cache
+flush_count_cache:
+	/* Save LR into r9 */
+	mflr	r9
+
+	// Flush the link stack
+	.rept 64
+	bl	.+4
+	.endr
+	b	1f
+	nops	6
+
+	.balign 32
+	/* Restore LR */
+1:	mtlr	r9
+
+	// If we're just flushing the link stack, return here
+3:	nop
+	patch_site 3b patch__flush_link_stack_return
+
+	li	r9,0x7fff
+	mtctr	r9
+
+	BCCTR_FLUSH
+
+2:	nop
+	patch_site 2b patch__flush_count_cache_return
+
+	nops	3
+
+	.rept 278
+	.balign 32
+	BCCTR_FLUSH
+	nops	7
+	.endr
+
+	blr
+#else
+#define FLUSH_COUNT_CACHE
+#endif /* CONFIG_PPC_BOOK3S_64 */
+
 /*
  * This routine switches between two different tasks.  The process
  * state of one is saved on its kernel stack.  Then the state
@@ -499,6 +576,8 @@ _GLOBAL(_switch)
 	mfcr	r23
 	std	r23,_CCR(r1)
 	std	r1,KSP(r3)	/* Set old stack pointer */
+
+	FLUSH_COUNT_CACHE
 
 #ifdef CONFIG_SMP
 	/* We need a sync somewhere here to make sure that if the
@@ -582,6 +661,7 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_1T_SEGMENT)
 	 * actually hit this code path.
 	 */
 
+	isync
 	slbie	r6
 	slbie	r6		/* Workaround POWER5 < DD2.1 issue */
 	slbmte	r7,r0
@@ -1073,7 +1153,7 @@ _GLOBAL(enter_rtas)
 	
 	mtspr	SPRN_SRR0,r5
 	mtspr	SPRN_SRR1,r6
-	rfid
+	RFI_TO_KERNEL
 	b	.	/* prevent speculative execution */
 
 rtas_return_loc:
@@ -1098,7 +1178,7 @@ rtas_return_loc:
 
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	rfid
+	RFI_TO_KERNEL
 	b	.	/* prevent speculative execution */
 
 	.align	3
@@ -1169,7 +1249,7 @@ _GLOBAL(enter_prom)
 	LOAD_REG_IMMEDIATE(r12, MSR_SF | MSR_ISF | MSR_LE)
 	andc	r11,r11,r12
 	mtsrr1	r11
-	rfid
+	RFI_TO_KERNEL
 #endif /* CONFIG_PPC_BOOK3E */
 
 1:	/* Return from OF */

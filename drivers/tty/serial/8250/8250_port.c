@@ -83,8 +83,7 @@ static const struct serial8250_config uart_config[] = {
 		.name		= "16550A",
 		.fifo_size	= 16,
 		.tx_loadsz	= 16,
-		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_10 |
-				  UART_FCR_CLEAR_RCVR | UART_FCR_CLEAR_XMIT,
+		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_10,
 		.rxtrig_bytes	= {1, 4, 8, 14},
 		.flags		= UART_CAP_FIFO,
 	},
@@ -1820,7 +1819,8 @@ int serial8250_handle_irq(struct uart_port *port, unsigned int iir)
 			status = serial8250_rx_chars(up, status);
 	}
 	serial8250_modem_status(up);
-	if ((!up->dma || up->dma->tx_err) && (status & UART_LSR_THRE))
+	if ((!up->dma || up->dma->tx_err) && (status & UART_LSR_THRE) &&
+		(up->ier & UART_IER_THRI))
 		serial8250_tx_chars(up);
 
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -2198,6 +2198,10 @@ int serial8250_do_startup(struct uart_port *port)
 			port->handle_irq = serial8250_tx_threshold_handle_irq;
 		}
 	}
+
+	/* Check if we need to have shared IRQs */
+	if (port->irq && (up->port.flags & UPF_SHARE_IRQ))
+		up->port.irqflags |= IRQF_SHARED;
 
 	if (port->irq) {
 		unsigned char iir1;

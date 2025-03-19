@@ -442,6 +442,7 @@ static int pppoe_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (pskb_trim_rcsum(skb, len))
 		goto drop;
 
+	ph = pppoe_hdr(skb);
 	pn = pppoe_pernet(dev_net(dev));
 
 	/* Note that get_item does a sock_hold(), so sk_pppox(po)
@@ -620,6 +621,10 @@ static int pppoe_connect(struct socket *sock, struct sockaddr *uservaddr,
 	lock_sock(sk);
 
 	error = -EINVAL;
+
+	if (sockaddr_len != sizeof(struct sockaddr_pppox))
+		goto end;
+
 	if (sp->sa_protocol != PX_PROTO_OE)
 		goto end;
 
@@ -1129,6 +1134,9 @@ static const struct proto_ops pppoe_ops = {
 	.recvmsg	= pppoe_recvmsg,
 	.mmap		= sock_no_mmap,
 	.ioctl		= pppox_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= pppox_compat_ioctl,
+#endif
 };
 
 static const struct pppox_proto pppoe_proto = {

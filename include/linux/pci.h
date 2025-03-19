@@ -320,6 +320,8 @@ struct pci_dev {
 	unsigned int	hotplug_user_indicators:1; /* SlotCtl indicators
 						      controlled exclusively by
 						      user sysfs */
+	unsigned int	clear_retrain_link:1;	/* Need to clear Retrain Link
+						   bit manually */
 	unsigned int	d3_delay;	/* D3->D0 transition time in ms */
 	unsigned int	d3cold_delay;	/* D3cold->D0 transition time in ms */
 
@@ -1190,6 +1192,8 @@ int pci_register_io_range(phys_addr_t addr, resource_size_t size);
 unsigned long pci_address_to_pio(phys_addr_t addr);
 phys_addr_t pci_pio_to_address(unsigned long pio);
 int pci_remap_iospace(const struct resource *res, phys_addr_t phys_addr);
+int devm_pci_remap_iospace(struct device *dev, const struct resource *res,
+			   phys_addr_t phys_addr);
 void pci_unmap_iospace(struct resource *res);
 
 static inline pci_bus_addr_t pci_bus_address(struct pci_dev *pdev, int bar)
@@ -1348,9 +1352,9 @@ static inline int pci_alloc_irq_vectors(struct pci_dev *dev,
 		unsigned int min_vecs, unsigned int max_vecs,
 		unsigned int flags)
 {
-	if (min_vecs > 1)
-		return -EINVAL;
-	return 1;
+	if ((flags & PCI_IRQ_LEGACY) && min_vecs == 1 && dev->irq)
+		return 1;
+	return -ENOSPC;
 }
 static inline void pci_free_irq_vectors(struct pci_dev *dev)
 {
@@ -2148,5 +2152,17 @@ static inline bool pci_ari_enabled(struct pci_bus *bus)
 
 /* provide the legacy pci_dma_* API */
 #include <linux/pci-dma-compat.h>
+
+#define pci_printk(level, pdev, fmt, arg...) \
+	dev_printk(level, &(pdev)->dev, fmt, ##arg)
+
+#define pci_emerg(pdev, fmt, arg...)	dev_emerg(&(pdev)->dev, fmt, ##arg)
+#define pci_alert(pdev, fmt, arg...)	dev_alert(&(pdev)->dev, fmt, ##arg)
+#define pci_crit(pdev, fmt, arg...)	dev_crit(&(pdev)->dev, fmt, ##arg)
+#define pci_err(pdev, fmt, arg...)	dev_err(&(pdev)->dev, fmt, ##arg)
+#define pci_warn(pdev, fmt, arg...)	dev_warn(&(pdev)->dev, fmt, ##arg)
+#define pci_notice(pdev, fmt, arg...)	dev_notice(&(pdev)->dev, fmt, ##arg)
+#define pci_info(pdev, fmt, arg...)	dev_info(&(pdev)->dev, fmt, ##arg)
+#define pci_dbg(pdev, fmt, arg...)	dev_dbg(&(pdev)->dev, fmt, ##arg)
 
 #endif /* LINUX_PCI_H */

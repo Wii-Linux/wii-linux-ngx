@@ -406,11 +406,11 @@ static void iwl_mvm_set_tx_cmd_crypto(struct iwl_mvm *mvm,
 {
 	struct ieee80211_key_conf *keyconf = info->control.hw_key;
 	u8 *crypto_hdr = skb_frag->data + hdrlen;
+	enum iwl_tx_cmd_sec_ctrl type = TX_CMD_SEC_CCM;
 	u64 pn;
 
 	switch (keyconf->cipher) {
 	case WLAN_CIPHER_SUITE_CCMP:
-	case WLAN_CIPHER_SUITE_CCMP_256:
 		iwl_mvm_set_tx_cmd_ccmp(info, tx_cmd);
 		iwl_mvm_set_tx_cmd_pn(info, crypto_hdr);
 		break;
@@ -434,13 +434,16 @@ static void iwl_mvm_set_tx_cmd_crypto(struct iwl_mvm *mvm,
 		break;
 	case WLAN_CIPHER_SUITE_GCMP:
 	case WLAN_CIPHER_SUITE_GCMP_256:
+		type = TX_CMD_SEC_GCMP;
+		/* Fall through */
+	case WLAN_CIPHER_SUITE_CCMP_256:
 		/* TODO: Taking the key from the table might introduce a race
 		 * when PTK rekeying is done, having an old packets with a PN
 		 * based on the old key but the message encrypted with a new
 		 * one.
 		 * Need to handle this.
 		 */
-		tx_cmd->sec_ctl |= TX_CMD_SEC_GCMP | TX_CMD_SEC_KEY_FROM_TABLE;
+		tx_cmd->sec_ctl |= type | TX_CMD_SEC_KEY_FROM_TABLE;
 		tx_cmd->key[0] = keyconf->hw_key_idx;
 		iwl_mvm_set_tx_cmd_pn(info, crypto_hdr);
 		break;
@@ -547,6 +550,9 @@ int iwl_mvm_tx_skb_non_sta(struct iwl_mvm *mvm, struct sk_buff *skb)
 		IEEE80211_SKB_CB(skb)->hw_queue = mvm->aux_queue;
 
 	memcpy(&info, skb->cb, sizeof(info));
+
+	if (WARN_ON_ONCE(skb->len > IEEE80211_MAX_DATA_LEN + hdrlen))
+		return -1;
 
 	if (WARN_ON_ONCE(info.flags & IEEE80211_TX_CTL_AMPDU))
 		return -1;
@@ -1296,6 +1302,14 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 		default:
 			break;
 		}
+
+		/*
+		 * If we are freeing multiple frames, mark all the frames
+		 * but the first one as acked, since they were acknowledged
+		 * before
+		 * */
+		if (skb_freed > 1)
+			info->flags |= IEEE80211_TX_STAT_ACK;
 
 		iwl_mvm_tx_status_check_trigger(mvm, status);
 
