@@ -255,7 +255,6 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 		if (!dma_declare_coherent_memory(&op->dev, coherent_mem_addr,
 						 coherent_mem_addr,
 						 coherent_mem_size,
-						 DMA_MEMORY_MAP |
 						 DMA_MEMORY_EXCLUSIVE)) {
 			dev_err(&op->dev, "error declaring %u bytes of"
 				" coherent memory at 0x%p\n",

@@ -1398,9 +1398,6 @@ static void di_do_request(struct request_queue *q)
 		blk_start_request(req);
 		error = -EIO;
 
-		if (req->cmd_type != REQ_TYPE_FS)
-			goto done;
-
 		/* it doesn't make sense to write to this device */
 		if (unlikely(rq_data_dir(req) == WRITE)) {
 			pr_err("write attempted\n");
