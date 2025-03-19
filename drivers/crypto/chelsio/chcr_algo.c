@@ -384,7 +384,8 @@ static inline int is_hmac(struct crypto_tfm *tfm)
 
 static void write_phys_cpl(struct cpl_rx_phys_dsgl *phys_cpl,
 			   struct scatterlist *sg,
-			   struct phys_sge_parm *sg_param)
+			   struct phys_sge_parm *sg_param,
+			   int pci_chan_id)
 {
 	struct phys_sge_pairs *to;
 	unsigned int len = 0, left_size = sg_param->obsize;
@@ -402,6 +403,7 @@ static void write_phys_cpl(struct cpl_rx_phys_dsgl *phys_cpl,
 	phys_cpl->rss_hdr_int.opcode = CPL_RX_PHYS_ADDR;
 	phys_cpl->rss_hdr_int.qid = htons(sg_param->qid);
 	phys_cpl->rss_hdr_int.hash_val = 0;
+	phys_cpl->rss_hdr_int.channel = pci_chan_id;
 	to = (struct phys_sge_pairs *)((unsigned char *)phys_cpl +
 				       sizeof(struct cpl_rx_phys_dsgl));
 	for (i = 0; nents && left_size; to++) {
@@ -418,7 +420,8 @@ static void write_phys_cpl(struct cpl_rx_phys_dsgl *phys_cpl,
 static inline int map_writesg_phys_cpl(struct device *dev,
 					struct cpl_rx_phys_dsgl *phys_cpl,
 					struct scatterlist *sg,
-					struct phys_sge_parm *sg_param)
+					struct phys_sge_parm *sg_param,
+					int pci_chan_id)
 {
 	if (!sg || !sg_param->nents)
 		return -EINVAL;
@@ -428,7 +431,7 @@ static inline int map_writesg_phys_cpl(struct device *dev,
 		pr_err("CHCR : DMA mapping failed\n");
 		return -EINVAL;
 	}
-	write_phys_cpl(phys_cpl, sg, sg_param);
+	write_phys_cpl(phys_cpl, sg, sg_param, pci_chan_id);
 	return 0;
 }
 
@@ -608,7 +611,7 @@ static inline void create_wreq(struct chcr_context *ctx,
 				is_iv ? iv_loc : IV_NOP, !!lcb,
 				ctx->tx_qidx);
 
-	chcr_req->ulptx.cmd_dest = FILL_ULPTX_CMD_DEST(ctx->dev->tx_channel_id,
+	chcr_req->ulptx.cmd_dest = FILL_ULPTX_CMD_DEST(ctx->tx_chan_id,
 						       qid);
 	chcr_req->ulptx.len = htonl((DIV_ROUND_UP((calc_tx_flits_ofld(skb) * 8),
 					16) - ((sizeof(chcr_req->wreq)) >> 4)));
@@ -698,7 +701,8 @@ static struct sk_buff *create_cipher_wr(struct cipher_wr_param *wrparam)
 	sg_param.obsize =  wrparam->bytes;
 	sg_param.qid = wrparam->qid;
 	error = map_writesg_phys_cpl(&u_ctx->lldi.pdev->dev, phys_cpl,
-				       reqctx->dst, &sg_param);
+				       reqctx->dst, &sg_param,
+				       ctx->pci_chan_id);
 	if (error)
 		goto map_fail1;
 
@@ -1228,16 +1232,23 @@ static int chcr_device_init(struct chcr_context *ctx)
 				    adap->vres.ncrypto_fc);
 		rxq_perchan = u_ctx->lldi.nrxq / u_ctx->lldi.nchan;
 		txq_perchan = ntxq / u_ctx->lldi.nchan;
-		rxq_idx = ctx->dev->tx_channel_id * rxq_perchan;
-		rxq_idx += id % rxq_perchan;
-		txq_idx = ctx->dev->tx_channel_id * txq_perchan;
-		txq_idx += id % txq_perchan;
 		spin_lock(&ctx->dev->lock_chcr_dev);
-		ctx->rx_qidx = rxq_idx;
-		ctx->tx_qidx = txq_idx;
+		ctx->tx_chan_id = ctx->dev->tx_channel_id;
 		ctx->dev->tx_channel_id = !ctx->dev->tx_channel_id;
 		ctx->dev->rx_channel_id = 0;
 		spin_unlock(&ctx->dev->lock_chcr_dev);
+		rxq_idx = ctx->tx_chan_id * rxq_perchan;
+		rxq_idx += id % rxq_perchan;
+		txq_idx = ctx->tx_chan_id * txq_perchan;
+		txq_idx += id % txq_perchan;
+		ctx->rx_qidx = rxq_idx;
+		ctx->tx_qidx = txq_idx;
+		/* Channel Id used by SGE to forward packet to Host.
+		 * Same value should be used in cpl_fw6_pld RSS_CH field
+		 * by FW. Driver programs PCI channel ID to be used in fw
+		 * at the time of queue allocation with value "pi->tx_chan"
+		 */
+		ctx->pci_chan_id = txq_idx / txq_perchan;
 	}
 out:
 	return err;
@@ -2066,7 +2077,8 @@ static struct sk_buff *create_authenc_wr(struct aead_request *req,
 	sg_param.obsize = req->cryptlen + (op_type ? -authsize : authsize);
 	sg_param.qid = qid;
 	error = map_writesg_phys_cpl(&u_ctx->lldi.pdev->dev, phys_cpl,
-					reqctx->dst, &sg_param);
+					reqctx->dst, &sg_param,
+					ctx->pci_chan_id);
 	if (error)
 		goto dstmap_fail;
 
@@ -2189,7 +2201,7 @@ static void fill_sec_cpl_for_aead(struct cpl_tx_sec_pdu *sec_cpl,
 	unsigned int mac_mode = CHCR_SCMD_AUTH_MODE_CBCMAC;
 	unsigned int c_id = chcrctx->dev->rx_channel_id;
 	unsigned int ccm_xtra;
-	unsigned char tag_offset = 0, auth_offset = 0;
+	unsigned int tag_offset = 0, auth_offset = 0;
 	unsigned int assoclen;
 
 	if (get_aead_subtype(tfm) == CRYPTO_ALG_SUB_TYPE_AEAD_RFC4309)
@@ -2389,7 +2401,7 @@ static struct sk_buff *create_aead_ccm_wr(struct aead_request *req,
 	sg_param.obsize = req->cryptlen + (op_type ? -authsize : authsize);
 	sg_param.qid = qid;
 	error = map_writesg_phys_cpl(&u_ctx->lldi.pdev->dev, phys_cpl,
-				 reqctx->dst, &sg_param);
+				 reqctx->dst, &sg_param, ctx->pci_chan_id);
 	if (error)
 		goto dstmap_fail;
 
@@ -2545,7 +2557,8 @@ static struct sk_buff *create_gcm_wr(struct aead_request *req,
 	sg_param.obsize = req->cryptlen + (op_type ? -authsize : authsize);
 	sg_param.qid = qid;
 	error = map_writesg_phys_cpl(&u_ctx->lldi.pdev->dev, phys_cpl,
-					  reqctx->dst, &sg_param);
+					  reqctx->dst, &sg_param,
+					  ctx->pci_chan_id);
 	if (error)
 		goto dstmap_fail;
 
@@ -2680,9 +2693,6 @@ static int chcr_gcm_setauthsize(struct crypto_aead *tfm, unsigned int authsize)
 		aeadctx->mayverify = VERIFY_SW;
 		break;
 	default:
-
-		  crypto_tfm_set_flags((struct crypto_tfm *) tfm,
-			CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
 	}
 	return crypto_aead_setauthsize(aeadctx->sw_cipher, authsize);
@@ -2707,8 +2717,6 @@ static int chcr_4106_4309_setauthsize(struct crypto_aead *tfm,
 		aeadctx->mayverify = VERIFY_HW;
 		break;
 	default:
-		crypto_tfm_set_flags((struct crypto_tfm *)tfm,
-				     CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
 	}
 	return crypto_aead_setauthsize(aeadctx->sw_cipher, authsize);
@@ -2749,8 +2757,6 @@ static int chcr_ccm_setauthsize(struct crypto_aead *tfm,
 		aeadctx->mayverify = VERIFY_HW;
 		break;
 	default:
-		crypto_tfm_set_flags((struct crypto_tfm *)tfm,
-				     CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
 	}
 	return crypto_aead_setauthsize(aeadctx->sw_cipher, authsize);
@@ -2777,8 +2783,7 @@ static int chcr_ccm_common_setkey(struct crypto_aead *aead,
 		ck_size = CHCR_KEYCTX_CIPHER_KEY_SIZE_256;
 		mk_size = CHCR_KEYCTX_MAC_KEY_SIZE_256;
 	} else {
-		crypto_tfm_set_flags((struct crypto_tfm *)aead,
-				     CRYPTO_TFM_RES_BAD_KEY_LEN);
+		crypto_aead_set_flags(aead, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		aeadctx->enckey_len = 0;
 		return	-EINVAL;
 	}
@@ -2818,8 +2823,7 @@ static int chcr_aead_rfc4309_setkey(struct crypto_aead *aead, const u8 *key,
 	int error;
 
 	if (keylen < 3) {
-		crypto_tfm_set_flags((struct crypto_tfm *)aead,
-				     CRYPTO_TFM_RES_BAD_KEY_LEN);
+		crypto_aead_set_flags(aead, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		aeadctx->enckey_len = 0;
 		return	-EINVAL;
 	}
@@ -2870,8 +2874,7 @@ static int chcr_gcm_setkey(struct crypto_aead *aead, const u8 *key,
 	} else if (keylen == AES_KEYSIZE_256) {
 		ck_size = CHCR_KEYCTX_CIPHER_KEY_SIZE_256;
 	} else {
-		crypto_tfm_set_flags((struct crypto_tfm *)aead,
-				     CRYPTO_TFM_RES_BAD_KEY_LEN);
+		crypto_aead_set_flags(aead, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		pr_err("GCM: Invalid key length %d\n", keylen);
 		ret = -EINVAL;
 		goto out;

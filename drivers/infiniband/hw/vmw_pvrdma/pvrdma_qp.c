@@ -406,6 +406,13 @@ static void pvrdma_free_qp(struct pvrdma_qp *qp)
 	atomic_dec(&qp->refcnt);
 	wait_event(qp->wait, !atomic_read(&qp->refcnt));
 
+	if (!qp->is_kernel) {
+		if (qp->rumem)
+			ib_umem_release(qp->rumem);
+		if (qp->sumem)
+			ib_umem_release(qp->sumem);
+	}
+
 	pvrdma_page_dir_cleanup(dev, &qp->pdir);
 
 	kfree(qp);
@@ -687,6 +694,12 @@ int pvrdma_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		if (wr->opcode == IB_WR_SEND_WITH_IMM ||
 		    wr->opcode == IB_WR_RDMA_WRITE_WITH_IMM)
 			wqe_hdr->ex.imm_data = wr->ex.imm_data;
+
+		if (unlikely(wqe_hdr->opcode == PVRDMA_WR_ERROR)) {
+			*bad_wr = wr;
+			ret = -EINVAL;
+			goto out;
+		}
 
 		switch (qp->ibqp.qp_type) {
 		case IB_QPT_GSI:

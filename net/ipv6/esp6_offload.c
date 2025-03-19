@@ -60,7 +60,8 @@ static struct sk_buff **esp6_gro_receive(struct sk_buff **head,
 	int nhoff;
 	int err;
 
-	skb_pull(skb, offset);
+	if (!pskb_pull(skb, offset))
+		return NULL;
 
 	if ((err = xfrm_parse_spi(skb, IPPROTO_ESP, &spi, &seq)) != 0)
 		goto out;
@@ -120,9 +121,16 @@ static void esp6_gso_encap(struct xfrm_state *x, struct sk_buff *skb)
 	struct ip_esp_hdr *esph;
 	struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	int proto = iph->nexthdr;
+	u8 proto = iph->nexthdr;
 
 	skb_push(skb, -skb_network_offset(skb));
+
+	if (x->outer_mode->encap == XFRM_MODE_TRANSPORT) {
+		__be16 frag;
+
+		ipv6_skip_exthdr(skb, sizeof(struct ipv6hdr), &proto, &frag);
+	}
+
 	esph = ip_esp_hdr(skb);
 	*skb_mac_header(skb) = IPPROTO_ESP;
 
@@ -146,6 +154,9 @@ static struct sk_buff *esp6_gso_segment(struct sk_buff *skb,
 	struct xfrm_offload *xo = xfrm_offload(skb);
 
 	if (!xo)
+		goto out;
+
+	if (!(skb_shinfo(skb)->gso_type & SKB_GSO_ESP))
 		goto out;
 
 	seq = xo->seq.low;

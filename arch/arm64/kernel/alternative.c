@@ -32,6 +32,8 @@
 #define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
 #define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
 
+int alternatives_applied;
+
 struct alt_region {
 	struct alt_instr *begin;
 	struct alt_instr *end;
@@ -42,20 +44,8 @@ struct alt_region {
  */
 static bool branch_insn_requires_update(struct alt_instr *alt, unsigned long pc)
 {
-	unsigned long replptr;
-
-	if (kernel_text_address(pc))
-		return 1;
-
-	replptr = (unsigned long)ALT_REPL_PTR(alt);
-	if (pc >= replptr && pc <= (replptr + alt->alt_len))
-		return 0;
-
-	/*
-	 * Branching into *another* alternate sequence is doomed, and
-	 * we're not even trying to fix it up.
-	 */
-	BUG();
+	unsigned long replptr = (unsigned long)ALT_REPL_PTR(alt);
+	return !(pc >= replptr && pc <= (replptr + alt->alt_len));
 }
 
 #define align_down(x, a)	((unsigned long)(x) & ~(((unsigned long)(a)) - 1))
@@ -105,32 +95,53 @@ static u32 get_alt_insn(struct alt_instr *alt, __le32 *insnptr, __le32 *altinsnp
 	return insn;
 }
 
+static void patch_alternative(struct alt_instr *alt,
+			      __le32 *origptr, __le32 *updptr, int nr_inst)
+{
+	__le32 *replptr;
+	int i;
+
+	replptr = ALT_REPL_PTR(alt);
+	for (i = 0; i < nr_inst; i++) {
+		u32 insn;
+
+		insn = get_alt_insn(alt, origptr + i, replptr + i);
+		updptr[i] = cpu_to_le32(insn);
+	}
+}
+
 static void __apply_alternatives(void *alt_region, bool use_linear_alias)
 {
 	struct alt_instr *alt;
 	struct alt_region *region = alt_region;
-	__le32 *origptr, *replptr, *updptr;
+	__le32 *origptr, *updptr;
+	alternative_cb_t alt_cb;
 
 	for (alt = region->begin; alt < region->end; alt++) {
-		u32 insn;
-		int i, nr_inst;
+		int nr_inst;
 
-		if (!cpus_have_cap(alt->cpufeature))
+		/* Use ARM64_CB_PATCH as an unconditional patch */
+		if (alt->cpufeature < ARM64_CB_PATCH &&
+		    !cpus_have_cap(alt->cpufeature))
 			continue;
 
-		BUG_ON(alt->alt_len != alt->orig_len);
+		if (alt->cpufeature == ARM64_CB_PATCH)
+			BUG_ON(alt->alt_len != 0);
+		else
+			BUG_ON(alt->alt_len != alt->orig_len);
 
 		pr_info_once("patching kernel code\n");
 
 		origptr = ALT_ORIG_PTR(alt);
-		replptr = ALT_REPL_PTR(alt);
 		updptr = use_linear_alias ? lm_alias(origptr) : origptr;
-		nr_inst = alt->alt_len / sizeof(insn);
+		nr_inst = alt->orig_len / AARCH64_INSN_SIZE;
 
-		for (i = 0; i < nr_inst; i++) {
-			insn = get_alt_insn(alt, origptr + i, replptr + i);
-			updptr[i] = cpu_to_le32(insn);
-		}
+		if (alt->cpufeature < ARM64_CB_PATCH)
+			alt_cb = patch_alternative;
+		else
+			alt_cb  = ALT_REPL_PTR(alt);
+
+		alt_cb(alt, origptr, updptr, nr_inst);
 
 		flush_icache_range((uintptr_t)origptr,
 				   (uintptr_t)(origptr + nr_inst));
@@ -143,7 +154,6 @@ static void __apply_alternatives(void *alt_region, bool use_linear_alias)
  */
 static int __apply_alternatives_multi_stop(void *unused)
 {
-	static int patched = 0;
 	struct alt_region region = {
 		.begin	= (struct alt_instr *)__alt_instructions,
 		.end	= (struct alt_instr *)__alt_instructions_end,
@@ -151,14 +161,14 @@ static int __apply_alternatives_multi_stop(void *unused)
 
 	/* We always have a CPU 0 at this point (__init) */
 	if (smp_processor_id()) {
-		while (!READ_ONCE(patched))
+		while (!READ_ONCE(alternatives_applied))
 			cpu_relax();
 		isb();
 	} else {
-		BUG_ON(patched);
+		BUG_ON(alternatives_applied);
 		__apply_alternatives(&region, true);
 		/* Barriers provided by the cache flushing */
-		WRITE_ONCE(patched, 1);
+		WRITE_ONCE(alternatives_applied, 1);
 	}
 
 	return 0;

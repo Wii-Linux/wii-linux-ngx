@@ -67,10 +67,14 @@ static void ucsi_acpi_notify(acpi_handle handle, u32 event, void *data)
 
 static int ucsi_acpi_probe(struct platform_device *pdev)
 {
+	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
 	struct ucsi_acpi *ua;
 	struct resource *res;
 	acpi_status status;
 	int ret;
+
+	if (adev->dep_unmet)
+		return -EPROBE_DEFER;
 
 	ua = devm_kzalloc(&pdev->dev, sizeof(*ua), GFP_KERNEL);
 	if (!ua)
@@ -81,6 +85,11 @@ static int ucsi_acpi_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "missing memory resource\n");
 		return -ENODEV;
 	}
+
+	/* This will make sure we can use ioremap_nocache() */
+	status = acpi_release_memory(ACPI_HANDLE(&pdev->dev), res, 1);
+	if (ACPI_FAILURE(status))
+		return -ENOMEM;
 
 	/*
 	 * NOTE: The memory region for the data structures is used also in an

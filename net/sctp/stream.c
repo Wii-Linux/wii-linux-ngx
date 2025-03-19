@@ -224,6 +224,9 @@ int sctp_send_reset_assoc(struct sctp_association *asoc)
 	if (asoc->strreset_outstanding)
 		return -EINPROGRESS;
 
+	if (!sctp_outq_is_empty(&asoc->outqueue))
+		return -EAGAIN;
+
 	chunk = sctp_make_strreset_tsnreq(asoc);
 	if (!chunk)
 		return -ENOMEM;
@@ -307,7 +310,6 @@ int sctp_send_add_streams(struct sctp_association *asoc,
 		goto out;
 	}
 
-	stream->incnt = incnt;
 	stream->outcnt = outcnt;
 
 	asoc->strreset_outstanding = !!out + !!in;
@@ -358,9 +360,9 @@ struct sctp_chunk *sctp_process_strreset_outreq(
 	struct sctp_strreset_outreq *outreq = param.v;
 	struct sctp_stream *stream = &asoc->stream;
 	__u32 result = SCTP_STRRESET_DENIED;
-	__u16 i, nums, flags = 0;
 	__be16 *str_p = NULL;
 	__u32 request_seq;
+	__u16 i, nums;
 
 	request_seq = ntohl(outreq->request_seq);
 
@@ -388,6 +390,15 @@ struct sctp_chunk *sctp_process_strreset_outreq(
 	if (!(asoc->strreset_enable & SCTP_ENABLE_RESET_STREAM_REQ))
 		goto out;
 
+	nums = (ntohs(param.p->length) - sizeof(*outreq)) / sizeof(__u16);
+	str_p = outreq->list_of_streams;
+	for (i = 0; i < nums; i++) {
+		if (ntohs(str_p[i]) >= stream->incnt) {
+			result = SCTP_STRRESET_ERR_WRONG_SSN;
+			goto out;
+		}
+	}
+
 	if (asoc->strreset_chunk) {
 		if (!sctp_chunk_lookup_strreset_param(
 				asoc, outreq->response_seq,
@@ -410,32 +421,19 @@ struct sctp_chunk *sctp_process_strreset_outreq(
 			sctp_chunk_put(asoc->strreset_chunk);
 			asoc->strreset_chunk = NULL;
 		}
-
-		flags = SCTP_STREAM_RESET_INCOMING_SSN;
 	}
 
-	nums = (ntohs(param.p->length) - sizeof(*outreq)) / 2;
-	if (nums) {
-		str_p = outreq->list_of_streams;
-		for (i = 0; i < nums; i++) {
-			if (ntohs(str_p[i]) >= stream->incnt) {
-				result = SCTP_STRRESET_ERR_WRONG_SSN;
-				goto out;
-			}
-		}
-
+	if (nums)
 		for (i = 0; i < nums; i++)
 			stream->in[ntohs(str_p[i])].ssn = 0;
-	} else {
+	else
 		for (i = 0; i < stream->incnt; i++)
 			stream->in[i].ssn = 0;
-	}
 
 	result = SCTP_STRRESET_PERFORMED;
 
 	*evp = sctp_ulpevent_make_stream_reset_event(asoc,
-		flags | SCTP_STREAM_RESET_OUTGOING_SSN, nums, str_p,
-		GFP_ATOMIC);
+		SCTP_STREAM_RESET_INCOMING_SSN, nums, str_p, GFP_ATOMIC);
 
 out:
 	sctp_update_strreset_result(asoc, result);
@@ -505,9 +503,6 @@ struct sctp_chunk *sctp_process_strreset_inreq(
 
 	result = SCTP_STRRESET_PERFORMED;
 
-	*evp = sctp_ulpevent_make_stream_reset_event(asoc,
-		SCTP_STREAM_RESET_INCOMING_SSN, nums, str_p, GFP_ATOMIC);
-
 out:
 	sctp_update_strreset_result(asoc, result);
 err:
@@ -538,12 +533,18 @@ struct sctp_chunk *sctp_process_strreset_tsnreq(
 		i = asoc->strreset_inseq - request_seq - 1;
 		result = asoc->strreset_result[i];
 		if (result == SCTP_STRRESET_PERFORMED) {
-			next_tsn = asoc->next_tsn;
+			next_tsn = asoc->ctsn_ack_point + 1;
 			init_tsn =
 				sctp_tsnmap_get_ctsn(&asoc->peer.tsn_map) + 1;
 		}
 		goto err;
 	}
+
+	if (!sctp_outq_is_empty(&asoc->outqueue)) {
+		result = SCTP_STRRESET_IN_PROGRESS;
+		goto err;
+	}
+
 	asoc->strreset_inseq++;
 
 	if (!(asoc->strreset_enable & SCTP_ENABLE_RESET_ASSOC_REQ))
@@ -554,9 +555,10 @@ struct sctp_chunk *sctp_process_strreset_tsnreq(
 		goto out;
 	}
 
-	/* G3: The same processing as though a SACK chunk with no gap report
-	 *     and a cumulative TSN ACK of the Sender's Next TSN minus 1 were
-	 *     received MUST be performed.
+	/* G4: The same processing as though a FWD-TSN chunk (as defined in
+	 *     [RFC3758]) with all streams affected and a new cumulative TSN
+	 *     ACK of the Receiver's Next TSN minus 1 were received MUST be
+	 *     performed.
 	 */
 	max_tsn_seen = sctp_tsnmap_get_max_tsn_seen(&asoc->peer.tsn_map);
 	sctp_ulpq_reasm_flushtsn(&asoc->ulpq, max_tsn_seen);
@@ -571,10 +573,9 @@ struct sctp_chunk *sctp_process_strreset_tsnreq(
 	sctp_tsnmap_init(&asoc->peer.tsn_map, SCTP_TSN_MAP_INITIAL,
 			 init_tsn, GFP_ATOMIC);
 
-	/* G4: The same processing as though a FWD-TSN chunk (as defined in
-	 *     [RFC3758]) with all streams affected and a new cumulative TSN
-	 *     ACK of the Receiver's Next TSN minus 1 were received MUST be
-	 *     performed.
+	/* G3: The same processing as though a SACK chunk with no gap report
+	 *     and a cumulative TSN ACK of the Sender's Next TSN minus 1 were
+	 *     received MUST be performed.
 	 */
 	sctp_outq_free(&asoc->outqueue);
 
@@ -634,6 +635,16 @@ struct sctp_chunk *sctp_process_strreset_addstrm_out(
 	if (!(asoc->strreset_enable & SCTP_ENABLE_CHANGE_ASSOC_REQ))
 		goto out;
 
+	in = ntohs(addstrm->number_of_streams);
+	incnt = stream->incnt + in;
+	if (!in || incnt > SCTP_MAX_STREAM)
+		goto out;
+
+	streamin = krealloc(stream->in, incnt * sizeof(*streamin),
+			    GFP_ATOMIC);
+	if (!streamin)
+		goto out;
+
 	if (asoc->strreset_chunk) {
 		if (!sctp_chunk_lookup_strreset_param(
 			asoc, 0, SCTP_PARAM_RESET_ADD_IN_STREAMS)) {
@@ -656,16 +667,6 @@ struct sctp_chunk *sctp_process_strreset_addstrm_out(
 			asoc->strreset_chunk = NULL;
 		}
 	}
-
-	in = ntohs(addstrm->number_of_streams);
-	incnt = stream->incnt + in;
-	if (!in || incnt > SCTP_MAX_STREAM)
-		goto out;
-
-	streamin = krealloc(stream->in, incnt * sizeof(*streamin),
-			    GFP_ATOMIC);
-	if (!streamin)
-		goto out;
 
 	memset(streamin + stream->incnt, 0, in * sizeof(*streamin));
 	stream->in = streamin;
@@ -742,9 +743,6 @@ struct sctp_chunk *sctp_process_strreset_addstrm_in(
 
 	result = SCTP_STRRESET_PERFORMED;
 
-	*evp = sctp_ulpevent_make_stream_change_event(asoc,
-		0, 0, ntohs(addstrm->number_of_streams), GFP_ATOMIC);
-
 out:
 	sctp_update_strreset_result(asoc, result);
 err:
@@ -797,9 +795,9 @@ struct sctp_chunk *sctp_process_strreset_resp(
 				for (i = 0; i < stream->outcnt; i++)
 					stream->out[i].ssn = 0;
 			}
-
-			flags = SCTP_STREAM_RESET_OUTGOING_SSN;
 		}
+
+		flags |= SCTP_STREAM_RESET_OUTGOING_SSN;
 
 		for (i = 0; i < stream->outcnt; i++)
 			stream->out[i].state = SCTP_STREAM_OPEN;
@@ -818,6 +816,8 @@ struct sctp_chunk *sctp_process_strreset_resp(
 		str_p = inreq->list_of_streams;
 		nums = (ntohs(inreq->param_hdr.length) - sizeof(*inreq)) / 2;
 
+		flags |= SCTP_STREAM_RESET_INCOMING_SSN;
+
 		*evp = sctp_ulpevent_make_stream_reset_event(asoc, flags,
 			nums, str_p, GFP_ATOMIC);
 	} else if (req->type == SCTP_PARAM_RESET_TSN_REQUEST) {
@@ -835,6 +835,7 @@ struct sctp_chunk *sctp_process_strreset_resp(
 		if (result == SCTP_STRRESET_PERFORMED) {
 			__u32 mtsn = sctp_tsnmap_get_max_tsn_seen(
 						&asoc->peer.tsn_map);
+			LIST_HEAD(temp);
 
 			sctp_ulpq_reasm_flushtsn(&asoc->ulpq, mtsn);
 			sctp_ulpq_abort_pd(&asoc->ulpq, GFP_ATOMIC);
@@ -843,7 +844,13 @@ struct sctp_chunk *sctp_process_strreset_resp(
 					 SCTP_TSN_MAP_INITIAL,
 					 stsn, GFP_ATOMIC);
 
+			/* Clean up sacked and abandoned queues only. As the
+			 * out_chunk_list may not be empty, splice it to temp,
+			 * then get it back after sctp_outq_free is done.
+			 */
+			list_splice_init(&asoc->outqueue.out_chunk_list, &temp);
 			sctp_outq_free(&asoc->outqueue);
+			list_splice_init(&temp, &asoc->outqueue.out_chunk_list);
 
 			asoc->next_tsn = rtsn;
 			asoc->ctsn_ack_point = asoc->next_tsn - 1;

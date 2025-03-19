@@ -12,9 +12,11 @@
 #include <asm/segment.h>
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
+#include <asm/asm.h>
 
 #include <xen/interface/xen.h>
 
+#include <linux/init.h>
 #include <linux/linkage.h>
 
 .macro xen_pv_trap name
@@ -23,13 +25,13 @@ ENTRY(xen_\name)
 	pop %r11
 	jmp  \name
 END(xen_\name)
+_ASM_NOKPROBE(xen_\name)
 .endm
 
 xen_pv_trap divide_error
 xen_pv_trap debug
 xen_pv_trap xendebug
 xen_pv_trap int3
-xen_pv_trap xenint3
 xen_pv_trap xennmi
 xen_pv_trap overflow
 xen_pv_trap bounds
@@ -53,6 +55,19 @@ xen_pv_trap simd_coprocessor_error
 xen_pv_trap entry_INT80_compat
 #endif
 xen_pv_trap hypervisor_callback
+
+	__INIT
+ENTRY(xen_early_idt_handler_array)
+	i = 0
+	.rept NUM_EXCEPTION_VECTORS
+	pop %rcx
+	pop %r11
+	jmp early_idt_handler_array + i*EARLY_IDT_HANDLER_SIZE
+	i = i + 1
+	.fill xen_early_idt_handler_array + i*XEN_EARLY_IDT_HANDLER_SIZE - ., 1, 0xcc
+	.endr
+END(xen_early_idt_handler_array)
+	__FINIT
 
 hypercall_iret = hypercall_page + __HYPERVISOR_iret * 32
 /*

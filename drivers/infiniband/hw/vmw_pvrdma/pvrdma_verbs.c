@@ -444,6 +444,7 @@ struct ib_pd *pvrdma_alloc_pd(struct ib_device *ibdev,
 	union pvrdma_cmd_resp rsp;
 	struct pvrdma_cmd_create_pd *cmd = &req.create_pd;
 	struct pvrdma_cmd_create_pd_resp *resp = &rsp.create_pd_resp;
+	struct pvrdma_alloc_pd_resp pd_resp = {0};
 	int ret;
 	void *ptr;
 
@@ -472,9 +473,10 @@ struct ib_pd *pvrdma_alloc_pd(struct ib_device *ibdev,
 	pd->privileged = !context;
 	pd->pd_handle = resp->pd_handle;
 	pd->pdn = resp->pd_handle;
+	pd_resp.pdn = resp->pd_handle;
 
 	if (context) {
-		if (ib_copy_to_udata(udata, &pd->pdn, sizeof(__u32))) {
+		if (ib_copy_to_udata(udata, &pd_resp, sizeof(pd_resp))) {
 			dev_warn(&dev->pdev->dev,
 				 "failed to copy back protection domain\n");
 			pvrdma_dealloc_pd(&pd->ibpd);
@@ -548,7 +550,7 @@ struct ib_ah *pvrdma_create_ah(struct ib_pd *pd, struct rdma_ah_attr *ah_attr,
 	if (!atomic_add_unless(&dev->num_ahs, 1, dev->dsr->caps.max_ah))
 		return ERR_PTR(-ENOMEM);
 
-	ah = kzalloc(sizeof(*ah), GFP_KERNEL);
+	ah = kzalloc(sizeof(*ah), GFP_ATOMIC);
 	if (!ah) {
 		atomic_dec(&dev->num_ahs);
 		return ERR_PTR(-ENOMEM);

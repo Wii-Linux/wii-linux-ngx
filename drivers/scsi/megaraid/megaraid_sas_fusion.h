@@ -100,15 +100,10 @@ enum MR_RAID_FLAGS_IO_SUB_TYPE {
 
 #define MEGASAS_FP_CMD_LEN	16
 #define MEGASAS_FUSION_IN_RESET 0
+#define MEGASAS_FUSION_OCR_NOT_POSSIBLE 1
 #define THRESHOLD_REPLY_COUNT 50
 #define RAID_1_PEER_CMDS 2
 #define JBOD_MAPS_COUNT	2
-
-enum MR_FUSION_ADAPTER_TYPE {
-	THUNDERBOLT_SERIES = 0,
-	INVADER_SERIES = 1,
-	VENTURA_SERIES = 2,
-};
 
 /*
  * Raid Context structure which describes MegaRAID specific IO Parameters
@@ -1319,7 +1314,6 @@ struct fusion_context {
 	struct LD_LOAD_BALANCE_INFO *load_balance_info;
 	u32 load_balance_info_pages;
 	LD_SPAN_INFO log_to_span[MAX_LOGICAL_DRIVES_EXT];
-	u8 adapter_type;
 	struct LD_STREAM_DETECT **stream_detect_by_ld;
 };
 

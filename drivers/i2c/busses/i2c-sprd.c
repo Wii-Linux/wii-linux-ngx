@@ -71,6 +71,8 @@
 
 /* timeout (ms) for pm runtime autosuspend */
 #define SPRD_I2C_PM_TIMEOUT	1000
+/* timeout (ms) for transfer message */
+#define I2C_XFER_TIMEOUT	1000
 
 /* SPRD i2c data structure */
 struct sprd_i2c {
@@ -86,6 +88,7 @@ struct sprd_i2c {
 	u32 count;
 	int irq;
 	int err;
+	bool is_suspended;
 };
 
 static void sprd_i2c_set_count(struct sprd_i2c *i2c_dev, u32 count)
@@ -243,6 +246,7 @@ static int sprd_i2c_handle_msg(struct i2c_adapter *i2c_adap,
 			       struct i2c_msg *msg, bool is_last_msg)
 {
 	struct sprd_i2c *i2c_dev = i2c_adap->algo_data;
+	unsigned long time_left;
 
 	i2c_dev->msg = msg;
 	i2c_dev->buf = msg->buf;
@@ -272,7 +276,10 @@ static int sprd_i2c_handle_msg(struct i2c_adapter *i2c_adap,
 
 	sprd_i2c_opt_start(i2c_dev);
 
-	wait_for_completion(&i2c_dev->complete);
+	time_left = wait_for_completion_timeout(&i2c_dev->complete,
+				msecs_to_jiffies(I2C_XFER_TIMEOUT));
+	if (!time_left)
+		return -ETIMEDOUT;
 
 	return i2c_dev->err;
 }
@@ -282,6 +289,9 @@ static int sprd_i2c_master_xfer(struct i2c_adapter *i2c_adap,
 {
 	struct sprd_i2c *i2c_dev = i2c_adap->algo_data;
 	int im, ret;
+
+	if (i2c_dev->is_suspended)
+		return -EBUSY;
 
 	ret = pm_runtime_get_sync(i2c_dev->dev);
 	if (ret < 0)
@@ -364,13 +374,12 @@ static irqreturn_t sprd_i2c_isr_thread(int irq, void *dev_id)
 	struct sprd_i2c *i2c_dev = dev_id;
 	struct i2c_msg *msg = i2c_dev->msg;
 	bool ack = !(readl(i2c_dev->base + I2C_STATUS) & I2C_RX_ACK);
-	u32 i2c_count = readl(i2c_dev->base + I2C_COUNT);
 	u32 i2c_tran;
 
 	if (msg->flags & I2C_M_RD)
 		i2c_tran = i2c_dev->count >= I2C_FIFO_FULL_THLD;
 	else
-		i2c_tran = i2c_count;
+		i2c_tran = i2c_dev->count;
 
 	/*
 	 * If we got one ACK from slave when writing data, and we did not
@@ -408,14 +417,13 @@ static irqreturn_t sprd_i2c_isr(int irq, void *dev_id)
 {
 	struct sprd_i2c *i2c_dev = dev_id;
 	struct i2c_msg *msg = i2c_dev->msg;
-	u32 i2c_count = readl(i2c_dev->base + I2C_COUNT);
 	bool ack = !(readl(i2c_dev->base + I2C_STATUS) & I2C_RX_ACK);
 	u32 i2c_tran;
 
 	if (msg->flags & I2C_M_RD)
 		i2c_tran = i2c_dev->count >= I2C_FIFO_FULL_THLD;
 	else
-		i2c_tran = i2c_count;
+		i2c_tran = i2c_dev->count;
 
 	/*
 	 * If we did not get one ACK from slave when writing data, then we
@@ -586,11 +594,23 @@ static int sprd_i2c_remove(struct platform_device *pdev)
 
 static int __maybe_unused sprd_i2c_suspend_noirq(struct device *pdev)
 {
+	struct sprd_i2c *i2c_dev = dev_get_drvdata(pdev);
+
+	i2c_lock_adapter(&i2c_dev->adap);
+	i2c_dev->is_suspended = true;
+	i2c_unlock_adapter(&i2c_dev->adap);
+
 	return pm_runtime_force_suspend(pdev);
 }
 
 static int __maybe_unused sprd_i2c_resume_noirq(struct device *pdev)
 {
+	struct sprd_i2c *i2c_dev = dev_get_drvdata(pdev);
+
+	i2c_lock_adapter(&i2c_dev->adap);
+	i2c_dev->is_suspended = false;
+	i2c_unlock_adapter(&i2c_dev->adap);
+
 	return pm_runtime_force_resume(pdev);
 }
 

@@ -29,61 +29,15 @@
 
 #include <nvif/notify.h>
 
+#include <drm/drm_crtc.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_dp_helper.h>
 #include "nouveau_crtc.h"
+#include "nouveau_encoder.h"
 
 struct nvkm_i2c_port;
 
-struct nouveau_connector {
-	struct drm_connector base;
-	enum dcb_connector_type type;
-	u8 index;
-	u8 *dcb;
-
-	struct nvif_notify hpd;
-
-	struct drm_dp_aux aux;
-
-	int dithering_mode;
-	int scaling_mode;
-
-	struct nouveau_encoder *detected_encoder;
-	struct edid *edid;
-	struct drm_display_mode *native_mode;
-};
-
-static inline struct nouveau_connector *nouveau_connector(
-						struct drm_connector *con)
-{
-	return container_of(con, struct nouveau_connector, base);
-}
-
-static inline struct nouveau_connector *
-nouveau_crtc_connector_get(struct nouveau_crtc *nv_crtc)
-{
-	struct drm_device *dev = nv_crtc->base.dev;
-	struct drm_connector *connector;
-	struct drm_crtc *crtc = to_drm_crtc(nv_crtc);
-
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		if (connector->encoder && connector->encoder->crtc == crtc)
-			return nouveau_connector(connector);
-	}
-
-	return NULL;
-}
-
-struct drm_connector *
-nouveau_connector_create(struct drm_device *, int index);
-
-extern int nouveau_tv_disable;
-extern int nouveau_ignorelid;
-extern int nouveau_duallink;
-extern int nouveau_hdmimhz;
-
-#include <drm/drm_crtc.h>
 #define nouveau_conn_atom(p)                                                   \
 	container_of((p), struct nouveau_conn_atom, state)
 
@@ -137,6 +91,80 @@ struct nouveau_conn_atom {
 		u8 mask;
 	} set;
 };
+
+struct nouveau_connector {
+	struct drm_connector base;
+	enum dcb_connector_type type;
+	u8 index;
+	u8 *dcb;
+
+	struct nvif_notify hpd;
+
+	struct drm_dp_aux aux;
+
+	int dithering_mode;
+	int scaling_mode;
+
+	struct nouveau_encoder *detected_encoder;
+	struct edid *edid;
+	struct drm_display_mode *native_mode;
+};
+
+static inline struct nouveau_connector *nouveau_connector(
+						struct drm_connector *con)
+{
+	return container_of(con, struct nouveau_connector, base);
+}
+
+static inline bool
+nouveau_connector_is_mst(struct drm_connector *connector)
+{
+	const struct nouveau_encoder *nv_encoder;
+	const struct drm_encoder *encoder;
+
+	if (connector->connector_type != DRM_MODE_CONNECTOR_DisplayPort)
+		return false;
+
+	nv_encoder = find_encoder(connector, DCB_OUTPUT_ANY);
+	if (!nv_encoder)
+		return false;
+
+	encoder = &nv_encoder->base.base;
+	return encoder->encoder_type == DRM_MODE_ENCODER_DPMST;
+}
+
+#define nouveau_for_each_non_mst_connector_iter(connector, iter) \
+	drm_for_each_connector_iter(connector, iter) \
+		for_each_if(!nouveau_connector_is_mst(connector))
+
+static inline struct nouveau_connector *
+nouveau_crtc_connector_get(struct nouveau_crtc *nv_crtc)
+{
+	struct drm_device *dev = nv_crtc->base.dev;
+	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
+	struct nouveau_connector *nv_connector = NULL;
+	struct drm_crtc *crtc = to_drm_crtc(nv_crtc);
+
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	nouveau_for_each_non_mst_connector_iter(connector, &conn_iter) {
+		if (connector->encoder && connector->encoder->crtc == crtc) {
+			nv_connector = nouveau_connector(connector);
+			break;
+		}
+	}
+	drm_connector_list_iter_end(&conn_iter);
+
+	return nv_connector;
+}
+
+struct drm_connector *
+nouveau_connector_create(struct drm_device *, int index);
+
+extern int nouveau_tv_disable;
+extern int nouveau_ignorelid;
+extern int nouveau_duallink;
+extern int nouveau_hdmimhz;
 
 void nouveau_conn_attach_properties(struct drm_connector *);
 void nouveau_conn_reset(struct drm_connector *);

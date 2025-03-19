@@ -57,12 +57,15 @@ int qxl_mode_dumb_create(struct drm_file *file_priv,
 	surf.height = args->height;
 	surf.stride = pitch;
 	surf.format = format;
+	surf.data = 0;
+
 	r = qxl_gem_object_create_with_handle(qdev, file_priv,
 					      QXL_GEM_DOMAIN_VRAM,
 					      args->size, &surf, &qobj,
 					      &handle);
 	if (r)
 		return r;
+	qobj->is_dumb = true;
 	args->pitch = pitch;
 	args->handle = handle;
 	return 0;

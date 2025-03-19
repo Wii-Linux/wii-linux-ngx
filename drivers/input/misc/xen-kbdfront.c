@@ -229,7 +229,7 @@ static int xenkbd_probe(struct xenbus_device *dev,
 		}
 	}
 
-	touch = xenbus_read_unsigned(dev->nodename,
+	touch = xenbus_read_unsigned(dev->otherend,
 				     XENKBD_FIELD_FEAT_MTOUCH, 0);
 	if (touch) {
 		ret = xenbus_write(XBT_NIL, dev->nodename,
@@ -304,13 +304,13 @@ static int xenkbd_probe(struct xenbus_device *dev,
 		if (!mtouch)
 			goto error_nomem;
 
-		num_cont = xenbus_read_unsigned(info->xbdev->nodename,
+		num_cont = xenbus_read_unsigned(info->xbdev->otherend,
 						XENKBD_FIELD_MT_NUM_CONTACTS,
 						1);
-		width = xenbus_read_unsigned(info->xbdev->nodename,
+		width = xenbus_read_unsigned(info->xbdev->otherend,
 					     XENKBD_FIELD_MT_WIDTH,
 					     XENFB_WIDTH);
-		height = xenbus_read_unsigned(info->xbdev->nodename,
+		height = xenbus_read_unsigned(info->xbdev->otherend,
 					      XENKBD_FIELD_MT_HEIGHT,
 					      XENFB_HEIGHT);
 
@@ -326,8 +326,6 @@ static int xenkbd_probe(struct xenbus_device *dev,
 				     0, width, 0, 0);
 		input_set_abs_params(mtouch, ABS_MT_POSITION_Y,
 				     0, height, 0, 0);
-		input_set_abs_params(mtouch, ABS_MT_PRESSURE,
-				     0, 255, 0, 0);
 
 		ret = input_mt_init_slots(mtouch, num_cont, INPUT_MT_DIRECT);
 		if (ret) {

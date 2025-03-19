@@ -84,7 +84,7 @@ static void hnae_unmap_buffer(struct hnae_ring *ring, struct hnae_desc_cb *cb)
 	if (cb->type == DESC_TYPE_SKB)
 		dma_unmap_single(ring_to_dev(ring), cb->dma, cb->length,
 				 ring_to_dma_dir(ring));
-	else
+	else if (cb->length)
 		dma_unmap_page(ring_to_dev(ring), cb->dma, cb->length,
 			       ring_to_dma_dir(ring));
 }
@@ -150,7 +150,6 @@ out_buffer_fail:
 /* free desc along with its attached buffer */
 static void hnae_free_desc(struct hnae_ring *ring)
 {
-	hnae_free_buffers(ring);
 	dma_unmap_single(ring_to_dev(ring), ring->desc_dma_addr,
 			 ring->desc_num * sizeof(ring->desc[0]),
 			 ring_to_dma_dir(ring));
@@ -183,6 +182,9 @@ static int hnae_alloc_desc(struct hnae_ring *ring)
 /* fini ring, also free the buffer for the ring */
 static void hnae_fini_ring(struct hnae_ring *ring)
 {
+	if (is_rx_ring(ring))
+		hnae_free_buffers(ring);
+
 	hnae_free_desc(ring);
 	kfree(ring->desc_cb);
 	ring->desc_cb = NULL;
@@ -422,8 +424,10 @@ int hnae_ae_register(struct hnae_ae_dev *hdev, struct module *owner)
 	hdev->cls_dev.release = hnae_release;
 	(void)dev_set_name(&hdev->cls_dev, "hnae%d", hdev->id);
 	ret = device_register(&hdev->cls_dev);
-	if (ret)
+	if (ret) {
+		put_device(&hdev->cls_dev);
 		return ret;
+	}
 
 	__module_get(THIS_MODULE);
 

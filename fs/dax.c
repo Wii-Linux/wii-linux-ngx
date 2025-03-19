@@ -630,8 +630,8 @@ static void dax_mapping_entry_mkclean(struct address_space *mapping,
 			set_pmd_at(vma->vm_mm, address, pmdp, pmd);
 			mmu_notifier_invalidate_range(vma->vm_mm, start, end);
 unlock_pmd:
-			spin_unlock(ptl);
 #endif
+			spin_unlock(ptl);
 		} else {
 			if (pfn != pte_pfn(*ptep))
 				goto unlock_pte;
@@ -1056,6 +1056,9 @@ dax_iomap_rw(struct kiocb *iocb, struct iov_iter *iter,
 	} else {
 		lockdep_assert_held(&inode->i_rwsem);
 	}
+
+	if (iocb->ki_flags & IOCB_NOWAIT)
+		flags |= IOMAP_NOWAIT;
 
 	while (iov_iter_count(iter)) {
 		ret = iomap_apply(inode, pos, iov_iter_count(iter), flags, ops,

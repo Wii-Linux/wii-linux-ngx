@@ -10,6 +10,7 @@
 #include <stdarg.h>
 
 #include <linux/compiler.h>
+#include <linux/log2.h>
 #include <linux/types.h>
 #include <linux/printk.h>
 #include <linux/bug.h>
@@ -22,6 +23,10 @@
 #define PAGE_SIZE getpagesize()
 #define PAGE_MASK (~(PAGE_SIZE-1))
 #define PAGE_ALIGN(x) ((x + PAGE_SIZE - 1) & PAGE_MASK)
+
+/* generic data direction definitions */
+#define READ                    0
+#define WRITE                   1
 
 typedef unsigned long long phys_addr_t;
 typedef unsigned long long dma_addr_t;

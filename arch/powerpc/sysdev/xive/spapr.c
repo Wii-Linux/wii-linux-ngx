@@ -293,19 +293,27 @@ static int xive_spapr_populate_irq_data(u32 hw_irq, struct xive_irq_data *data)
 	data->esb_shift = esb_shift;
 	data->trig_page = trig_page;
 
+	data->hw_irq = hw_irq;
+
 	/*
 	 * No chip-id for the sPAPR backend. This has an impact how we
 	 * pick a target. See xive_pick_irq_target().
 	 */
 	data->src_chip = XIVE_INVALID_CHIP_ID;
 
+	/*
+	 * When the H_INT_ESB flag is set, the H_INT_ESB hcall should
+	 * be used for interrupt management. Skip the remapping of the
+	 * ESB pages which are not available.
+	 */
+	if (data->flags & XIVE_IRQ_FLAG_H_INT_ESB)
+		return 0;
+
 	data->eoi_mmio = ioremap(data->eoi_page, 1u << data->esb_shift);
 	if (!data->eoi_mmio) {
 		pr_err("Failed to map EOI page for irq 0x%x\n", hw_irq);
 		return -ENOMEM;
 	}
-
-	data->hw_irq = hw_irq;
 
 	/* Full function page supports trigger */
 	if (flags & XIVE_SRC_TRIGGER) {
@@ -315,6 +323,7 @@ static int xive_spapr_populate_irq_data(u32 hw_irq, struct xive_irq_data *data)
 
 	data->trig_mmio = ioremap(data->trig_page, 1u << data->esb_shift);
 	if (!data->trig_mmio) {
+		iounmap(data->eoi_mmio);
 		pr_err("Failed to map trigger page for irq 0x%x\n", hw_irq);
 		return -ENOMEM;
 	}
@@ -356,7 +365,8 @@ static int xive_spapr_configure_queue(u32 target, struct xive_q *q, u8 prio,
 
 	rc = plpar_int_get_queue_info(0, target, prio, &esn_page, &esn_size);
 	if (rc) {
-		pr_err("Error %lld getting queue info prio %d\n", rc, prio);
+		pr_err("Error %lld getting queue info CPU %d prio %d\n", rc,
+		       target, prio);
 		rc = -EIO;
 		goto fail;
 	}
@@ -370,7 +380,8 @@ static int xive_spapr_configure_queue(u32 target, struct xive_q *q, u8 prio,
 	/* Configure and enable the queue in HW */
 	rc = plpar_int_set_queue_config(flags, target, prio, qpage_phys, order);
 	if (rc) {
-		pr_err("Error %lld setting queue for prio %d\n", rc, prio);
+		pr_err("Error %lld setting queue for CPU %d prio %d\n", rc,
+		       target, prio);
 		rc = -EIO;
 	} else {
 		q->qpage = qpage;
@@ -389,8 +400,8 @@ static int xive_spapr_setup_queue(unsigned int cpu, struct xive_cpu *xc,
 	if (IS_ERR(qpage))
 		return PTR_ERR(qpage);
 
-	return xive_spapr_configure_queue(cpu, q, prio, qpage,
-					  xive_queue_shift);
+	return xive_spapr_configure_queue(get_hard_smp_processor_id(cpu),
+					  q, prio, qpage, xive_queue_shift);
 }
 
 static void xive_spapr_cleanup_queue(unsigned int cpu, struct xive_cpu *xc,
@@ -399,10 +410,12 @@ static void xive_spapr_cleanup_queue(unsigned int cpu, struct xive_cpu *xc,
 	struct xive_q *q = &xc->queue[prio];
 	unsigned int alloc_order;
 	long rc;
+	int hw_cpu = get_hard_smp_processor_id(cpu);
 
-	rc = plpar_int_set_queue_config(0, cpu, prio, 0, 0);
+	rc = plpar_int_set_queue_config(0, hw_cpu, prio, 0, 0);
 	if (rc)
-		pr_err("Error %ld setting queue for prio %d\n", rc, prio);
+		pr_err("Error %ld setting queue for CPU %d prio %d\n", rc,
+		       hw_cpu, prio);
 
 	alloc_order = xive_alloc_order(xive_queue_shift);
 	free_pages((unsigned long)q->qpage, alloc_order);
@@ -431,11 +444,11 @@ static int xive_spapr_get_ipi(unsigned int cpu, struct xive_cpu *xc)
 
 static void xive_spapr_put_ipi(unsigned int cpu, struct xive_cpu *xc)
 {
-	if (!xc->hw_ipi)
+	if (xc->hw_ipi == XIVE_BAD_IRQ)
 		return;
 
 	xive_irq_bitmap_free(xc->hw_ipi);
-	xc->hw_ipi = 0;
+	xc->hw_ipi = XIVE_BAD_IRQ;
 }
 #endif /* CONFIG_SMP */
 
@@ -557,6 +570,7 @@ static bool xive_get_max_prio(u8 *max_prio)
 	}
 
 	reg = of_get_property(rootdn, "ibm,plat-res-int-priorities", &len);
+	of_node_put(rootdn);
 	if (!reg) {
 		pr_err("Failed to read 'ibm,plat-res-int-priorities' property\n");
 		return false;

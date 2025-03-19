@@ -495,8 +495,10 @@ static int s3c24xx_eint_init(struct samsung_pinctrl_drv_data *d)
 		return -ENODEV;
 
 	eint_data = devm_kzalloc(dev, sizeof(*eint_data), GFP_KERNEL);
-	if (!eint_data)
+	if (!eint_data) {
+		of_node_put(eint_np);
 		return -ENOMEM;
+	}
 
 	eint_data->drvdata = d;
 
@@ -508,12 +510,14 @@ static int s3c24xx_eint_init(struct samsung_pinctrl_drv_data *d)
 		irq = irq_of_parse_and_map(eint_np, i);
 		if (!irq) {
 			dev_err(dev, "failed to get wakeup EINT IRQ %d\n", i);
+			of_node_put(eint_np);
 			return -ENXIO;
 		}
 
 		eint_data->parents[i] = irq;
 		irq_set_chained_handler_and_data(irq, handlers[i], eint_data);
 	}
+	of_node_put(eint_np);
 
 	bank = d->pin_banks;
 	for (i = 0; i < d->nr_banks; ++i, ++bank) {
@@ -570,12 +574,17 @@ static const struct samsung_pin_bank_data s3c2412_pin_banks[] __initconst = {
 	PIN_BANK_2BIT(13, 0x080, "gpj"),
 };
 
-const struct samsung_pin_ctrl s3c2412_pin_ctrl[] __initconst = {
+static const struct samsung_pin_ctrl s3c2412_pin_ctrl[] __initconst = {
 	{
 		.pin_banks	= s3c2412_pin_banks,
 		.nr_banks	= ARRAY_SIZE(s3c2412_pin_banks),
 		.eint_wkup_init = s3c24xx_eint_init,
 	},
+};
+
+const struct samsung_pinctrl_of_match_data s3c2412_of_data __initconst = {
+	.ctrl		= s3c2412_pin_ctrl,
+	.num_ctrl	= ARRAY_SIZE(s3c2412_pin_ctrl),
 };
 
 static const struct samsung_pin_bank_data s3c2416_pin_banks[] __initconst = {
@@ -592,12 +601,17 @@ static const struct samsung_pin_bank_data s3c2416_pin_banks[] __initconst = {
 	PIN_BANK_2BIT(2, 0x100, "gpm"),
 };
 
-const struct samsung_pin_ctrl s3c2416_pin_ctrl[] __initconst = {
+static const struct samsung_pin_ctrl s3c2416_pin_ctrl[] __initconst = {
 	{
 		.pin_banks	= s3c2416_pin_banks,
 		.nr_banks	= ARRAY_SIZE(s3c2416_pin_banks),
 		.eint_wkup_init = s3c24xx_eint_init,
 	},
+};
+
+const struct samsung_pinctrl_of_match_data s3c2416_of_data __initconst = {
+	.ctrl		= s3c2416_pin_ctrl,
+	.num_ctrl	= ARRAY_SIZE(s3c2416_pin_ctrl),
 };
 
 static const struct samsung_pin_bank_data s3c2440_pin_banks[] __initconst = {
@@ -612,12 +626,17 @@ static const struct samsung_pin_bank_data s3c2440_pin_banks[] __initconst = {
 	PIN_BANK_2BIT(13, 0x0d0, "gpj"),
 };
 
-const struct samsung_pin_ctrl s3c2440_pin_ctrl[] __initconst = {
+static const struct samsung_pin_ctrl s3c2440_pin_ctrl[] __initconst = {
 	{
 		.pin_banks	= s3c2440_pin_banks,
 		.nr_banks	= ARRAY_SIZE(s3c2440_pin_banks),
 		.eint_wkup_init = s3c24xx_eint_init,
 	},
+};
+
+const struct samsung_pinctrl_of_match_data s3c2440_of_data __initconst = {
+	.ctrl		= s3c2440_pin_ctrl,
+	.num_ctrl	= ARRAY_SIZE(s3c2440_pin_ctrl),
 };
 
 static const struct samsung_pin_bank_data s3c2450_pin_banks[] __initconst = {
@@ -635,10 +654,15 @@ static const struct samsung_pin_bank_data s3c2450_pin_banks[] __initconst = {
 	PIN_BANK_2BIT(2, 0x100, "gpm"),
 };
 
-const struct samsung_pin_ctrl s3c2450_pin_ctrl[] __initconst = {
+static const struct samsung_pin_ctrl s3c2450_pin_ctrl[] __initconst = {
 	{
 		.pin_banks	= s3c2450_pin_banks,
 		.nr_banks	= ARRAY_SIZE(s3c2450_pin_banks),
 		.eint_wkup_init = s3c24xx_eint_init,
 	},
+};
+
+const struct samsung_pinctrl_of_match_data s3c2450_of_data __initconst = {
+	.ctrl		= s3c2450_pin_ctrl,
+	.num_ctrl	= ARRAY_SIZE(s3c2450_pin_ctrl),
 };

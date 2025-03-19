@@ -98,12 +98,12 @@ static void rds_ib_cache_xfer_to_ready(struct rds_ib_refill_cache *cache)
 	}
 }
 
-static int rds_ib_recv_alloc_cache(struct rds_ib_refill_cache *cache)
+static int rds_ib_recv_alloc_cache(struct rds_ib_refill_cache *cache, gfp_t gfp)
 {
 	struct rds_ib_cache_head *head;
 	int cpu;
 
-	cache->percpu = alloc_percpu(struct rds_ib_cache_head);
+	cache->percpu = alloc_percpu_gfp(struct rds_ib_cache_head, gfp);
 	if (!cache->percpu)
 	       return -ENOMEM;
 
@@ -118,13 +118,13 @@ static int rds_ib_recv_alloc_cache(struct rds_ib_refill_cache *cache)
 	return 0;
 }
 
-int rds_ib_recv_alloc_caches(struct rds_ib_connection *ic)
+int rds_ib_recv_alloc_caches(struct rds_ib_connection *ic, gfp_t gfp)
 {
 	int ret;
 
-	ret = rds_ib_recv_alloc_cache(&ic->i_cache_incs);
+	ret = rds_ib_recv_alloc_cache(&ic->i_cache_incs, gfp);
 	if (!ret) {
-		ret = rds_ib_recv_alloc_cache(&ic->i_cache_frags);
+		ret = rds_ib_recv_alloc_cache(&ic->i_cache_frags, gfp);
 		if (ret)
 			free_percpu(ic->i_cache_incs.percpu);
 	}
@@ -362,6 +362,7 @@ static int acquire_refill(struct rds_connection *conn)
 static void release_refill(struct rds_connection *conn)
 {
 	clear_bit(RDS_RECV_REFILL, &conn->c_flags);
+	smp_mb__after_atomic();
 
 	/* We don't use wait_on_bit()/wake_up_bit() because our waking is in a
 	 * hot path and finding waiters is very rare.  We don't want to walk

@@ -112,6 +112,8 @@ static void mall_destroy(struct tcf_proto *tp)
 	if (!head)
 		return;
 
+	tcf_unbind_filter(tp, &head->res);
+
 	if (tc_should_offload(dev, head->flags))
 		mall_destroy_hw_filter(tp, head, (unsigned long) head);
 
@@ -123,12 +125,18 @@ static void mall_destroy(struct tcf_proto *tp)
 
 static void *mall_get(struct tcf_proto *tp, u32 handle)
 {
+	struct cls_mall_head *head = rtnl_dereference(tp->root);
+
+	if (head && head->handle == handle)
+		return head;
+
 	return NULL;
 }
 
 static const struct nla_policy mall_policy[TCA_MATCHALL_MAX + 1] = {
 	[TCA_MATCHALL_UNSPEC]		= { .type = NLA_UNSPEC },
 	[TCA_MATCHALL_CLASSID]		= { .type = NLA_U32 },
+	[TCA_MATCHALL_FLAGS]		= { .type = NLA_U32 },
 };
 
 static int mall_set_parms(struct net *net, struct tcf_proto *tp,

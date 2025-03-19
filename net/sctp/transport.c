@@ -151,7 +151,7 @@ void sctp_transport_free(struct sctp_transport *transport)
 
 	/* Delete the ICMP proto unreachable timer if it's active. */
 	if (del_timer(&transport->proto_unreach_timer))
-		sctp_association_put(transport->asoc);
+		sctp_transport_put(transport);
 
 	sctp_transport_put(transport);
 }
@@ -210,8 +210,7 @@ void sctp_transport_reset_hb_timer(struct sctp_transport *transport)
 
 	/* When a data chunk is sent, reset the heartbeat interval.  */
 	expires = jiffies + sctp_transport_timeout(transport);
-	if (time_before(transport->hb_timer.expires, expires) &&
-	    !mod_timer(&transport->hb_timer,
+	if (!mod_timer(&transport->hb_timer,
 		       expires + prandom_u32_max(transport->rto)))
 		sctp_transport_hold(transport);
 }
@@ -254,6 +253,7 @@ void sctp_transport_pmtu(struct sctp_transport *transport, struct sock *sk)
 bool sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
 {
 	struct dst_entry *dst = sctp_transport_dst_check(t);
+	struct sock *sk = t->asoc->base.sk;
 	bool change = true;
 
 	if (unlikely(pmtu < SCTP_DEFAULT_MINSEGMENT)) {
@@ -265,12 +265,19 @@ bool sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
 	pmtu = SCTP_TRUNC4(pmtu);
 
 	if (dst) {
-		dst->ops->update_pmtu(dst, t->asoc->base.sk, NULL, pmtu);
+		struct sctp_pf *pf = sctp_get_pf_specific(dst->ops->family);
+		union sctp_addr addr;
+
+		pf->af->from_sk(&addr, sk);
+		pf->to_sk_daddr(&t->ipaddr, sk);
+		dst->ops->update_pmtu(dst, sk, NULL, pmtu, true);
+		pf->to_sk_daddr(&addr, sk);
+
 		dst = sctp_transport_dst_check(t);
 	}
 
 	if (!dst) {
-		t->af_specific->get_dst(t, &t->saddr, &t->fl, t->asoc->base.sk);
+		t->af_specific->get_dst(t, &t->saddr, &t->fl, sk);
 		dst = t->dst;
 	}
 
@@ -637,7 +644,7 @@ unsigned long sctp_transport_timeout(struct sctp_transport *trans)
 	    trans->state != SCTP_PF)
 		timeout += trans->hbinterval;
 
-	return timeout;
+	return max_t(unsigned long, timeout, HZ / 5);
 }
 
 /* Reset transport variables to their initial values */
