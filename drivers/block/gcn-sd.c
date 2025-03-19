@@ -1606,7 +1606,7 @@ static int sd_init_blk_dev(struct sd_host *host)
 	blk_queue_dma_alignment(queue, EXI_DMA_ALIGN);
 	blk_queue_max_segments(queue, 1);
 	blk_queue_max_hw_sectors(queue, 8);
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, queue);
+	blk_queue_flag_set(QUEUE_FLAG_NONROT, queue);
 	queue->queuedata = host;
 	host->queue = queue;
 

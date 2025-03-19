@@ -11,15 +11,11 @@
 #define __I2C_GPIO_COMMON_H
 
 #include <linux/i2c.h>
-#include <linux/i2c-gpio.h>
+#include <linux/platform_data/i2c-gpio.h>
 #include <linux/module.h>
 #include <linux/device.h>
 
-int i2c_gpio_adapter_probe(struct i2c_adapter *adap,
-			   struct i2c_gpio_platform_data *pdata,
-			   struct device *parent, int id,
-			   struct module *owner);
-int i2c_gpio_adapter_remove(struct i2c_adapter *adap,
-			    struct i2c_gpio_platform_data *pdata);
+int i2c_gpio_adapter_probe(struct i2c_adapter *adap, struct device *dev);
+int i2c_gpio_adapter_remove(struct i2c_adapter *adap);
 
 #endif /* __I2C_GPIO_COMMON_H */

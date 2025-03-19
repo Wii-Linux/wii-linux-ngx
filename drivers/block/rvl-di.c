@@ -1249,9 +1249,9 @@ static void di_spin_down_drive(struct di_device *ddev)
 /*
  * Stops the drive's motor, according to a previous schedule.
  */
-static void di_motor_off(unsigned long ddev0)
+static void di_motor_off(struct timer_list *t)
 {
-	struct di_device *ddev = (struct di_device *)ddev0;
+	struct di_device *ddev = from_timer(ddev, t, motor_off_timer);
 	struct di_command *cmd;
 	unsigned long flags;
 
@@ -1281,10 +1281,7 @@ static inline void di_cancel_motor_off(struct di_device *ddev)
  */
 static void di_schedule_motor_off(struct di_device *ddev, unsigned int secs)
 {
-	del_timer(&ddev->motor_off_timer);
-	ddev->motor_off_timer.expires = jiffies + secs*HZ;
-	ddev->motor_off_timer.data = (unsigned long)ddev;
-	add_timer(&ddev->motor_off_timer);
+	mod_timer(&ddev->motor_off_timer, jiffies + secs * HZ);
 }
 
 /*
@@ -1578,9 +1575,7 @@ static int di_init_irq(struct di_device *ddev)
 	unsigned long flags;
 	int retval;
 
-	init_timer(&ddev->motor_off_timer);
-	ddev->motor_off_timer.function =
-		(void (*)(unsigned long))di_motor_off;
+	timer_setup(&ddev->motor_off_timer, di_motor_off, 0);
 
 	ddev->flags = 0;
 	set_bit(__DI_MEDIA_CHANGED, &ddev->flags);

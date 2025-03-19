@@ -249,9 +249,10 @@ void si_setup_polling(struct si_drvdata *drvdata)
 	si_wait_transfer_done(io_base);
 }
 
-void si_timer(unsigned long data)
+void si_timer(struct timer_list *t)
 {
-	struct si_port *port = (struct si_port *)data;
+	struct si_port *port = from_timer(port, t, timer);
+
 	unsigned int index = port->index;
 	void __iomem *io_base = port->drvdata->io_base;
 	unsigned long raw[2];
@@ -369,9 +370,7 @@ int si_open(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
-	init_timer(&port->timer);
-	port->timer.function = si_timer;
-	port->timer.data = (unsigned long)port;
+	timer_setup(&port->timer, si_timer, 0);
 	port->timer.expires = jiffies + SI_REFRESH_TIME;
 	add_timer(&port->timer);
 
