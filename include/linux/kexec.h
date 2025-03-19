@@ -6,12 +6,14 @@
 #define IND_INDIRECTION_BIT 1
 #define IND_DONE_BIT        2
 #define IND_SOURCE_BIT      3
+#define IND_NOALLOC_BIT     4
 
 #define IND_DESTINATION  (1 << IND_DESTINATION_BIT)
 #define IND_INDIRECTION  (1 << IND_INDIRECTION_BIT)
 #define IND_DONE         (1 << IND_DONE_BIT)
 #define IND_SOURCE       (1 << IND_SOURCE_BIT)
-#define IND_FLAGS (IND_DESTINATION | IND_INDIRECTION | IND_DONE | IND_SOURCE)
+#define IND_NOALLOC      (1 << IND_NOALLOC_BIT) /* special case for memory preserving code */
+#define IND_FLAGS (IND_DESTINATION | IND_INDIRECTION | IND_DONE | IND_SOURCE | IND_NOALLOC)
 
 #if !defined(__ASSEMBLY__)
 
@@ -270,6 +272,8 @@ extern int kernel_kexec(void);
 extern struct page *kimage_alloc_control_pages(struct kimage *image,
 						unsigned int order);
 extern void __crash_kexec(struct pt_regs *);
+extern int kimage_add_preserved_region(struct kimage *image, unsigned long to,
+				       unsigned long from, int length);
 extern void crash_kexec(struct pt_regs *);
 int kexec_should_crash(struct task_struct *);
 int kexec_crash_loaded(void);

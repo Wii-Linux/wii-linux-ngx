@@ -68,6 +68,9 @@ void *__dma_nommu_alloc_coherent(struct device *dev, size_t size,
 {
 	void *ret;
 #ifdef CONFIG_NOT_COHERENT_CACHE
+	if (dma_alloc_from_dev_coherent(dev, size, dma_handle, &ret))
+		return ret;
+
 	ret = __dma_alloc_coherent(dev, size, dma_handle, flag);
 	if (ret == NULL)
 		return NULL;
@@ -121,6 +124,8 @@ void __dma_nommu_free_coherent(struct device *dev, size_t size,
 				unsigned long attrs)
 {
 #ifdef CONFIG_NOT_COHERENT_CACHE
+	if (dma_release_from_dev_coherent(dev, get_order(size), vaddr))
+		return;
 	__dma_free_coherent(size, vaddr);
 #else
 	free_pages((unsigned long)vaddr, get_order(size));
