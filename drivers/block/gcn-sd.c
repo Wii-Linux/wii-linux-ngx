@@ -1505,7 +1505,7 @@ static void sd_release(struct gendisk *disk, fmode_t mode)
 /*
  * Checks if media changed.
  */
-static int sd_media_changed(struct gendisk *disk)
+static unsigned int sd_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	struct sd_host *host = disk->private_data;
 	unsigned int last_serial;
@@ -1523,46 +1523,9 @@ static int sd_media_changed(struct gendisk *disk)
 	last_serial = host->card.cid.serial;
 	retval = sd_read_cid(host);
 	if (!retval && last_serial == host->card.cid.serial && last_serial)
-		clear_bit(__SD_MEDIA_CHANGED, &host->flags);
-	else
-		set_bit(__SD_MEDIA_CHANGED, &host->flags);
+		return DISK_EVENT_MEDIA_CHANGE;
 
-	return (host->flags & SD_MEDIA_CHANGED) ? 1 : 0;
-}
-
-/*
- * Checks if media is still valid.
- */
-static int sd_revalidate_disk(struct gendisk *disk)
-{
-	struct sd_host *host = disk->private_data;
-	int retval = 0;
-
-	/* report missing medium for zombies */
-	if (!host) {
-		retval = -ENOMEDIUM;
-		goto out;
-	}
-
-	/* the block layer likes to call us multiple times... */
-	if (!sd_media_changed(host->disk))
-		goto out;
-
-	/* get the card into a known status */
-	retval = sd_welcome_card(host);
-	if (retval < 0 || sd_card_is_bad(host)) {
-		retval = -ENOMEDIUM;
-		goto out;
-	}
-
-	/* inform the block layer about various sizes */
-	blk_queue_logical_block_size(host->queue, 1 << KERNEL_SECTOR_SHIFT);
-	set_capacity(host->disk, host->card.csd.capacity /*<< (host->card.csd.read_blkbits - KERNEL_SECTOR_SHIFT)*/);
-
-	clear_bit(__SD_MEDIA_CHANGED, &host->flags);
-
-out:
-	return retval;
+	return 0;
 }
 
 static int sd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -1578,8 +1541,7 @@ static const struct block_device_operations sd_fops = {
 	.owner = THIS_MODULE,
 	.open = sd_open,
 	.release = sd_release,
-	.revalidate_disk = sd_revalidate_disk,
-	.media_changed = sd_media_changed,
+	.check_events = sd_check_events,
 	.getgeo = sd_getgeo,
 };
 
@@ -1687,7 +1649,7 @@ static int sd_init(struct sd_host *host)
 	spin_lock_init(&host->lock);
 
 	host->refcnt = 0;
-	set_bit(__SD_MEDIA_CHANGED, &host->flags);
+	host->disk->events |= DISK_EVENT_MEDIA_CHANGE;
 
 	host->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	sd_set_clock(host, SD_SPI_CLK);
@@ -1695,8 +1657,7 @@ static int sd_init(struct sd_host *host)
 
 	retval = sd_init_blk_dev(host);
 	if (!retval) {
-		retval = sd_revalidate_disk(host->disk);
-		if (retval < 0 || !mmc_card_present(&host->card)) {
+		if (!mmc_card_present(&host->card)) {
 			retval = -ENODEV;
 			goto err_blk_dev;
 		}
