@@ -3187,6 +3187,8 @@ static int relocate_file_extent_cluster(struct inode *inode,
 			if (!page) {
 				btrfs_delalloc_release_metadata(BTRFS_I(inode),
 							PAGE_SIZE, true);
+				btrfs_delalloc_release_extents(BTRFS_I(inode),
+							PAGE_SIZE);
 				ret = -ENOMEM;
 				goto out;
 			}
@@ -3207,7 +3209,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 				btrfs_delalloc_release_metadata(BTRFS_I(inode),
 							PAGE_SIZE, true);
 				btrfs_delalloc_release_extents(BTRFS_I(inode),
-							       PAGE_SIZE, true);
+							       PAGE_SIZE);
 				ret = -EIO;
 				goto out;
 			}
@@ -3236,7 +3238,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 			btrfs_delalloc_release_metadata(BTRFS_I(inode),
 							 PAGE_SIZE, true);
 			btrfs_delalloc_release_extents(BTRFS_I(inode),
-			                               PAGE_SIZE, true);
+			                               PAGE_SIZE);
 
 			clear_extent_bits(&BTRFS_I(inode)->io_tree,
 					  page_start, page_end,
@@ -3252,8 +3254,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 		put_page(page);
 
 		index++;
-		btrfs_delalloc_release_extents(BTRFS_I(inode), PAGE_SIZE,
-					       false);
+		btrfs_delalloc_release_extents(BTRFS_I(inode), PAGE_SIZE);
 		balance_dirty_pages_ratelimited(inode->i_mapping);
 		btrfs_throttle(fs_info);
 	}
@@ -4289,27 +4290,36 @@ int btrfs_relocate_block_group(struct btrfs_fs_info *fs_info, u64 group_start)
 		mutex_lock(&fs_info->cleaner_mutex);
 		ret = relocate_block_group(rc);
 		mutex_unlock(&fs_info->cleaner_mutex);
-		if (ret < 0) {
+		if (ret < 0)
 			err = ret;
-			goto out;
+
+		/*
+		 * We may have gotten ENOSPC after we already dirtied some
+		 * extents.  If writeout happens while we're relocating a
+		 * different block group we could end up hitting the
+		 * BUG_ON(rc->stage == UPDATE_DATA_PTRS) in
+		 * btrfs_reloc_cow_block.  Make sure we write everything out
+		 * properly so we don't trip over this problem, and then break
+		 * out of the loop if we hit an error.
+		 */
+		if (rc->stage == MOVE_DATA_EXTENTS && rc->found_file_extent) {
+			ret = btrfs_wait_ordered_range(rc->data_inode, 0,
+						       (u64)-1);
+			if (ret)
+				err = ret;
+			invalidate_mapping_pages(rc->data_inode->i_mapping,
+						 0, -1);
+			rc->stage = UPDATE_DATA_PTRS;
 		}
+
+		if (err < 0)
+			goto out;
 
 		if (rc->extents_found == 0)
 			break;
 
 		btrfs_info(fs_info, "found %llu extents", rc->extents_found);
 
-		if (rc->stage == MOVE_DATA_EXTENTS && rc->found_file_extent) {
-			ret = btrfs_wait_ordered_range(rc->data_inode, 0,
-						       (u64)-1);
-			if (ret) {
-				err = ret;
-				goto out;
-			}
-			invalidate_mapping_pages(rc->data_inode->i_mapping,
-						 0, -1);
-			rc->stage = UPDATE_DATA_PTRS;
-		}
 	}
 
 	WARN_ON(rc->block_group->pinned > 0);
@@ -4464,6 +4474,7 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 		fs_root = read_fs_root(fs_info, reloc_root->root_key.offset);
 		if (IS_ERR(fs_root)) {
 			err = PTR_ERR(fs_root);
+			list_add_tail(&reloc_root->root_list, &reloc_roots);
 			goto out_free;
 		}
 

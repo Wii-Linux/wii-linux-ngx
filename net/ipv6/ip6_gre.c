@@ -680,12 +680,13 @@ static int prepare_ip6gre_xmit_ipv6(struct sk_buff *skb,
 				    struct flowi6 *fl6, __u8 *dsfield,
 				    int *encap_limit)
 {
-	struct ipv6hdr *ipv6h = ipv6_hdr(skb);
+	struct ipv6hdr *ipv6h;
 	struct ip6_tnl *t = netdev_priv(dev);
 	__u16 offset;
 
 	offset = ip6_tnl_parse_tlv_enc_lim(skb, skb_network_header(skb));
 	/* ip6_tnl_parse_tlv_enc_lim() might have reallocated skb->head */
+	ipv6h = ipv6_hdr(skb);
 
 	if (offset > 0) {
 		struct ipv6_tlv_tnl_enc_lim *tel;
@@ -987,7 +988,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
 		if (unlikely(!tun_info ||
 			     !(tun_info->mode & IP_TUNNEL_INFO_TX) ||
 			     ip_tunnel_info_af(tun_info) != AF_INET6))
-			return -EINVAL;
+			goto tx_err;
 
 		key = &tun_info->key;
 		memset(&fl6, 0, sizeof(fl6));
@@ -999,9 +1000,9 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
 		dsfield = key->tos;
 		if (!(tun_info->key.tun_flags & TUNNEL_ERSPAN_OPT))
 			goto tx_err;
-		md = ip_tunnel_info_opts(tun_info);
-		if (!md)
+		if (tun_info->options_len < sizeof(*md))
 			goto tx_err;
+		md = ip_tunnel_info_opts(tun_info);
 
 		tun_id = tunnel_id_to_key32(key->tun_id);
 		if (md->version == 1) {
@@ -1059,7 +1060,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
 
 	/* TooBig packet may have updated dst->dev's mtu */
 	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
-		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
+		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu, false);
 
 	err = ip6_tnl_xmit(skb, dev, dsfield, &fl6, encap_limit, &mtu,
 			   NEXTHDR_GRE);
@@ -1485,7 +1486,6 @@ static int ip6gre_tunnel_init_common(struct net_device *dev)
 		dev->mtu -= 8;
 
 	if (tunnel->parms.collect_md) {
-		dev->features |= NETIF_F_NETNS_LOCAL;
 		netif_keep_dst(dev);
 	}
 	ip6gre_tnl_init_features(dev);
@@ -1913,7 +1913,6 @@ static void ip6gre_tap_setup(struct net_device *dev)
 	dev->needs_free_netdev = true;
 	dev->priv_destructor = ip6gre_dev_free;
 
-	dev->features |= NETIF_F_NETNS_LOCAL;
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	netif_keep_dst(dev);
@@ -2134,9 +2133,23 @@ static int ip6gre_fill_info(struct sk_buff *skb, const struct net_device *dev)
 	struct __ip6_tnl_parm *p = &t->parms;
 	__be16 o_flags = p->o_flags;
 
-	if ((p->erspan_ver == 1 || p->erspan_ver == 2) &&
-	    !p->collect_md)
-		o_flags |= TUNNEL_KEY;
+	if (p->erspan_ver == 1 || p->erspan_ver == 2) {
+		if (!p->collect_md)
+			o_flags |= TUNNEL_KEY;
+
+		if (nla_put_u8(skb, IFLA_GRE_ERSPAN_VER, p->erspan_ver))
+			goto nla_put_failure;
+
+		if (p->erspan_ver == 1) {
+			if (nla_put_u32(skb, IFLA_GRE_ERSPAN_INDEX, p->index))
+				goto nla_put_failure;
+		} else {
+			if (nla_put_u8(skb, IFLA_GRE_ERSPAN_DIR, p->dir))
+				goto nla_put_failure;
+			if (nla_put_u16(skb, IFLA_GRE_ERSPAN_HWID, p->hwid))
+				goto nla_put_failure;
+		}
+	}
 
 	if (nla_put_u32(skb, IFLA_GRE_LINK, p->link) ||
 	    nla_put_be16(skb, IFLA_GRE_IFLAGS,
@@ -2151,8 +2164,7 @@ static int ip6gre_fill_info(struct sk_buff *skb, const struct net_device *dev)
 	    nla_put_u8(skb, IFLA_GRE_ENCAP_LIMIT, p->encap_limit) ||
 	    nla_put_be32(skb, IFLA_GRE_FLOWINFO, p->flowinfo) ||
 	    nla_put_u32(skb, IFLA_GRE_FLAGS, p->flags) ||
-	    nla_put_u32(skb, IFLA_GRE_FWMARK, p->fwmark) ||
-	    nla_put_u32(skb, IFLA_GRE_ERSPAN_INDEX, p->index))
+	    nla_put_u32(skb, IFLA_GRE_FWMARK, p->fwmark))
 		goto nla_put_failure;
 
 	if (nla_put_u16(skb, IFLA_GRE_ENCAP_TYPE,
@@ -2167,19 +2179,6 @@ static int ip6gre_fill_info(struct sk_buff *skb, const struct net_device *dev)
 
 	if (p->collect_md) {
 		if (nla_put_flag(skb, IFLA_GRE_COLLECT_METADATA))
-			goto nla_put_failure;
-	}
-
-	if (nla_put_u8(skb, IFLA_GRE_ERSPAN_VER, p->erspan_ver))
-		goto nla_put_failure;
-
-	if (p->erspan_ver == 1) {
-		if (nla_put_u32(skb, IFLA_GRE_ERSPAN_INDEX, p->index))
-			goto nla_put_failure;
-	} else if (p->erspan_ver == 2) {
-		if (nla_put_u8(skb, IFLA_GRE_ERSPAN_DIR, p->dir))
-			goto nla_put_failure;
-		if (nla_put_u16(skb, IFLA_GRE_ERSPAN_HWID, p->hwid))
 			goto nla_put_failure;
 	}
 
@@ -2217,11 +2216,11 @@ static void ip6erspan_tap_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 
+	dev->max_mtu = 0;
 	dev->netdev_ops = &ip6erspan_netdev_ops;
 	dev->needs_free_netdev = true;
 	dev->priv_destructor = ip6gre_dev_free;
 
-	dev->features |= NETIF_F_NETNS_LOCAL;
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	netif_keep_dst(dev);

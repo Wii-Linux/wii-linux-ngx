@@ -60,6 +60,9 @@ static void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 	__skb_unlink(skb, &sk->sk_write_queue);
 	tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
 
+	if (tp->highest_sack == NULL)
+		tp->highest_sack = skb;
+
 	tp->packets_out += tcp_skb_pcount(skb);
 	if (!prior_packets || icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
 		tcp_rearm_rto(sk);
@@ -179,21 +182,6 @@ static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts,
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 
-
-u32 tcp_default_init_rwnd(u32 mss)
-{
-	/* Initial receive window should be twice of TCP_INIT_CWND to
-	 * enable proper sending of new unsent data during fast recovery
-	 * (RFC 3517, Section 4, NextSeg() rule (2)). Further place a
-	 * limit when mss is larger than 1460.
-	 */
-	u32 init_rwnd = TCP_INIT_CWND * 2;
-
-	if (mss > 1460)
-		init_rwnd = max((1460 * init_rwnd) / mss, 2U);
-	return init_rwnd;
-}
-
 /* Determine a window scaling and initial window to offer.
  * Based on the assumption that the given amount of space
  * will be offered. Store the results in the tp structure.
@@ -228,7 +216,10 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 	if (sock_net(sk)->ipv4.sysctl_tcp_workaround_signed_windows)
 		(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
 	else
-		(*rcv_wnd) = space;
+		(*rcv_wnd) = min_t(u32, space, U16_MAX);
+
+	if (init_rcv_wnd)
+		*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
 
 	(*rcv_wscale) = 0;
 	if (wscale_ok) {
@@ -241,11 +232,6 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 			(*rcv_wscale)++;
 		}
 	}
-
-	if (!init_rcv_wnd) /* Use default unless specified otherwise */
-		init_rcv_wnd = tcp_default_init_rwnd(mss);
-	*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
-
 	/* Set the clamp no higher than max representable value */
 	(*window_clamp) = min_t(__u32, U16_MAX << (*rcv_wscale), *window_clamp);
 }
@@ -757,8 +743,9 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 			min_t(unsigned int, eff_sacks,
 			      (remaining - TCPOLEN_SACK_BASE_ALIGNED) /
 			      TCPOLEN_SACK_PERBLOCK);
-		size += TCPOLEN_SACK_BASE_ALIGNED +
-			opts->num_sack_blocks * TCPOLEN_SACK_PERBLOCK;
+		if (likely(opts->num_sack_blocks))
+			size += TCPOLEN_SACK_BASE_ALIGNED +
+				opts->num_sack_blocks * TCPOLEN_SACK_PERBLOCK;
 	}
 
 	return size;
@@ -1289,6 +1276,7 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *buff;
 	int nsize, old_factor;
+	long limit;
 	int nlen;
 	u8 flags;
 
@@ -1298,6 +1286,20 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
 	nsize = skb_headlen(skb) - len;
 	if (nsize < 0)
 		nsize = 0;
+
+	/* tcp_sendmsg() can overshoot sk_wmem_queued by one full size skb.
+	 * We need some allowance to not penalize applications setting small
+	 * SO_SNDBUF values.
+	 * Also allow first and last skb in retransmit queue to be split.
+	 */
+	limit = sk->sk_sndbuf + 2 * SKB_TRUESIZE(GSO_MAX_SIZE);
+	if (unlikely((sk->sk_wmem_queued >> 1) > limit &&
+		     tcp_queue != TCP_FRAG_IN_WRITE_QUEUE &&
+		     skb != tcp_rtx_queue_head(sk) &&
+		     skb != tcp_rtx_queue_tail(sk))) {
+		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPWQUEUETOOBIG);
+		return -ENOMEM;
+	}
 
 	if (skb_unclone(skb, gfp))
 		return -ENOMEM;
@@ -1457,8 +1459,7 @@ static inline int __tcp_mtu_to_mss(struct sock *sk, int pmtu)
 	mss_now -= icsk->icsk_ext_hdr_len;
 
 	/* Then reserve room for full set of TCP options and 8 bytes of data */
-	if (mss_now < 48)
-		mss_now = 48;
+	mss_now = max(mss_now, sock_net(sk)->ipv4.sysctl_tcp_min_snd_mss);
 	return mss_now;
 }
 
@@ -2032,7 +2033,7 @@ static bool tcp_can_coalesce_send_queue_head(struct sock *sk, int len)
 		if (len <= skb->len)
 			break;
 
-		if (unlikely(TCP_SKB_CB(skb)->eor))
+		if (unlikely(TCP_SKB_CB(skb)->eor) || tcp_has_tx_tstamp(skb))
 			return false;
 
 		len -= skb->len;
@@ -2148,6 +2149,7 @@ static int tcp_mtu_probe(struct sock *sk)
 			 * we need to propagate it to the new skb.
 			 */
 			TCP_SKB_CB(nskb)->eor = TCP_SKB_CB(skb)->eor;
+			tcp_skb_collapse_tstamp(nskb, skb);
 			tcp_unlink_write_queue(skb, sk);
 			sk_wmem_free_skb(sk, skb);
 		} else {
@@ -2372,6 +2374,14 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			break;
 
 		if (tcp_small_queue_check(sk, skb, 0))
+			break;
+
+		/* Argh, we hit an empty skb(), presumably a thread
+		 * is sleeping in sendmsg()/sk_stream_wait_memory().
+		 * We do not want to send a pure-ack packet and have
+		 * a strange looking rtx queue with empty packet(s).
+		 */
+		if (TCP_SKB_CB(skb)->end_seq == TCP_SKB_CB(skb)->seq)
 			break;
 
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
@@ -2727,7 +2737,7 @@ static bool tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 		if (next_skb_size <= skb_availroom(skb))
 			skb_copy_bits(next_skb, 0, skb_put(skb, next_skb_size),
 				      next_skb_size);
-		else if (!skb_shift(skb, next_skb, next_skb_size))
+		else if (!tcp_skb_shift(skb, next_skb, 1, next_skb_size))
 			return false;
 	}
 	tcp_highest_sack_replace(sk, next_skb, skb);
@@ -2921,7 +2931,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 		TCP_SKB_CB(skb)->sacked |= TCPCB_EVER_RETRANS;
 		trace_tcp_retransmit_skb(sk, skb);
 	} else if (err != -EBUSY) {
-		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPRETRANSFAIL);
+		NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPRETRANSFAIL, segs);
 	}
 	return err;
 }
@@ -3155,6 +3165,7 @@ int tcp_send_synack(struct sock *sk)
 			if (!nskb)
 				return -ENOMEM;
 			INIT_LIST_HEAD(&nskb->tcp_tsorted_anchor);
+			tcp_highest_sack_replace(sk, skb, nskb);
 			tcp_rtx_queue_unlink_and_free(skb, sk);
 			__skb_header_release(nskb);
 			tcp_rbtree_insert(&sk->tcp_rtx_queue, nskb);
