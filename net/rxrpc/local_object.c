@@ -169,15 +169,6 @@ static int rxrpc_open_socket(struct rxrpc_local *local, struct net *net)
 			goto error;
 		}
 
-		/* we want to set the don't fragment bit */
-		opt = IPV6_PMTUDISC_DO;
-		ret = kernel_setsockopt(local->socket, SOL_IPV6, IPV6_MTU_DISCOVER,
-					(char *) &opt, sizeof(opt));
-		if (ret < 0) {
-			_debug("setsockopt failed");
-			goto error;
-		}
-
 		/* Fall through and set IPv4 options too otherwise we don't get
 		 * errors from IPv4 packets sent through the IPv6 socket.
 		 */
@@ -460,6 +451,9 @@ static void rxrpc_local_processor(struct work_struct *work)
 	struct rxrpc_local *local =
 		container_of(work, struct rxrpc_local, processor);
 	bool again;
+
+	if (local->dead)
+		return;
 
 	trace_rxrpc_local(local->debug_id, rxrpc_local_processing,
 			  atomic_read(&local->usage), NULL);

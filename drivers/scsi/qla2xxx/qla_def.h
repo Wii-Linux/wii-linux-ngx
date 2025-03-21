@@ -262,8 +262,8 @@ struct name_list_extended {
 	struct get_name_list_extended *l;
 	dma_addr_t		ldma;
 	struct list_head	fcports;
-	spinlock_t		fcports_lock;
 	u32			size;
+	u8			sent;
 };
 /*
  * Timeout timer counts in seconds
@@ -2351,7 +2351,7 @@ typedef struct fc_port {
 	unsigned int login_succ:1;
 	unsigned int query:1;
 	unsigned int id_changed:1;
-	unsigned int rscn_rcvd:1;
+	unsigned int scan_needed:1;
 
 	struct work_struct nvme_del_work;
 	struct completion nvme_del_done;
@@ -2375,11 +2375,13 @@ typedef struct fc_port {
 	unsigned long expires;
 	struct list_head del_list_entry;
 	struct work_struct free_work;
-
+	struct work_struct reg_work;
+	uint64_t jiffies_at_registration;
 	struct qlt_plogi_ack_t *plogi_link[QLT_PLOGI_LINK_MAX];
 
 	uint16_t tgt_id;
 	uint16_t old_tgt_id;
+	uint16_t sec_since_registration;
 
 	uint8_t fcp_prio;
 
@@ -2412,6 +2414,7 @@ typedef struct fc_port {
 	struct qla_tgt_sess *tgt_session;
 	struct ct_sns_desc ct_desc;
 	enum discovery_state disc_state;
+	enum discovery_state next_disc_state;
 	enum login_state fw_login_state;
 	unsigned long dm_login_expire;
 	unsigned long plogi_nack_done_deadline;
@@ -3222,7 +3225,6 @@ enum qla_work_type {
 	QLA_EVT_GPDB,
 	QLA_EVT_PRLI,
 	QLA_EVT_GPSC,
-	QLA_EVT_UPD_FCPORT,
 	QLA_EVT_GNL,
 	QLA_EVT_NACK,
 	QLA_EVT_RELOGIN,
@@ -4653,4 +4655,8 @@ struct sff_8247_a0 {
 #include "qla_gbl.h"
 #include "qla_dbg.h"
 #include "qla_inline.h"
+
+#define IS_SESSION_DELETED(_fcport) (_fcport->disc_state == DSC_DELETE_PEND || \
+				      _fcport->disc_state == DSC_DELETED)
+
 #endif
