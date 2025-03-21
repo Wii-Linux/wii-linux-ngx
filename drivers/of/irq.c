@@ -302,8 +302,8 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 	addr = of_get_property(device, "reg", &addr_len);
 
 	/* Prevent out-of-bounds read in case of longer interrupt parent address size */
-	if (addr_len > (3 * sizeof(__be32)))
-		addr_len = 3 * sizeof(__be32);
+	if (addr_len > sizeof(addr_buf))
+		addr_len = sizeof(addr_buf);
 	if (addr)
 		memcpy(addr_buf, addr, addr_len);
 
@@ -617,18 +617,6 @@ u32 of_msi_map_rid(struct device *dev, struct device_node *msi_np, u32 rid_in)
 	return __of_msi_map_rid(dev, &msi_np, rid_in);
 }
 
-static struct irq_domain *__of_get_msi_domain(struct device_node *np,
-					      enum irq_domain_bus_token token)
-{
-	struct irq_domain *d;
-
-	d = irq_find_matching_host(np, token);
-	if (!d)
-		d = irq_find_host(np);
-
-	return d;
-}
-
 /**
  * of_msi_map_get_device_domain - Use msi-map to find the relevant MSI domain
  * @dev: device for which the mapping is to be done.
@@ -644,7 +632,7 @@ struct irq_domain *of_msi_map_get_device_domain(struct device *dev, u32 rid)
 	struct device_node *np = NULL;
 
 	__of_msi_map_rid(dev, &np, rid);
-	return __of_get_msi_domain(np, DOMAIN_BUS_PCI_MSI);
+	return irq_find_matching_host(np, DOMAIN_BUS_PCI_MSI);
 }
 
 /**
@@ -653,8 +641,7 @@ struct irq_domain *of_msi_map_get_device_domain(struct device *dev, u32 rid)
  * @np: device node for @dev
  * @token: bus type for this domain
  *
- * Parse the msi-parent property (both the simple and the complex
- * versions), and returns the corresponding MSI domain.
+ * Parse the msi-parent property and returns the corresponding MSI domain.
  *
  * Returns: the MSI domain for this device (or NULL on failure).
  */
@@ -662,33 +649,14 @@ struct irq_domain *of_msi_get_domain(struct device *dev,
 				     struct device_node *np,
 				     enum irq_domain_bus_token token)
 {
-	struct device_node *msi_np;
+	struct of_phandle_iterator it;
 	struct irq_domain *d;
+	int err;
 
-	/* Check for a single msi-parent property */
-	msi_np = of_parse_phandle(np, "msi-parent", 0);
-	if (msi_np && !of_property_read_bool(msi_np, "#msi-cells")) {
-		d = __of_get_msi_domain(msi_np, token);
-		if (!d)
-			of_node_put(msi_np);
-		return d;
-	}
-
-	if (token == DOMAIN_BUS_PLATFORM_MSI) {
-		/* Check for the complex msi-parent version */
-		struct of_phandle_args args;
-		int index = 0;
-
-		while (!of_parse_phandle_with_args(np, "msi-parent",
-						   "#msi-cells",
-						   index, &args)) {
-			d = __of_get_msi_domain(args.np, token);
-			if (d)
-				return d;
-
-			of_node_put(args.np);
-			index++;
-		}
+	of_for_each_phandle(&it, err, np, "msi-parent", "#msi-cells", 0) {
+		d = irq_find_matching_host(it.node, token);
+		if (d)
+			return d;
 	}
 
 	return NULL;
