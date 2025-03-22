@@ -615,10 +615,18 @@ config I2C_EXYNOS5
 	help
 	  High-speed I2C controller on Exynos5 based Samsung SoCs.
 
+config I2C_GPIO_COMMON
+	tristate
+	depends on GPIOLIB
+	select I2C_ALGOBIT
+	default n
+
 config I2C_GPIO
 	tristate "GPIO-based bitbanging I2C"
 	depends on GPIOLIB || COMPILE_TEST
 	select I2C_ALGOBIT
+	select I2C_GPIO_COMMON
+	default n
 	help
 	  This is a very simple bitbanging I2C driver utilizing the
 	  arch-neutral GPIO API to control the SCL and SDA lines.
@@ -630,6 +638,13 @@ config I2C_GPIO_FAULT_INJECTOR
 	  This adds some functionality to the i2c-gpio driver which can inject
 	  faults to an I2C bus, so another bus master can be stress-tested.
 	  This is for debugging. If unsure, say 'no'.
+
+config I2C_GPIO_OF
+	tristate "GPIO-based bitbanging I2C driver with OF bindings"
+	select I2C_GPIO_COMMON
+	help
+	  This option allows the declaration of GPIO-based I2C devices
+	  using a device tree source.
 
 config I2C_HIGHLANDER
 	tristate "Highlander FPGA SMBus interface"

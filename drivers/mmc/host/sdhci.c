@@ -17,7 +17,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <linux/scatterlist.h>
-#include <linux/sizes.h>
 #include <linux/swiotlb.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
@@ -609,35 +608,8 @@ static int sdhci_pre_dma_transfer(struct sdhci_host *host,
 	if (data->host_cookie == COOKIE_PRE_MAPPED)
 		return data->sg_count;
 
-	/* Bounce write requests to the bounce buffer */
-	if (host->bounce_buffer) {
-		unsigned int length = data->blksz * data->blocks;
-
-		if (length > host->bounce_buffer_size) {
-			pr_err("%s: asked for transfer of %u bytes exceeds bounce buffer %u bytes\n",
-			       mmc_hostname(host->mmc), length,
-			       host->bounce_buffer_size);
-			return -EIO;
-		}
-		if (mmc_get_dma_dir(data) == DMA_TO_DEVICE) {
-			/* Copy the data to the bounce buffer */
-			sg_copy_to_buffer(data->sg, data->sg_len,
-					  host->bounce_buffer,
-					  length);
-		}
-		/* Switch ownership to the DMA */
-		dma_sync_single_for_device(host->mmc->parent,
-					   host->bounce_addr,
-					   host->bounce_buffer_size,
-					   mmc_get_dma_dir(data));
-		/* Just a dummy value */
-		sg_count = 1;
-	} else {
-		/* Just access the data directly from memory */
-		sg_count = dma_map_sg(mmc_dev(host->mmc),
-				      data->sg, data->sg_len,
-				      mmc_get_dma_dir(data));
-	}
+	sg_count = dma_map_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
+			      mmc_get_dma_dir(data));
 
 	if (sg_count == 0)
 		return -ENOSPC;
@@ -821,14 +793,6 @@ static void sdhci_set_adma_addr(struct sdhci_host *host, dma_addr_t addr)
 	sdhci_writel(host, lower_32_bits(addr), SDHCI_ADMA_ADDRESS);
 	if (host->flags & SDHCI_USE_64_BIT_DMA)
 		sdhci_writel(host, upper_32_bits(addr), SDHCI_ADMA_ADDRESS_HI);
-}
-
-static dma_addr_t sdhci_sdma_address(struct sdhci_host *host)
-{
-	if (host->bounce_buffer)
-		return host->bounce_addr;
-	else
-		return sg_dma_address(host->data->sg);
 }
 
 static void sdhci_set_sdma_addr(struct sdhci_host *host, dma_addr_t addr)
@@ -1102,7 +1066,12 @@ static void sdhci_prepare_data(struct sdhci_host *host, struct mmc_command *cmd)
 			sdhci_set_adma_addr(host, host->adma_addr);
 		} else {
 			WARN_ON(sg_cnt != 1);
+<<<<<<< ours
 			sdhci_set_sdma_addr(host, sdhci_sdma_address(host));
+=======
+			sdhci_writel(host, sg_dma_address(data->sg),
+				SDHCI_DMA_ADDRESS);
+>>>>>>> theirs
 		}
 	}
 
@@ -2550,12 +2519,7 @@ static void sdhci_pre_req(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	mrq->data->host_cookie = COOKIE_UNMAPPED;
 
-	/*
-	 * No pre-mapping in the pre hook if we're using the bounce buffer,
-	 * for that we would need two bounce buffers since one buffer is
-	 * in flight when this is getting called.
-	 */
-	if (host->flags & SDHCI_REQ_USE_DMA && !host->bounce_buffer)
+	if (host->flags & SDHCI_REQ_USE_DMA)
 		sdhci_pre_dma_transfer(host, mrq->data, COOKIE_PRE_MAPPED);
 }
 
@@ -2653,45 +2617,8 @@ static bool sdhci_request_done(struct sdhci_host *host)
 		struct mmc_data *data = mrq->data;
 
 		if (data && data->host_cookie == COOKIE_MAPPED) {
-			if (host->bounce_buffer) {
-				/*
-				 * On reads, copy the bounced data into the
-				 * sglist
-				 */
-				if (mmc_get_dma_dir(data) == DMA_FROM_DEVICE) {
-					unsigned int length = data->bytes_xfered;
-
-					if (length > host->bounce_buffer_size) {
-						pr_err("%s: bounce buffer is %u bytes but DMA claims to have transferred %u bytes\n",
-						       mmc_hostname(host->mmc),
-						       host->bounce_buffer_size,
-						       data->bytes_xfered);
-						/* Cap it down and continue */
-						length = host->bounce_buffer_size;
-					}
-					dma_sync_single_for_cpu(
-						host->mmc->parent,
-						host->bounce_addr,
-						host->bounce_buffer_size,
-						DMA_FROM_DEVICE);
-					sg_copy_from_buffer(data->sg,
-						data->sg_len,
-						host->bounce_buffer,
-						length);
-				} else {
-					/* No copying, just switch ownership */
-					dma_sync_single_for_cpu(
-						host->mmc->parent,
-						host->bounce_addr,
-						host->bounce_buffer_size,
-						mmc_get_dma_dir(data));
-				}
-			} else {
-				/* Unmap the raw data */
-				dma_unmap_sg(mmc_dev(host->mmc), data->sg,
-					     data->sg_len,
-					     mmc_get_dma_dir(data));
-			}
+			dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
+				     mmc_get_dma_dir(data));
 			data->host_cookie = COOKIE_UNMAPPED;
 		}
 	}
@@ -2996,9 +2923,14 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 		 * some controllers are faulty, don't trust them.
 		 */
 		if (intmask & SDHCI_INT_DMA_END) {
+<<<<<<< ours
 			dma_addr_t dmastart, dmanow;
 
 			dmastart = sdhci_sdma_address(host);
+=======
+			u32 dmastart, dmanow;
+			dmastart = sg_dma_address(host->data->sg);
+>>>>>>> theirs
 			dmanow = dmastart + host->data->bytes_xfered;
 			/*
 			 * Force update to the next DMA block boundary.
@@ -3644,66 +3576,6 @@ void __sdhci_read_caps(struct sdhci_host *host, const u16 *ver,
 }
 EXPORT_SYMBOL_GPL(__sdhci_read_caps);
 
-static void sdhci_allocate_bounce_buffer(struct sdhci_host *host)
-{
-	struct mmc_host *mmc = host->mmc;
-	unsigned int max_blocks;
-	unsigned int bounce_size;
-	int ret;
-
-	/*
-	 * Cap the bounce buffer at 64KB. Using a bigger bounce buffer
-	 * has diminishing returns, this is probably because SD/MMC
-	 * cards are usually optimized to handle this size of requests.
-	 */
-	bounce_size = SZ_64K;
-	/*
-	 * Adjust downwards to maximum request size if this is less
-	 * than our segment size, else hammer down the maximum
-	 * request size to the maximum buffer size.
-	 */
-	if (mmc->max_req_size < bounce_size)
-		bounce_size = mmc->max_req_size;
-	max_blocks = bounce_size / 512;
-
-	/*
-	 * When we just support one segment, we can get significant
-	 * speedups by the help of a bounce buffer to group scattered
-	 * reads/writes together.
-	 */
-	host->bounce_buffer = devm_kmalloc(mmc->parent,
-					   bounce_size,
-					   GFP_KERNEL);
-	if (!host->bounce_buffer) {
-		pr_err("%s: failed to allocate %u bytes for bounce buffer, falling back to single segments\n",
-		       mmc_hostname(mmc),
-		       bounce_size);
-		/*
-		 * Exiting with zero here makes sure we proceed with
-		 * mmc->max_segs == 1.
-		 */
-		return;
-	}
-
-	host->bounce_addr = dma_map_single(mmc->parent,
-					   host->bounce_buffer,
-					   bounce_size,
-					   DMA_BIDIRECTIONAL);
-	ret = dma_mapping_error(mmc->parent, host->bounce_addr);
-	if (ret)
-		/* Again fall back to max_segs == 1 */
-		return;
-	host->bounce_buffer_size = bounce_size;
-
-	/* Lie about this since we're bouncing */
-	mmc->max_segs = max_blocks;
-	mmc->max_seg_size = bounce_size;
-	mmc->max_req_size = bounce_size;
-
-	pr_info("%s bounce up to %u segments into one, max segment size %u bytes\n",
-		mmc_hostname(mmc), max_blocks, bounce_size);
-}
-
 static inline bool sdhci_can_64bit_dma(struct sdhci_host *host)
 {
 	/*
@@ -4231,10 +4103,6 @@ int sdhci_setup_host(struct sdhci_host *host)
 	 * Maximum block count.
 	 */
 	mmc->max_blk_count = (host->quirks & SDHCI_QUIRK_NO_MULTIBLOCK) ? 1 : 65535;
-
-	if (mmc->max_segs == 1)
-		/* This may alter mmc->*_blk_* parameters */
-		sdhci_allocate_bounce_buffer(host);
 
 	return 0;
 
