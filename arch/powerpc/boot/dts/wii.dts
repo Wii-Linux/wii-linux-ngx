@@ -50,6 +50,24 @@
 		       0x10000000 0x04000000>;	/* MEM2 64MB GDDR3 */
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Use MEM2 for dma, requires config DMA_GLOBAL_POOL.
+		 * MEM1 mirrors the value of non-cached 1-byte and 2-byte writes to a 4-byte write.
+		 * Writing 0x12 to a u8 will write 0x12121212 and writing 0x3456 to a u16 will write 0x34563456,
+		 * causing data loss when a device uses non 4-byte writes (like usb).
+		 */
+		dma_reserved: dma@10000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x10000000 0x00100000>; /* 1MB */
+			linux,dma-default;
+		};
+	};
+
 	cpus {
 		#cpus = <1>;
 		#address-cells = <1>;

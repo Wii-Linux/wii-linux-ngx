@@ -184,7 +184,7 @@ static void exi_device_init(struct exi_device *exi_device,
 	exi_device->dev.bus = &exi_bus_type;
 	dev_set_name(&exi_device->dev, "exi%01x:%01x", channel, device);
 	exi_device->dev.platform_data = to_exi_channel(channel);
-	set_dma_ops(&exi_device->dev, &dma_nommu_ops);
+	/*set_dma_ops(&exi_device->dev, &dma_nommu_ops);*/
 	exi_device->dev.release = exi_device_release;
 }
 

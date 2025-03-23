@@ -427,7 +427,7 @@ static inline bool hcd_periodic_completion_in_progress(struct usb_hcd *hcd,
 
 static inline bool hcd_uses_dma(struct usb_hcd *hcd)
 {
-	return IS_ENABLED(CONFIG_HAS_DMA) && (hcd->driver->flags & HCD_DMA);
+	return IS_ENABLED(CONFIG_HAS_DMA) && (hcd->driver->flags & HCD_DMA) && !(hcd->driver->flags & HCD_NO_COHERENT_MEM);
 }
 
 extern int usb_hcd_link_urb_to_ep(struct usb_hcd *hcd, struct urb *urb);

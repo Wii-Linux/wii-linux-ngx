@@ -38,7 +38,7 @@ __ioremap_caller(phys_addr_t addr, unsigned long size, pgprot_t prot, void *call
 	if (p < 16 * 1024 * 1024)
 		p += _ISA_MEM_BASE;
 
-#ifndef CONFIG_CRASH_DUMP
+#if !defined(CONFIG_CRASH_DUMP) && !defined(CONFIG_WII)
 	/*
 	 * Don't allow anybody to remap normal RAM that we're using.
 	 * mem_init() sets high_memory so only do the check after that.

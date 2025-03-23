@@ -1532,10 +1532,10 @@ static int di_revalidate_disk(struct gendisk *disk)
 	return 0;
 }
 
-static int di_media_changed(struct gendisk *disk)
+static unsigned int di_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	struct di_device *ddev = disk->private_data;
-	return (ddev->flags & DI_MEDIA_CHANGED) ? 1 : 0;
+	return (ddev->flags & DI_MEDIA_CHANGED) ? DISK_EVENT_MEDIA_CHANGE : 0;
 }
 
 static int di_ioctl(struct block_device *bdev, fmode_t mode,
@@ -1556,8 +1556,7 @@ static struct block_device_operations di_fops = {
 	.owner = THIS_MODULE,
 	.open = di_open,
 	.release = di_release,
-	.revalidate_disk = di_revalidate_disk,
-	.media_changed = di_media_changed,
+	.check_events = di_check_events,
 	.ioctl = di_ioctl,
 };
 

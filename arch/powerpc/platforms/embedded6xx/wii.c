@@ -120,7 +120,7 @@ static void __init wii_setup_arch(void)
 
 	ug_udbg_init();
 	gcnvi_udbg_init();
-	starlet_discover_ipc_flavour();
+	/*starlet_discover_ipc_flavour(); - XXX: We can't, as it now needs to have been probed first*/
 }
 
 #ifdef CONFIG_STARLET_IOS
