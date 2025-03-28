@@ -544,7 +544,6 @@ csum_copy_err:
 static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 				     struct raw6_sock *rp)
 {
-	struct ipv6_txoptions *opt;
 	struct sk_buff *skb;
 	int err = 0;
 	int offset;
@@ -562,9 +561,6 @@ static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 
 	offset = rp->offset;
 	total_len = inet_sk(sk)->cork.base.length;
-	opt = inet6_sk(sk)->cork.opt;
-	total_len -= opt ? opt->opt_flen : 0;
-
 	if (offset >= total_len - 1) {
 		err = -EINVAL;
 		ip6_flush_pending_frames(sk);
@@ -626,7 +622,7 @@ out:
 
 static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 			struct flowi6 *fl6, struct dst_entry **dstp,
-			unsigned int flags, const struct sockcm_cookie *sockc)
+			unsigned int flags)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct net *net = sock_net(sk);
@@ -662,8 +658,6 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 	iph = ipv6_hdr(skb);
 
 	skb->ip_summed = CHECKSUM_NONE;
-
-	skb_setup_tx_timestamp(skb, sockc->tsflags);
 
 	if (flags & MSG_CONFIRM)
 		skb_set_dst_pending_confirm(skb, 1);
@@ -951,8 +945,7 @@ static int rawv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 back_from_confirm:
 	if (hdrincl)
-		err = rawv6_send_hdrinc(sk, msg, len, &fl6, &dst,
-					msg->msg_flags, &sockc);
+		err = rawv6_send_hdrinc(sk, msg, len, &fl6, &dst, msg->msg_flags);
 	else {
 		ipc6.opt = opt;
 		lock_sock(sk);
@@ -1258,6 +1251,8 @@ static void raw6_destroy(struct sock *sk)
 	lock_sock(sk);
 	ip6_flush_pending_frames(sk);
 	release_sock(sk);
+
+	inet6_destroy_sock(sk);
 }
 
 static int rawv6_init_sk(struct sock *sk)

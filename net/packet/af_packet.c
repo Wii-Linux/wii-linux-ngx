@@ -2017,7 +2017,7 @@ retry:
 	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
 
-	skb_setup_tx_timestamp(skb, sockc.tsflags);
+	sock_tx_timestamp(sk, sockc.tsflags, &skb_shinfo(skb)->tx_flags);
 
 	if (unlikely(extra_len == 4))
 		skb->no_fcs = 1;
@@ -2248,7 +2248,8 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (skb->ip_summed == CHECKSUM_PARTIAL)
 		status |= TP_STATUS_CSUMNOTREADY;
 	else if (skb->pkt_type != PACKET_OUTGOING &&
-		 skb_csum_unnecessary(skb))
+		 (skb->ip_summed == CHECKSUM_COMPLETE ||
+		  skb_csum_unnecessary(skb)))
 		status |= TP_STATUS_CSUM_VALID;
 
 	if (snaplen > res)
@@ -2538,7 +2539,7 @@ static int tpacket_fill_skb(struct packet_sock *po, struct sk_buff *skb,
 	skb->dev = dev;
 	skb->priority = po->sk.sk_priority;
 	skb->mark = po->sk.sk_mark;
-	skb_setup_tx_timestamp(skb, sockc->tsflags);
+	sock_tx_timestamp(&po->sk, sockc->tsflags, &skb_shinfo(skb)->tx_flags);
 	skb_zcopy_set_nouarg(skb, ph.raw);
 
 	skb_reserve(skb, hlen);
@@ -2828,9 +2829,8 @@ tpacket_error:
 
 		status = TP_STATUS_SEND_REQUEST;
 		err = po->xmit(skb);
-		if (unlikely(err != 0)) {
-			if (err > 0)
-				err = net_xmit_errno(err);
+		if (unlikely(err > 0)) {
+			err = net_xmit_errno(err);
 			if (err && __packet_get_status(po, ph) ==
 				   TP_STATUS_AVAILABLE) {
 				/* skb was destructed already */
@@ -3002,7 +3002,7 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 		goto out_free;
 	}
 
-	skb_setup_tx_timestamp(skb, sockc.tsflags);
+	sock_tx_timestamp(sk, sockc.tsflags, &skb_shinfo(skb)->tx_flags);
 
 	if (!vnet_hdr.gso_type && (len > dev->mtu + reserve + extra_len) &&
 	    !packet_extra_vlan_len_allowed(dev, skb)) {
@@ -3029,12 +3029,8 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 		skb->no_fcs = 1;
 
 	err = po->xmit(skb);
-	if (unlikely(err != 0)) {
-		if (err > 0)
-			err = net_xmit_errno(err);
-		if (err)
-			goto out_unlock;
-	}
+	if (err > 0 && (err = net_xmit_errno(err)) != 0)
+		goto out_unlock;
 
 	dev_put(dev);
 
@@ -3487,7 +3483,8 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 		if (skb->ip_summed == CHECKSUM_PARTIAL)
 			aux.tp_status |= TP_STATUS_CSUMNOTREADY;
 		else if (skb->pkt_type != PACKET_OUTGOING &&
-			 skb_csum_unnecessary(skb))
+			 (skb->ip_summed == CHECKSUM_COMPLETE ||
+			  skb_csum_unnecessary(skb)))
 			aux.tp_status |= TP_STATUS_CSUM_VALID;
 
 		aux.tp_len = origlen;

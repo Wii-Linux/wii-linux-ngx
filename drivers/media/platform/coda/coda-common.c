@@ -360,7 +360,6 @@ static struct vdoa_data *coda_get_vdoa_data(void)
 	if (!vdoa_data)
 		vdoa_data = ERR_PTR(-EPROBE_DEFER);
 
-	put_device(&vdoa_pdev->dev);
 out:
 	if (vdoa_node)
 		of_node_put(vdoa_node);

@@ -139,15 +139,11 @@ static int pefile_strip_sig_wrapper(const void *pebuf,
 	pr_debug("sig wrapper = { %x, %x, %x }\n",
 		 wrapper.length, wrapper.revision, wrapper.cert_type);
 
-	/* sbsign rounds up the length of certificate table (in optional
-	 * header data directories) to 8 byte alignment.  However, the PE
-	 * specification states that while entries are 8-byte aligned, this is
-	 * not included in their length, and as a result, pesign has not
-	 * rounded up since 0.110.
+	/* Both pesign and sbsign round up the length of certificate table
+	 * (in optional header data directories) to 8 byte alignment.
 	 */
-	if (wrapper.length > ctx->sig_len) {
-		pr_debug("Signature wrapper bigger than sig len (%x > %x)\n",
-			 ctx->sig_len, wrapper.length);
+	if (round_up(wrapper.length, 8) != ctx->sig_len) {
+		pr_debug("Signature wrapper len wrong\n");
 		return -ELIBBAD;
 	}
 	if (wrapper.revision != WIN_CERT_REVISION_2_0) {

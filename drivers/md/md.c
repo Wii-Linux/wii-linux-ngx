@@ -418,14 +418,13 @@ static void md_end_flush(struct bio *bio)
 	struct md_rdev *rdev = bio->bi_private;
 	struct mddev *mddev = rdev->mddev;
 
-	bio_put(bio);
-
 	rdev_dec_pending(rdev, mddev);
 
 	if (atomic_dec_and_test(&mddev->flush_pending)) {
 		/* The pre-request flush has finished */
 		queue_work(md_wq, &mddev->flush_work);
 	}
+	bio_put(bio);
 }
 
 static void md_submit_flush_data(struct work_struct *ws);
@@ -806,12 +805,10 @@ static void super_written(struct bio *bio)
 	} else
 		clear_bit(LastDev, &rdev->flags);
 
-	bio_put(bio);
-
-	rdev_dec_pending(rdev, mddev);
-
 	if (atomic_dec_and_test(&mddev->pending_writes))
 		wake_up(&mddev->sb_wait);
+	rdev_dec_pending(rdev, mddev);
+	bio_put(bio);
 }
 
 void md_super_write(struct mddev *mddev, struct md_rdev *rdev,
@@ -2430,16 +2427,14 @@ static void sync_sbs(struct mddev *mddev, int nospares)
 
 static bool does_sb_need_changing(struct mddev *mddev)
 {
-	struct md_rdev *rdev = NULL, *iter;
+	struct md_rdev *rdev;
 	struct mdp_superblock_1 *sb;
 	int role;
 
 	/* Find a good rdev */
-	rdev_for_each(iter, mddev)
-		if ((iter->raid_disk >= 0) && !test_bit(Faulty, &iter->flags)) {
-			rdev = iter;
+	rdev_for_each(rdev, mddev)
+		if ((rdev->raid_disk >= 0) && !test_bit(Faulty, &rdev->flags))
 			break;
-		}
 
 	/* No good device found. */
 	if (!rdev)
@@ -2967,9 +2962,6 @@ slot_store(struct md_rdev *rdev, const char *buf, size_t len)
 		err = kstrtouint(buf, 10, (unsigned int *)&slot);
 		if (err < 0)
 			return err;
-		if (slot < 0)
-			/* overflow */
-			return -ENOSPC;
 	}
 	if (rdev->mddev->pers && slot == -1) {
 		/* Setting 'slot' on an active array requires also
@@ -5914,7 +5906,6 @@ void md_stop(struct mddev *mddev)
 	/* stop the array and free an attached data structures.
 	 * This is called from dm-raid
 	 */
-	__md_stop_writes(mddev);
 	__md_stop(mddev);
 	if (mddev->bio_set)
 		bioset_free(mddev->bio_set);
@@ -7597,22 +7588,17 @@ EXPORT_SYMBOL(md_register_thread);
 
 void md_unregister_thread(struct md_thread **threadp)
 {
-	struct md_thread *thread;
-
-	/*
-	 * Locking ensures that mddev_unlock does not wake_up a
+	struct md_thread *thread = *threadp;
+	if (!thread)
+		return;
+	pr_debug("interrupting MD-thread pid %d\n", task_pid_nr(thread->tsk));
+	/* Locking ensures that mddev_unlock does not wake_up a
 	 * non-existent thread
 	 */
 	spin_lock(&pers_lock);
-	thread = *threadp;
-	if (!thread) {
-		spin_unlock(&pers_lock);
-		return;
-	}
 	*threadp = NULL;
 	spin_unlock(&pers_lock);
 
-	pr_debug("interrupting MD-thread pid %d\n", task_pid_nr(thread->tsk));
 	kthread_stop(thread->tsk);
 	kfree(thread);
 }
@@ -9278,18 +9264,16 @@ static int read_rdev(struct mddev *mddev, struct md_rdev *rdev)
 
 void md_reload_sb(struct mddev *mddev, int nr)
 {
-	struct md_rdev *rdev = NULL, *iter;
+	struct md_rdev *rdev;
 	int err;
 
 	/* Find the rdev */
-	rdev_for_each_rcu(iter, mddev) {
-		if (iter->desc_nr == nr) {
-			rdev = iter;
+	rdev_for_each_rcu(rdev, mddev) {
+		if (rdev->desc_nr == nr)
 			break;
-		}
 	}
 
-	if (!rdev) {
+	if (!rdev || rdev->desc_nr != nr) {
 		pr_warn("%s: %d Could not find rdev with nr %d\n", __func__, __LINE__, nr);
 		return;
 	}

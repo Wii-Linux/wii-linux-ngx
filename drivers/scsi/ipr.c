@@ -1531,22 +1531,23 @@ static void ipr_process_ccn(struct ipr_cmnd *ipr_cmd)
 }
 
 /**
- * strip_whitespace - Strip and pad trailing whitespace.
- * @i:		size of buffer
- * @buf:	string to modify
+ * strip_and_pad_whitespace - Strip and pad trailing whitespace.
+ * @i:		index into buffer
+ * @buf:		string to modify
  *
- * This function will strip all trailing whitespace and
- * NUL terminate the string.
+ * This function will strip all trailing whitespace, pad the end
+ * of the string with a single space, and NULL terminate the string.
  *
+ * Return value:
+ * 	new length of string
  **/
-static void strip_whitespace(int i, char *buf)
+static int strip_and_pad_whitespace(int i, char *buf)
 {
-	if (i < 1)
-		return;
-	i--;
 	while (i && buf[i] == ' ')
 		i--;
-	buf[i+1] = '\0';
+	buf[i+1] = ' ';
+	buf[i+2] = '\0';
+	return i + 2;
 }
 
 /**
@@ -1561,21 +1562,19 @@ static void strip_whitespace(int i, char *buf)
 static void ipr_log_vpd_compact(char *prefix, struct ipr_hostrcb *hostrcb,
 				struct ipr_vpd *vpd)
 {
-	char vendor_id[IPR_VENDOR_ID_LEN + 1];
-	char product_id[IPR_PROD_ID_LEN + 1];
-	char sn[IPR_SERIAL_NUM_LEN + 1];
+	char buffer[IPR_VENDOR_ID_LEN + IPR_PROD_ID_LEN + IPR_SERIAL_NUM_LEN + 3];
+	int i = 0;
 
-	memcpy(vendor_id, vpd->vpids.vendor_id, IPR_VENDOR_ID_LEN);
-	strip_whitespace(IPR_VENDOR_ID_LEN, vendor_id);
+	memcpy(buffer, vpd->vpids.vendor_id, IPR_VENDOR_ID_LEN);
+	i = strip_and_pad_whitespace(IPR_VENDOR_ID_LEN - 1, buffer);
 
-	memcpy(product_id, vpd->vpids.product_id, IPR_PROD_ID_LEN);
-	strip_whitespace(IPR_PROD_ID_LEN, product_id);
+	memcpy(&buffer[i], vpd->vpids.product_id, IPR_PROD_ID_LEN);
+	i = strip_and_pad_whitespace(i + IPR_PROD_ID_LEN - 1, buffer);
 
-	memcpy(sn, vpd->sn, IPR_SERIAL_NUM_LEN);
-	strip_whitespace(IPR_SERIAL_NUM_LEN, sn);
+	memcpy(&buffer[i], vpd->sn, IPR_SERIAL_NUM_LEN);
+	buffer[IPR_SERIAL_NUM_LEN + i] = '\0';
 
-	ipr_hcam_err(hostrcb, "%s VPID/SN: %s %s %s\n", prefix,
-		     vendor_id, product_id, sn);
+	ipr_hcam_err(hostrcb, "%s VPID/SN: %s\n", prefix, buffer);
 }
 
 /**
@@ -9789,7 +9788,7 @@ static int ipr_alloc_mem(struct ipr_ioa_cfg *ioa_cfg)
 					GFP_KERNEL);
 
 		if (!ioa_cfg->hrrq[i].host_rrq)  {
-			while (--i >= 0)
+			while (--i > 0)
 				dma_free_coherent(&pdev->dev,
 					sizeof(u32) * ioa_cfg->hrrq[i].size,
 					ioa_cfg->hrrq[i].host_rrq,
@@ -10061,7 +10060,7 @@ static int ipr_request_other_msi_irqs(struct ipr_ioa_cfg *ioa_cfg,
 			ioa_cfg->vectors_info[i].desc,
 			&ioa_cfg->hrrq[i]);
 		if (rc) {
-			while (--i > 0)
+			while (--i >= 0)
 				free_irq(pci_irq_vector(pdev, i),
 					&ioa_cfg->hrrq[i]);
 			return rc;
@@ -10859,19 +10858,11 @@ static struct notifier_block ipr_notifier = {
  **/
 static int __init ipr_init(void)
 {
-	int rc;
-
 	ipr_info("IBM Power RAID SCSI Device Driver version: %s %s\n",
 		 IPR_DRIVER_VERSION, IPR_DRIVER_DATE);
 
 	register_reboot_notifier(&ipr_notifier);
-	rc = pci_register_driver(&ipr_driver);
-	if (rc) {
-		unregister_reboot_notifier(&ipr_notifier);
-		return rc;
-	}
-
-	return 0;
+	return pci_register_driver(&ipr_driver);
 }
 
 /**

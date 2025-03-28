@@ -517,7 +517,6 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	return;
 
 out_register:
-	list_del(&data->list);
 	hwmon_device_unregister(data->hwmon_dev);
 out_user:
 	ipmi_destroy_user(data->user);

@@ -35,7 +35,7 @@ intcall:
 	movw	%dx, %si
 	movw	%sp, %di
 	movw	$11, %cx
-	rep; movsl
+	rep; movsd
 
 	/* Pop full state from the stack */
 	popal
@@ -70,7 +70,7 @@ intcall:
 	jz	4f
 	movw	%sp, %si
 	movw	$11, %cx
-	rep; movsl
+	rep; movsd
 4:	addw	$44, %sp
 
 	/* Restore state and return */

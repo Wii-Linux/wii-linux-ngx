@@ -35,11 +35,7 @@
 
 #define BUILD_ID_URANDOM /* different uuid for each run */
 
-// FIXME, remove this and fix the deprecation warnings before its removed and
-// We'll break for good here...
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-
-#ifdef HAVE_LIBCRYPTO_SUPPORT
+#ifdef HAVE_LIBCRYPTO
 
 #define BUILD_ID_MD5
 #undef BUILD_ID_SHA	/* does not seem to work well when linked with Java */

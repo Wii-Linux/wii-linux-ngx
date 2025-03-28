@@ -264,7 +264,7 @@ static void h5_pkt_cull(struct h5 *h5)
 			break;
 
 		__skb_unlink(skb, &h5->unack);
-		dev_kfree_skb_irq(skb);
+		kfree_skb(skb);
 	}
 
 	if (skb_queue_empty(&h5->unack))

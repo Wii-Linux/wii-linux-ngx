@@ -50,7 +50,7 @@ int send_fault_sig(struct pt_regs *regs)
 			pr_alert("Unable to handle kernel access");
 		pr_cont(" at virtual address %p\n", siginfo.si_addr);
 		die_if_kernel("Oops", regs, 0 /*error_code*/);
-		make_task_dead(SIGKILL);
+		do_exit(SIGKILL);
 	}
 
 	return 1;

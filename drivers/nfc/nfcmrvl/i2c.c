@@ -151,15 +151,10 @@ static int nfcmrvl_i2c_nci_send(struct nfcmrvl_private *priv,
 			ret = -EREMOTEIO;
 		} else
 			ret = 0;
-	}
-
-	if (ret) {
 		kfree_skb(skb);
-		return ret;
 	}
 
-	consume_skb(skb);
-	return 0;
+	return ret;
 }
 
 static void nfcmrvl_i2c_nci_update_config(struct nfcmrvl_private *priv,
@@ -191,9 +186,9 @@ static int nfcmrvl_i2c_parse_dt(struct device_node *node,
 		pdata->irq_polarity = IRQF_TRIGGER_RISING;
 
 	ret = irq_of_parse_and_map(node, 0);
-	if (!ret) {
-		pr_err("Unable to get irq\n");
-		return -EINVAL;
+	if (ret < 0) {
+		pr_err("Unable to get irq, error: %d\n", ret);
+		return ret;
 	}
 	pdata->irq = ret;
 

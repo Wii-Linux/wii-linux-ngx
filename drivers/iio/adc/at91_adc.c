@@ -618,10 +618,8 @@ static struct iio_trigger *at91_adc_allocate_trigger(struct iio_dev *idev,
 	trig->ops = &at91_adc_trigger_ops;
 
 	ret = iio_trigger_register(trig);
-	if (ret) {
-		iio_trigger_free(trig);
+	if (ret)
 		return NULL;
-	}
 
 	return trig;
 }

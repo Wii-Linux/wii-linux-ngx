@@ -290,9 +290,7 @@ static void ge_b850v3_lvds_remove(void)
 	 * This check is to avoid both the drivers
 	 * removing the bridge in their remove() function
 	 */
-	if (!ge_b850v3_lvds_ptr ||
-	    !ge_b850v3_lvds_ptr->stdp2690_i2c ||
-		!ge_b850v3_lvds_ptr->stdp4028_i2c)
+	if (!ge_b850v3_lvds_ptr)
 		goto out;
 
 	drm_bridge_remove(&ge_b850v3_lvds_ptr->bridge);
@@ -437,11 +435,7 @@ static int __init stdpxxxx_ge_b850v3_init(void)
 	if (ret)
 		return ret;
 
-	ret = i2c_add_driver(&stdp2690_ge_b850v3_fw_driver);
-	if (ret)
-		i2c_del_driver(&stdp4028_ge_b850v3_fw_driver);
-
-	return ret;
+	return i2c_add_driver(&stdp2690_ge_b850v3_fw_driver);
 }
 module_init(stdpxxxx_ge_b850v3_init);
 

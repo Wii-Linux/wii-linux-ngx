@@ -624,7 +624,6 @@ out_drop_state:
 	put_device_state(dev_state);
 
 out:
-	pci_dev_put(pdev);
 	return ret;
 }
 

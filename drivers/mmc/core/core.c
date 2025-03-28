@@ -1468,13 +1468,7 @@ u32 mmc_select_voltage(struct mmc_host *host, u32 ocr)
 		mmc_power_cycle(host, ocr);
 	} else {
 		bit = fls(ocr) - 1;
-		/*
-		 * The bit variable represents the highest voltage bit set in
-		 * the OCR register.
-		 * To keep a range of 2 values (e.g. 3.2V/3.3V and 3.3V/3.4V),
-		 * we must shift the mask '3' with (bit - 1).
-		 */
-		ocr &= 3 << (bit - 1);
+		ocr &= 3 << bit;
 		if (bit != host->ios.vdd)
 			dev_warn(mmc_dev(host), "exceeding card's volts\n");
 	}

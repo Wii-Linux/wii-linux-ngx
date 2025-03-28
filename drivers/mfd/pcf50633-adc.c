@@ -140,7 +140,6 @@ int pcf50633_adc_async_read(struct pcf50633 *pcf, int mux, int avg,
 			     void *callback_param)
 {
 	struct pcf50633_adc_request *req;
-	int ret;
 
 	/* req is freed when the result is ready, in interrupt handler */
 	req = kmalloc(sizeof(*req), GFP_KERNEL);
@@ -152,11 +151,7 @@ int pcf50633_adc_async_read(struct pcf50633 *pcf, int mux, int avg,
 	req->callback = callback;
 	req->callback_param = callback_param;
 
-	ret = adc_enqueue_request(pcf, req);
-	if (ret)
-		kfree(req);
-
-	return ret;
+	return adc_enqueue_request(pcf, req);
 }
 EXPORT_SYMBOL_GPL(pcf50633_adc_async_read);
 

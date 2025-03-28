@@ -69,6 +69,16 @@ enum vco_freq_range {
 	VCO_MAX       = 4000000000U,
 };
 
+struct iproc_pll;
+
+struct iproc_clk {
+	struct clk_hw hw;
+	const char *name;
+	struct iproc_pll *pll;
+	unsigned long rate;
+	const struct iproc_clk_ctrl *ctrl;
+};
+
 struct iproc_pll {
 	void __iomem *status_base;
 	void __iomem *control_base;
@@ -78,12 +88,9 @@ struct iproc_pll {
 	const struct iproc_pll_ctrl *ctrl;
 	const struct iproc_pll_vco_param *vco_param;
 	unsigned int num_vco_entries;
-};
 
-struct iproc_clk {
-	struct clk_hw hw;
-	struct iproc_pll *pll;
-	const struct iproc_clk_ctrl *ctrl;
+	struct clk_hw_onecell_data *clk_data;
+	struct iproc_clk *clks;
 };
 
 #define to_iproc_clk(hw) container_of(hw, struct iproc_clk, hw)
@@ -256,7 +263,6 @@ static int pll_set_rate(struct iproc_clk *clk, unsigned int rate_index,
 	u32 val;
 	enum kp_band kp_index;
 	unsigned long ref_freq;
-	const char *clk_name = clk_hw_get_name(&clk->hw);
 
 	/*
 	 * reference frequency = parent frequency / PDIV
@@ -279,19 +285,19 @@ static int pll_set_rate(struct iproc_clk *clk, unsigned int rate_index,
 		kp_index = KP_BAND_HIGH_HIGH;
 	} else {
 		pr_err("%s: pll: %s has invalid rate: %lu\n", __func__,
-				clk_name, rate);
+				clk->name, rate);
 		return -EINVAL;
 	}
 
 	kp = get_kp(ref_freq, kp_index);
 	if (kp < 0) {
-		pr_err("%s: pll: %s has invalid kp\n", __func__, clk_name);
+		pr_err("%s: pll: %s has invalid kp\n", __func__, clk->name);
 		return kp;
 	}
 
 	ret = __pll_enable(pll);
 	if (ret) {
-		pr_err("%s: pll: %s fails to enable\n", __func__, clk_name);
+		pr_err("%s: pll: %s fails to enable\n", __func__, clk->name);
 		return ret;
 	}
 
@@ -348,7 +354,7 @@ static int pll_set_rate(struct iproc_clk *clk, unsigned int rate_index,
 
 	ret = pll_wait_for_lock(pll);
 	if (ret < 0) {
-		pr_err("%s: pll: %s failed to lock\n", __func__, clk_name);
+		pr_err("%s: pll: %s failed to lock\n", __func__, clk->name);
 		return ret;
 	}
 
@@ -384,15 +390,16 @@ static unsigned long iproc_pll_recalc_rate(struct clk_hw *hw,
 	u32 val;
 	u64 ndiv, ndiv_int, ndiv_frac;
 	unsigned int pdiv;
-	unsigned long rate;
 
 	if (parent_rate == 0)
 		return 0;
 
 	/* PLL needs to be locked */
 	val = readl(pll->status_base + ctrl->status.offset);
-	if ((val & (1 << ctrl->status.shift)) == 0)
+	if ((val & (1 << ctrl->status.shift)) == 0) {
+		clk->rate = 0;
 		return 0;
+	}
 
 	/*
 	 * PLL output frequency =
@@ -414,14 +421,14 @@ static unsigned long iproc_pll_recalc_rate(struct clk_hw *hw,
 	val = readl(pll->control_base + ctrl->pdiv.offset);
 	pdiv = (val >> ctrl->pdiv.shift) & bit_mask(ctrl->pdiv.width);
 
-	rate = (ndiv * parent_rate) >> 20;
+	clk->rate = (ndiv * parent_rate) >> 20;
 
 	if (pdiv == 0)
-		rate *= 2;
+		clk->rate *= 2;
 	else
-		rate /= pdiv;
+		clk->rate /= pdiv;
 
-	return rate;
+	return clk->rate;
 }
 
 static long iproc_pll_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -511,7 +518,6 @@ static unsigned long iproc_clk_recalc_rate(struct clk_hw *hw,
 	struct iproc_pll *pll = clk->pll;
 	u32 val;
 	unsigned int mdiv;
-	unsigned long rate;
 
 	if (parent_rate == 0)
 		return 0;
@@ -522,11 +528,11 @@ static unsigned long iproc_clk_recalc_rate(struct clk_hw *hw,
 		mdiv = 256;
 
 	if (ctrl->flags & IPROC_CLK_MCLK_DIV_BY_2)
-		rate = parent_rate / (mdiv * 2);
+		clk->rate = parent_rate / (mdiv * 2);
 	else
-		rate = parent_rate / mdiv;
+		clk->rate = parent_rate / mdiv;
 
-	return rate;
+	return clk->rate;
 }
 
 static long iproc_clk_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -577,6 +583,10 @@ static int iproc_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 		val |= div << ctrl->mdiv.shift;
 	}
 	iproc_pll_write(pll, pll->control_base, ctrl->mdiv.offset, val);
+	if (ctrl->flags & IPROC_CLK_MCLK_DIV_BY_2)
+		clk->rate = parent_rate / (div * 2);
+	else
+		clk->rate = parent_rate / div;
 
 	return 0;
 }
@@ -619,9 +629,6 @@ void iproc_pll_clk_setup(struct device_node *node,
 	struct iproc_clk *iclk;
 	struct clk_init_data init;
 	const char *parent_name;
-	struct iproc_clk *iclk_array;
-	struct clk_hw_onecell_data *clk_data;
-	const char *clk_name;
 
 	if (WARN_ON(!pll_ctrl) || WARN_ON(!clk_ctrl))
 		return;
@@ -630,14 +637,14 @@ void iproc_pll_clk_setup(struct device_node *node,
 	if (WARN_ON(!pll))
 		return;
 
-	clk_data = kzalloc(sizeof(*clk_data->hws) * num_clks +
-				sizeof(*clk_data), GFP_KERNEL);
-	if (WARN_ON(!clk_data))
+	pll->clk_data = kzalloc(sizeof(*pll->clk_data->hws) * num_clks +
+				sizeof(*pll->clk_data), GFP_KERNEL);
+	if (WARN_ON(!pll->clk_data))
 		goto err_clk_data;
-	clk_data->num = num_clks;
+	pll->clk_data->num = num_clks;
 
-	iclk_array = kcalloc(num_clks, sizeof(struct iproc_clk), GFP_KERNEL);
-	if (WARN_ON(!iclk_array))
+	pll->clks = kcalloc(num_clks, sizeof(*pll->clks), GFP_KERNEL);
+	if (WARN_ON(!pll->clks))
 		goto err_clks;
 
 	pll->control_base = of_iomap(node, 0);
@@ -667,15 +674,11 @@ void iproc_pll_clk_setup(struct device_node *node,
 	/* initialize and register the PLL itself */
 	pll->ctrl = pll_ctrl;
 
-	iclk = &iclk_array[0];
+	iclk = &pll->clks[0];
 	iclk->pll = pll;
+	iclk->name = node->name;
 
-	ret = of_property_read_string_index(node, "clock-output-names",
-					    0, &clk_name);
-	if (WARN_ON(ret))
-		goto err_pll_register;
-
-	init.name = clk_name;
+	init.name = node->name;
 	init.ops = &iproc_pll_ops;
 	init.flags = 0;
 	parent_name = of_clk_get_parent_name(node, 0);
@@ -694,19 +697,22 @@ void iproc_pll_clk_setup(struct device_node *node,
 	if (WARN_ON(ret))
 		goto err_pll_register;
 
-	clk_data->hws[0] = &iclk->hw;
-	parent_name = clk_name;
+	pll->clk_data->hws[0] = &iclk->hw;
 
 	/* now initialize and register all leaf clocks */
 	for (i = 1; i < num_clks; i++) {
+		const char *clk_name;
+
 		memset(&init, 0, sizeof(init));
+		parent_name = node->name;
 
 		ret = of_property_read_string_index(node, "clock-output-names",
 						    i, &clk_name);
 		if (WARN_ON(ret))
 			goto err_clk_register;
 
-		iclk = &iclk_array[i];
+		iclk = &pll->clks[i];
+		iclk->name = clk_name;
 		iclk->pll = pll;
 		iclk->ctrl = &clk_ctrl[i];
 
@@ -721,10 +727,11 @@ void iproc_pll_clk_setup(struct device_node *node,
 		if (WARN_ON(ret))
 			goto err_clk_register;
 
-		clk_data->hws[i] = &iclk->hw;
+		pll->clk_data->hws[i] = &iclk->hw;
 	}
 
-	ret = of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
+	ret = of_clk_add_hw_provider(node, of_clk_hw_onecell_get,
+				     pll->clk_data);
 	if (WARN_ON(ret))
 		goto err_clk_register;
 
@@ -732,7 +739,7 @@ void iproc_pll_clk_setup(struct device_node *node,
 
 err_clk_register:
 	while (--i >= 0)
-		clk_hw_unregister(clk_data->hws[i]);
+		clk_hw_unregister(pll->clk_data->hws[i]);
 
 err_pll_register:
 	if (pll->status_base != pll->control_base)
@@ -749,10 +756,10 @@ err_asiu_iomap:
 	iounmap(pll->control_base);
 
 err_pll_iomap:
-	kfree(iclk_array);
+	kfree(pll->clks);
 
 err_clks:
-	kfree(clk_data);
+	kfree(pll->clk_data);
 
 err_clk_data:
 	kfree(pll);

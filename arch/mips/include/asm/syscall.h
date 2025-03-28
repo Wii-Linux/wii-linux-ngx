@@ -29,7 +29,7 @@
 static inline long syscall_get_nr(struct task_struct *task,
 				  struct pt_regs *regs)
 {
-	return task_thread_info(task)->syscall;
+	return current_thread_info()->syscall;
 }
 
 static inline unsigned long mips_get_syscall_arg(unsigned long *arg,

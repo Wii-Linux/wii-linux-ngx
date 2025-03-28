@@ -431,7 +431,6 @@ static int pfuze_parse_regulators_dt(struct pfuze_chip *chip)
 	parent = of_get_child_by_name(np, "regulators");
 	if (!parent) {
 		dev_err(dev, "regulators node not found\n");
-		of_node_put(np);
 		return -EINVAL;
 	}
 
@@ -456,7 +455,6 @@ static int pfuze_parse_regulators_dt(struct pfuze_chip *chip)
 	}
 
 	of_node_put(parent);
-	of_node_put(np);
 	if (ret < 0) {
 		dev_err(dev, "Error parsing regulator init data: %d\n",
 			ret);
@@ -614,7 +612,7 @@ static int pfuze100_regulator_probe(struct i2c_client *client,
 		((pfuze_chip->chip_id == PFUZE200) ? "200" : "3000"));
 
 	memcpy(pfuze_chip->regulator_descs, pfuze_chip->pfuze_regulators,
-		regulator_num * sizeof(struct pfuze_regulator));
+		sizeof(pfuze_chip->regulator_descs));
 
 	ret = pfuze_parse_regulators_dt(pfuze_chip);
 	if (ret)

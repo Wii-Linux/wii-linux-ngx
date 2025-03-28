@@ -211,7 +211,7 @@ static void oops_end(unsigned long flags, struct pt_regs *regs,
 		panic("Fatal exception in interrupt");
 	if (panic_on_oops)
 		panic("Fatal exception");
-	make_task_dead(signr);
+	do_exit(signr);
 }
 NOKPROBE_SYMBOL(oops_end);
 

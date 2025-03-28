@@ -398,10 +398,8 @@ int cap_inode_getsecurity(struct inode *inode, const char *name, void **buffer,
 				 &tmpbuf, size, GFP_NOFS);
 	dput(dentry);
 
-	if (ret < 0 || !tmpbuf) {
-		size = ret;
-		goto out_free;
-	}
+	if (ret < 0 || !tmpbuf)
+		return ret;
 
 	fs_ns = inode->i_sb->s_user_ns;
 	cap = (struct vfs_cap_data *) tmpbuf;

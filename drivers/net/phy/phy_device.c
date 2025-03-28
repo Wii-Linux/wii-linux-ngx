@@ -1050,7 +1050,6 @@ error:
 
 error_module_put:
 	module_put(d->driver->owner);
-	d->driver = NULL;
 error_put_device:
 	put_device(d);
 	if (ndev_owner != bus->owner)

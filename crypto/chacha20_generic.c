@@ -22,8 +22,7 @@ static inline u32 le32_to_cpuvp(const void *p)
 static void chacha20_docrypt(u32 *state, u8 *dst, const u8 *src,
 			     unsigned int bytes)
 {
-	/* aligned to potentially speed up crypto_xor() */
-	u8 stream[CHACHA20_BLOCK_SIZE] __aligned(sizeof(long));
+	u8 stream[CHACHA20_BLOCK_SIZE];
 
 	if (dst != src)
 		memcpy(dst, src, bytes);

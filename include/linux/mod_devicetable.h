@@ -604,7 +604,9 @@ struct x86_cpu_id {
 	__u16 steppings;
 };
 
-/* Wild cards for x86_cpu_id::vendor, family, model and feature */
+#define X86_FEATURE_MATCH(x) \
+	{ X86_VENDOR_ANY, X86_FAMILY_ANY, X86_MODEL_ANY, x }
+
 #define X86_VENDOR_ANY 0xffff
 #define X86_FAMILY_ANY 0
 #define X86_MODEL_ANY  0

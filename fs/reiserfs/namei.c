@@ -695,7 +695,6 @@ static int reiserfs_create(struct inode *dir, struct dentry *dentry, umode_t mod
 
 out_failed:
 	reiserfs_write_unlock(dir->i_sb);
-	reiserfs_security_free(&security);
 	return retval;
 }
 
@@ -779,7 +778,6 @@ static int reiserfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode
 
 out_failed:
 	reiserfs_write_unlock(dir->i_sb);
-	reiserfs_security_free(&security);
 	return retval;
 }
 
@@ -878,7 +876,6 @@ static int reiserfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 	retval = journal_end(&th);
 out_failed:
 	reiserfs_write_unlock(dir->i_sb);
-	reiserfs_security_free(&security);
 	return retval;
 }
 
@@ -1194,7 +1191,6 @@ static int reiserfs_symlink(struct inode *parent_dir,
 	retval = journal_end(&th);
 out_failed:
 	reiserfs_write_unlock(parent_dir->i_sb);
-	reiserfs_security_free(&security);
 	return retval;
 }
 

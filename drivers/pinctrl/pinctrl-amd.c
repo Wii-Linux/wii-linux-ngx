@@ -753,7 +753,6 @@ int amd_gpio_suspend(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct amd_gpio *gpio_dev = platform_get_drvdata(pdev);
 	struct pinctrl_desc *desc = gpio_dev->pctrl->desc;
-	unsigned long flags;
 	int i;
 
 	for (i = 0; i < desc->npins; i++) {
@@ -762,9 +761,7 @@ int amd_gpio_suspend(struct device *dev)
 		if (!amd_gpio_should_save(gpio_dev, pin))
 			continue;
 
-		raw_spin_lock_irqsave(&gpio_dev->lock, flags);
-		gpio_dev->saved_regs[i] = readl(gpio_dev->base + pin * 4) & ~PIN_IRQ_PENDING;
-		raw_spin_unlock_irqrestore(&gpio_dev->lock, flags);
+		gpio_dev->saved_regs[i] = readl(gpio_dev->base + pin*4);
 	}
 
 	return 0;
@@ -775,7 +772,6 @@ int amd_gpio_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct amd_gpio *gpio_dev = platform_get_drvdata(pdev);
 	struct pinctrl_desc *desc = gpio_dev->pctrl->desc;
-	unsigned long flags;
 	int i;
 
 	for (i = 0; i < desc->npins; i++) {
@@ -784,10 +780,7 @@ int amd_gpio_resume(struct device *dev)
 		if (!amd_gpio_should_save(gpio_dev, pin))
 			continue;
 
-		raw_spin_lock_irqsave(&gpio_dev->lock, flags);
-		gpio_dev->saved_regs[i] |= readl(gpio_dev->base + pin * 4) & PIN_IRQ_PENDING;
-		writel(gpio_dev->saved_regs[i], gpio_dev->base + pin * 4);
-		raw_spin_unlock_irqrestore(&gpio_dev->lock, flags);
+		writel(gpio_dev->saved_regs[i], gpio_dev->base + pin*4);
 	}
 
 	return 0;

@@ -11,7 +11,6 @@
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/sched.h>
-#include <linux/sched/task.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/kallsyms.h>
@@ -177,7 +176,7 @@ mca_handler_bh(unsigned long paddr, void *iip, unsigned long ipsr)
 	spin_unlock(&mca_bh_lock);
 
 	/* This process is about to be killed itself */
-	make_task_dead(SIGKILL);
+	do_exit(SIGKILL);
 }
 
 /**

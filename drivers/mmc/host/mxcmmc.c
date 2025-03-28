@@ -1169,9 +1169,7 @@ static int mxcmci_probe(struct platform_device *pdev)
 	host->watchdog.function = &mxcmci_watchdog;
 	host->watchdog.data = (unsigned long)mmc;
 
-	ret = mmc_add_host(mmc);
-	if (ret)
-		goto out_free_dma;
+	mmc_add_host(mmc);
 
 	return 0;
 

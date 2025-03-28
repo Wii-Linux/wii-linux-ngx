@@ -74,10 +74,8 @@ static int mcb_probe(struct device *dev)
 
 	get_device(dev);
 	ret = mdrv->probe(mdev, found_id);
-	if (ret) {
+	if (ret)
 		module_put(carrier_mod);
-		put_device(dev);
-	}
 
 	return ret;
 }

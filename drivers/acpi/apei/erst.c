@@ -898,7 +898,7 @@ EXPORT_SYMBOL_GPL(erst_clear);
 static int __init setup_erst_disable(char *str)
 {
 	erst_disable = 1;
-	return 1;
+	return 0;
 }
 
 __setup("erst_disable", setup_erst_disable);

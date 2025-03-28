@@ -119,7 +119,7 @@ static int alt_pr_fpga_write(struct fpga_manager *mgr, const char *buf,
 	u32 *buffer_32 = (u32 *)buf;
 	size_t i = 0;
 
-	if (!count)
+	if (count <= 0)
 		return -EINVAL;
 
 	/* Write out the complete 32-bit chunks */

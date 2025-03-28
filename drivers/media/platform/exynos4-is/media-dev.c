@@ -1561,11 +1561,7 @@ static int __init fimc_md_init(void)
 	if (ret)
 		return ret;
 
-	ret = platform_driver_register(&fimc_md_driver);
-	if (ret)
-		fimc_unregister_driver();
-
-	return ret;
+	return platform_driver_register(&fimc_md_driver);
 }
 
 static void __exit fimc_md_exit(void)

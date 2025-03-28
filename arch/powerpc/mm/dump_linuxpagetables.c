@@ -123,10 +123,15 @@ static const struct flag_info flag_array[] = {
 		.set	= "user",
 		.clear	= "    ",
 	}, {
-		.mask	= _PAGE_RW | _PAGE_RO,
-		.val	= _PAGE_RO,
-		.set	= "ro",
-		.clear	= "rw",
+#if _PAGE_RO == 0
+		.mask	= _PAGE_RW,
+		.val	= _PAGE_RW,
+#else
+		.mask	= _PAGE_RO,
+		.val	= 0,
+#endif
+		.set	= "rw",
+		.clear	= "ro",
 	}, {
 		.mask	= _PAGE_EXEC,
 		.val	= _PAGE_EXEC,

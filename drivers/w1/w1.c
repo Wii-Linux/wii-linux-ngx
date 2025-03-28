@@ -1136,8 +1136,6 @@ int w1_process(void *data)
 	/* remainder if it woke up early */
 	unsigned long jremain = 0;
 
-	atomic_inc(&dev->refcnt);
-
 	for (;;) {
 
 		if (!jremain && dev->search_count) {
@@ -1165,10 +1163,8 @@ int w1_process(void *data)
 		 */
 		mutex_unlock(&dev->list_mutex);
 
-		if (kthread_should_stop()) {
-			__set_current_state(TASK_RUNNING);
+		if (kthread_should_stop())
 			break;
-		}
 
 		/* Only sleep when the search is active. */
 		if (dev->search_count) {

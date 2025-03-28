@@ -21,7 +21,6 @@
 
 #include <linux/types.h>
 #include <linux/prctl.h>
-#include <linux/module.h>
 
 #include <linux/uaccess.h>
 #include <asm/reg.h>

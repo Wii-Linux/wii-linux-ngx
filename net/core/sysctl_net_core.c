@@ -229,17 +229,14 @@ static int set_default_qdisc(struct ctl_table *table, int write,
 static int proc_do_dev_weight(struct ctl_table *table, int write,
 			   void __user *buffer, size_t *lenp, loff_t *ppos)
 {
-	static DEFINE_MUTEX(dev_weight_mutex);
-	int ret, weight;
+	int ret;
 
-	mutex_lock(&dev_weight_mutex);
 	ret = proc_dointvec(table, write, buffer, lenp, ppos);
-	if (!ret && write) {
-		weight = READ_ONCE(weight_p);
-		WRITE_ONCE(dev_rx_weight, weight * dev_weight_rx_bias);
-		WRITE_ONCE(dev_tx_weight, weight * dev_weight_tx_bias);
-	}
-	mutex_unlock(&dev_weight_mutex);
+	if (ret != 0)
+		return ret;
+
+	dev_rx_weight = weight_p * dev_weight_rx_bias;
+	dev_tx_weight = weight_p * dev_weight_tx_bias;
 
 	return ret;
 }

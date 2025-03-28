@@ -744,7 +744,7 @@ static struct cluster_pmu *l2_cache_associate_cpu_with_cluster(
 {
 	u64 mpidr;
 	int cpu_cluster_id;
-	struct cluster_pmu *cluster;
+	struct cluster_pmu *cluster = NULL;
 
 	/*
 	 * This assumes that the cluster_id is in MPIDR[aff1] for
@@ -766,10 +766,10 @@ static struct cluster_pmu *l2_cache_associate_cpu_with_cluster(
 			 cluster->cluster_id);
 		cpumask_set_cpu(cpu, &cluster->cluster_cpus);
 		*per_cpu_ptr(l2cache_pmu->pmu_cluster, cpu) = cluster;
-		return cluster;
+		break;
 	}
 
-	return NULL;
+	return cluster;
 }
 
 static int l2cache_pmu_online_cpu(unsigned int cpu, struct hlist_node *node)

@@ -21,9 +21,9 @@ static inline u32 rotl32(u32 v, u8 n)
 	return (v << n) | (v >> (sizeof(v) * 8 - n));
 }
 
-void chacha20_block(u32 *state, u8 *stream)
+extern void chacha20_block(u32 *state, void *stream)
 {
-	u32 x[16];
+	u32 x[16], *out = stream;
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(x); i++)
@@ -72,7 +72,7 @@ void chacha20_block(u32 *state, u8 *stream)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(x); i++)
-		put_unaligned_le32(x[i] + state[i], &stream[i * sizeof(u32)]);
+		out[i] = cpu_to_le32(x[i] + state[i]);
 
 	state[12]++;
 }

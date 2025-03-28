@@ -150,7 +150,7 @@ __do_kernel_fault(struct mm_struct *mm, unsigned long addr, unsigned int fsr,
 	show_pte(mm, addr);
 	die("Oops", regs, fsr);
 	bust_spinlocks(0);
-	make_task_dead(SIGKILL);
+	do_exit(SIGKILL);
 }
 
 /*

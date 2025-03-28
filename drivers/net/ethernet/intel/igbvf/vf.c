@@ -24,8 +24,6 @@
 
 *******************************************************************************/
 
-#include <linux/etherdevice.h>
-
 #include "vf.h"
 
 static s32 e1000_check_for_link_vf(struct e1000_hw *hw);
@@ -156,16 +154,11 @@ static s32 e1000_reset_hw_vf(struct e1000_hw *hw)
 		/* set our "perm_addr" based on info provided by PF */
 		ret_val = mbx->ops.read_posted(hw, msgbuf, 3);
 		if (!ret_val) {
-			switch (msgbuf[0]) {
-			case E1000_VF_RESET | E1000_VT_MSGTYPE_ACK:
+			if (msgbuf[0] == (E1000_VF_RESET |
+					  E1000_VT_MSGTYPE_ACK))
 				memcpy(hw->mac.perm_addr, addr, ETH_ALEN);
-				break;
-			case E1000_VF_RESET | E1000_VT_MSGTYPE_NACK:
-				eth_zero_addr(hw->mac.perm_addr);
-				break;
-			default:
+			else
 				ret_val = -E1000_ERR_MAC_INIT;
-			}
 		}
 	}
 

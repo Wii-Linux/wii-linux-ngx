@@ -22,7 +22,6 @@
 #include <linux/interrupt.h>
 #include <linux/bcma/bcma.h>
 #include <linux/sched.h>
-#include <linux/io.h>
 #include <asm/unaligned.h>
 
 #include <soc.h>
@@ -430,6 +429,47 @@ brcmf_pcie_write_ram32(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 
 
 static void
+brcmf_pcie_copy_mem_todev(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
+			  void *srcaddr, u32 len)
+{
+	void __iomem *address = devinfo->tcm + mem_offset;
+	__le32 *src32;
+	__le16 *src16;
+	u8 *src8;
+
+	if (((ulong)address & 4) || ((ulong)srcaddr & 4) || (len & 4)) {
+		if (((ulong)address & 2) || ((ulong)srcaddr & 2) || (len & 2)) {
+			src8 = (u8 *)srcaddr;
+			while (len) {
+				iowrite8(*src8, address);
+				address++;
+				src8++;
+				len--;
+			}
+		} else {
+			len = len / 2;
+			src16 = (__le16 *)srcaddr;
+			while (len) {
+				iowrite16(le16_to_cpu(*src16), address);
+				address += 2;
+				src16++;
+				len--;
+			}
+		}
+	} else {
+		len = len / 4;
+		src32 = (__le32 *)srcaddr;
+		while (len) {
+			iowrite32(le32_to_cpu(*src32), address);
+			address += 4;
+			src32++;
+			len--;
+		}
+	}
+}
+
+
+static void
 brcmf_pcie_copy_dev_tomem(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 			  void *dstaddr, u32 len)
 {
@@ -599,7 +639,7 @@ static int brcmf_pcie_exit_download_state(struct brcmf_pciedev_info *devinfo,
 	}
 
 	if (!brcmf_chip_set_active(devinfo->ci, resetintr))
-		return -EIO;
+		return -EINVAL;
 	return 0;
 }
 
@@ -1414,8 +1454,8 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
 		return err;
 
 	brcmf_dbg(PCIE, "Download FW %s\n", devinfo->fw_name);
-	memcpy_toio(devinfo->tcm + devinfo->ci->rambase,
-		    (void *)fw->data, fw->size);
+	brcmf_pcie_copy_mem_todev(devinfo, devinfo->ci->rambase,
+				  (void *)fw->data, fw->size);
 
 	resetintr = get_unaligned_le32(fw->data);
 	release_firmware(fw);
@@ -1429,7 +1469,7 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
 		brcmf_dbg(PCIE, "Download NVRAM %s\n", devinfo->nvram_name);
 		address = devinfo->ci->rambase + devinfo->ci->ramsize -
 			  nvram_len;
-		memcpy_toio(devinfo->tcm + address, nvram, nvram_len);
+		brcmf_pcie_copy_mem_todev(devinfo, address, nvram, nvram_len);
 		brcmf_fw_nvram_free(nvram);
 	} else {
 		brcmf_dbg(PCIE, "No matching NVRAM file found %s\n",

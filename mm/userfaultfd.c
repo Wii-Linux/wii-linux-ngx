@@ -56,8 +56,6 @@ static int mcopy_atomic_pte(struct mm_struct *dst_mm,
 			/* don't free the page */
 			goto out;
 		}
-
-		flush_dcache_page(page);
 	} else {
 		page = *pagep;
 		*pagep = NULL;
@@ -567,7 +565,6 @@ retry:
 				err = -EFAULT;
 				goto out;
 			}
-			flush_dcache_page(page);
 			goto retry;
 		} else
 			BUG_ON(page);

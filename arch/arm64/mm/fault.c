@@ -288,7 +288,7 @@ static void __do_kernel_fault(unsigned long addr, unsigned int esr,
 	show_pte(addr);
 	die("Oops", regs, esr);
 	bust_spinlocks(0);
-	make_task_dead(SIGKILL);
+	do_exit(SIGKILL);
 }
 
 /*

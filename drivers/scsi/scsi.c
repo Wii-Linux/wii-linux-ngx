@@ -351,18 +351,11 @@ static int scsi_vpd_inquiry(struct scsi_device *sdev, unsigned char *buffer,
 	if (result)
 		return -EIO;
 
-	/*
-	 * Sanity check that we got the page back that we asked for and that
-	 * the page size is not 0.
-	 */
+	/* Sanity check that we got the page back that we asked for */
 	if (buffer[1] != page)
 		return -EIO;
 
-	result = get_unaligned_be16(&buffer[2]);
-	if (!result)
-		return -EIO;
-
-	return result + 4;
+	return get_unaligned_be16(&buffer[2]) + 4;
 }
 
 /**

@@ -290,7 +290,7 @@ void die_if_kernel(char *str, struct pt_regs *regs, long err)
 		panic("Fatal exception");
 
 	oops_exit();
-	make_task_dead(SIGSEGV);
+	do_exit(SIGSEGV);
 }
 
 /* gdb uses break 4,8 */

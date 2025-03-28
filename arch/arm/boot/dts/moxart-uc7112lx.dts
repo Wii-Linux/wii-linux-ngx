@@ -80,7 +80,7 @@
 	clocks = <&ref12>;
 };
 
-&mmc {
+&sdhci {
 	status = "okay";
 };
 

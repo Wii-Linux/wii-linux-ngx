@@ -171,18 +171,12 @@ const char *dccp_packet_name(const int type)
 
 EXPORT_SYMBOL_GPL(dccp_packet_name);
 
-void dccp_destruct_common(struct sock *sk)
+static void dccp_sk_destruct(struct sock *sk)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 
 	ccid_hc_tx_delete(dp->dccps_hc_tx_ccid, sk);
 	dp->dccps_hc_tx_ccid = NULL;
-}
-EXPORT_SYMBOL_GPL(dccp_destruct_common);
-
-static void dccp_sk_destruct(struct sock *sk)
-{
-	dccp_destruct_common(sk);
 	inet_sock_destruct(sk);
 }
 
@@ -770,6 +764,11 @@ int dccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 	lock_sock(sk);
 
+	if (dccp_qpolicy_full(sk)) {
+		rc = -EAGAIN;
+		goto out_release;
+	}
+
 	timeo = sock_sndtimeo(sk, noblock);
 
 	/*
@@ -787,11 +786,6 @@ int dccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	lock_sock(sk);
 	if (skb == NULL)
 		goto out_release;
-
-	if (dccp_qpolicy_full(sk)) {
-		rc = -EAGAIN;
-		goto out_discard;
-	}
 
 	if (sk->sk_state == DCCP_CLOSED) {
 		rc = -ENOTCONN;

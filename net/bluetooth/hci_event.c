@@ -4470,9 +4470,8 @@ static void hci_disconn_phylink_complete_evt(struct hci_dev *hdev,
 	hci_dev_lock(hdev);
 
 	hcon = hci_conn_hash_lookup_handle(hdev, ev->phy_handle);
-	if (hcon && hcon->type == AMP_LINK) {
+	if (hcon) {
 		hcon->state = BT_CLOSED;
-		hci_disconn_cfm(hcon, ev->reason);
 		hci_conn_del(hcon);
 	}
 

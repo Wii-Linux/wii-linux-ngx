@@ -72,7 +72,6 @@
 
 static unsigned int target_mwait;
 static struct dentry *debug_dir;
-static bool poll_pkg_cstate_enable;
 
 /* user selected target */
 static unsigned int set_target_ratio;
@@ -280,9 +279,6 @@ static u64 pkg_state_counter(void)
 static unsigned int get_compensation(int ratio)
 {
 	unsigned int comp = 0;
-
-	if (!poll_pkg_cstate_enable)
-		return 0;
 
 	/* we only use compensation if all adjacent ones are good */
 	if (ratio == 1 &&
@@ -553,11 +549,12 @@ static int start_power_clamp(void)
 	get_online_cpus();
 
 	/* prefer BSP */
-	control_cpu = cpumask_first(cpu_online_mask);
+	control_cpu = 0;
+	if (!cpu_online(control_cpu))
+		control_cpu = smp_processor_id();
 
 	clamping = true;
-	if (poll_pkg_cstate_enable)
-		schedule_delayed_work(&poll_pkg_cstate_work, 0);
+	schedule_delayed_work(&poll_pkg_cstate_work, 0);
 
 	/* start one kthread worker per online cpu */
 	for_each_online_cpu(cpu) {
@@ -626,15 +623,11 @@ static int powerclamp_get_max_state(struct thermal_cooling_device *cdev,
 static int powerclamp_get_cur_state(struct thermal_cooling_device *cdev,
 				 unsigned long *state)
 {
-	if (clamping) {
-		if (poll_pkg_cstate_enable)
-			*state = pkg_cstate_ratio_cur;
-		else
-			*state = set_target_ratio;
-	} else {
+	if (true == clamping)
+		*state = pkg_cstate_ratio_cur;
+	else
 		/* to save power, do not poll idle ratio while not clamping */
 		*state = -1; /* indicates invalid state */
-	}
 
 	return 0;
 }
@@ -778,9 +771,6 @@ static int __init powerclamp_init(void)
 		retval = -ENOMEM;
 		goto exit_unregister;
 	}
-
-	if (topology_max_packages() == 1)
-		poll_pkg_cstate_enable = true;
 
 	cooling_dev = thermal_cooling_device_register("intel_powerclamp", NULL,
 						&powerclamp_cooling_ops);

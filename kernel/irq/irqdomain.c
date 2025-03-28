@@ -492,9 +492,6 @@ void irq_domain_disassociate(struct irq_domain *domain, unsigned int irq)
 		return;
 
 	hwirq = irq_data->hwirq;
-
-	mutex_lock(&irq_domain_mutex);
-
 	irq_set_status_flags(irq, IRQ_NOREQUEST);
 
 	/* remove chip and handler */
@@ -514,12 +511,10 @@ void irq_domain_disassociate(struct irq_domain *domain, unsigned int irq)
 
 	/* Clear reverse map for this hwirq */
 	irq_domain_clear_mapping(domain, hwirq);
-
-	mutex_unlock(&irq_domain_mutex);
 }
 
-static int irq_domain_associate_locked(struct irq_domain *domain, unsigned int virq,
-				       irq_hw_number_t hwirq)
+int irq_domain_associate(struct irq_domain *domain, unsigned int virq,
+			 irq_hw_number_t hwirq)
 {
 	struct irq_data *irq_data = irq_get_irq_data(virq);
 	int ret;
@@ -532,6 +527,7 @@ static int irq_domain_associate_locked(struct irq_domain *domain, unsigned int v
 	if (WARN(irq_data->domain, "error: virq%i is already associated", virq))
 		return -EINVAL;
 
+	mutex_lock(&irq_domain_mutex);
 	irq_data->hwirq = hwirq;
 	irq_data->domain = domain;
 	if (domain->ops->map) {
@@ -548,6 +544,7 @@ static int irq_domain_associate_locked(struct irq_domain *domain, unsigned int v
 			}
 			irq_data->domain = NULL;
 			irq_data->hwirq = 0;
+			mutex_unlock(&irq_domain_mutex);
 			return ret;
 		}
 
@@ -558,22 +555,11 @@ static int irq_domain_associate_locked(struct irq_domain *domain, unsigned int v
 
 	domain->mapcount++;
 	irq_domain_set_mapping(domain, hwirq, irq_data);
+	mutex_unlock(&irq_domain_mutex);
 
 	irq_clear_status_flags(virq, IRQ_NOREQUEST);
 
 	return 0;
-}
-
-int irq_domain_associate(struct irq_domain *domain, unsigned int virq,
-			 irq_hw_number_t hwirq)
-{
-	int ret;
-
-	mutex_lock(&irq_domain_mutex);
-	ret = irq_domain_associate_locked(domain, virq, hwirq);
-	mutex_unlock(&irq_domain_mutex);
-
-	return ret;
 }
 EXPORT_SYMBOL_GPL(irq_domain_associate);
 
@@ -827,8 +813,13 @@ unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec)
 	}
 
 	irq_data = irq_get_irq_data(virq);
-	if (WARN_ON(!irq_data))
+	if (!irq_data) {
+		if (irq_domain_is_hierarchy(domain))
+			irq_domain_free_irqs(virq, 1);
+		else
+			irq_dispose_mapping(virq);
 		return 0;
+	}
 
 	/* Store trigger type */
 	irqd_set_trigger_type(irq_data, type);

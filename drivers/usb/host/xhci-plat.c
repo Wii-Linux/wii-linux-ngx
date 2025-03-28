@@ -252,7 +252,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 			*priv = *priv_match;
 	}
 
-	device_set_wakeup_capable(&pdev->dev, true);
+	device_wakeup_enable(hcd->self.controller);
 
 	xhci->clk = clk;
 	xhci->main_hcd = hcd;

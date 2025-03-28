@@ -57,8 +57,9 @@ static u64 core_reg_offset_from_id(u64 id)
 	return id & ~(KVM_REG_ARCH_MASK | KVM_REG_SIZE_MASK | KVM_REG_ARM_CORE);
 }
 
-static int core_reg_size_from_offset(u64 off)
+static int validate_core_offset(const struct kvm_one_reg *reg)
 {
+	u64 off = core_reg_offset_from_id(reg->id);
 	int size;
 
 	switch (off) {
@@ -88,24 +89,11 @@ static int core_reg_size_from_offset(u64 off)
 		return -EINVAL;
 	}
 
-	if (!IS_ALIGNED(off, size / sizeof(__u32)))
-		return -EINVAL;
+	if (KVM_REG_SIZE(reg->id) == size &&
+	    IS_ALIGNED(off, size / sizeof(__u32)))
+		return 0;
 
-	return size;
-}
-
-static int validate_core_offset(const struct kvm_one_reg *reg)
-{
-	u64 off = core_reg_offset_from_id(reg->id);
-	int size = core_reg_size_from_offset(off);
-
-	if (size < 0)
-		return -EINVAL;
-
-	if (KVM_REG_SIZE(reg->id) != size)
-		return -EINVAL;
-
-	return 0;
+	return -EINVAL;
 }
 
 static int get_core_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *reg)
@@ -205,51 +193,9 @@ int kvm_arch_vcpu_ioctl_set_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 	return -EINVAL;
 }
 
-static int kvm_arm_copy_core_reg_indices(u64 __user *uindices)
-{
-	unsigned int i;
-	int n = 0;
-
-	for (i = 0; i < sizeof(struct kvm_regs) / sizeof(__u32); i++) {
-		u64 reg = KVM_REG_ARM64 | KVM_REG_ARM_CORE | i;
-		int size = core_reg_size_from_offset(i);
-
-		if (size < 0)
-			continue;
-
-		switch (size) {
-		case sizeof(__u32):
-			reg |= KVM_REG_SIZE_U32;
-			break;
-
-		case sizeof(__u64):
-			reg |= KVM_REG_SIZE_U64;
-			break;
-
-		case sizeof(__uint128_t):
-			reg |= KVM_REG_SIZE_U128;
-			break;
-
-		default:
-			WARN_ON(1);
-			continue;
-		}
-
-		if (uindices) {
-			if (put_user(reg, uindices))
-				return -EFAULT;
-			uindices++;
-		}
-
-		n++;
-	}
-
-	return n;
-}
-
 static unsigned long num_core_regs(void)
 {
-	return kvm_arm_copy_core_reg_indices(NULL);
+	return sizeof(struct kvm_regs) / sizeof(__u32);
 }
 
 /**
@@ -323,20 +269,23 @@ unsigned long kvm_arm_num_regs(struct kvm_vcpu *vcpu)
  */
 int kvm_arm_copy_reg_indices(struct kvm_vcpu *vcpu, u64 __user *uindices)
 {
+	unsigned int i;
+	const u64 core_reg = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE;
 	int ret;
 
-	ret = kvm_arm_copy_core_reg_indices(uindices);
-	if (ret < 0)
-		return ret;
-	uindices += ret;
+	for (i = 0; i < sizeof(struct kvm_regs) / sizeof(__u32); i++) {
+		if (put_user(core_reg | i, uindices))
+			return -EFAULT;
+		uindices++;
+	}
 
 	ret = kvm_arm_copy_fw_reg_indices(vcpu, uindices);
-	if (ret < 0)
+	if (ret)
 		return ret;
 	uindices += kvm_arm_get_fw_num_regs(vcpu);
 
 	ret = copy_timer_indices(vcpu, uindices);
-	if (ret < 0)
+	if (ret)
 		return ret;
 	uindices += NUM_TIMER_REGS;
 

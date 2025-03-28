@@ -326,7 +326,7 @@ struct cpio_data find_microcode_in_initrd(const char *path, bool use_pa)
 #endif
 }
 
-void reload_early_microcode(unsigned int cpu)
+void reload_early_microcode(void)
 {
 	int vendor, family;
 
@@ -340,7 +340,7 @@ void reload_early_microcode(unsigned int cpu)
 		break;
 	case X86_VENDOR_AMD:
 		if (family >= 0x10)
-			reload_ucode_amd(cpu);
+			reload_ucode_amd();
 		break;
 	default:
 		break;
@@ -773,9 +773,9 @@ static struct subsys_interface mc_cpu_interface = {
 };
 
 /**
- * microcode_bsp_resume - Update boot CPU microcode during resume.
+ * mc_bp_resume - Update boot CPU microcode during resume.
  */
-void microcode_bsp_resume(void)
+static void mc_bp_resume(void)
 {
 	int cpu = smp_processor_id();
 	struct ucode_cpu_info *uci = ucode_cpu_info + cpu;
@@ -783,11 +783,11 @@ void microcode_bsp_resume(void)
 	if (uci->valid && uci->mc)
 		microcode_ops->apply_microcode(cpu);
 	else if (!uci->mc)
-		reload_early_microcode(cpu);
+		reload_early_microcode();
 }
 
 static struct syscore_ops mc_syscore_ops = {
-	.resume			= microcode_bsp_resume,
+	.resume			= mc_bp_resume,
 };
 
 static int mc_cpu_starting(unsigned int cpu)

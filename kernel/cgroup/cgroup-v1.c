@@ -426,7 +426,6 @@ static void *cgroup_pidlist_start(struct seq_file *s, loff_t *pos)
 	 * next pid to display, if any
 	 */
 	struct kernfs_open_file *of = s->private;
-	struct cgroup_file_ctx *ctx = of->priv;
 	struct cgroup *cgrp = seq_css(s)->cgroup;
 	struct cgroup_pidlist *l;
 	enum cgroup_filetype type = seq_cft(s)->private;
@@ -436,24 +435,25 @@ static void *cgroup_pidlist_start(struct seq_file *s, loff_t *pos)
 	mutex_lock(&cgrp->pidlist_mutex);
 
 	/*
-	 * !NULL @ctx->procs1.pidlist indicates that this isn't the first
-	 * start() after open. If the matching pidlist is around, we can use
-	 * that. Look for it. Note that @ctx->procs1.pidlist can't be used
-	 * directly. It could already have been destroyed.
+	 * !NULL @of->priv indicates that this isn't the first start()
+	 * after open.  If the matching pidlist is around, we can use that.
+	 * Look for it.  Note that @of->priv can't be used directly.  It
+	 * could already have been destroyed.
 	 */
-	if (ctx->procs1.pidlist)
-		ctx->procs1.pidlist = cgroup_pidlist_find(cgrp, type);
+	if (of->priv)
+		of->priv = cgroup_pidlist_find(cgrp, type);
 
 	/*
 	 * Either this is the first start() after open or the matching
 	 * pidlist has been destroyed inbetween.  Create a new one.
 	 */
-	if (!ctx->procs1.pidlist) {
-		ret = pidlist_array_load(cgrp, type, &ctx->procs1.pidlist);
+	if (!of->priv) {
+		ret = pidlist_array_load(cgrp, type,
+					 (struct cgroup_pidlist **)&of->priv);
 		if (ret)
 			return ERR_PTR(ret);
 	}
-	l = ctx->procs1.pidlist;
+	l = of->priv;
 
 	if (pid) {
 		int end = l->length;
@@ -481,8 +481,7 @@ static void *cgroup_pidlist_start(struct seq_file *s, loff_t *pos)
 static void cgroup_pidlist_stop(struct seq_file *s, void *v)
 {
 	struct kernfs_open_file *of = s->private;
-	struct cgroup_file_ctx *ctx = of->priv;
-	struct cgroup_pidlist *l = ctx->procs1.pidlist;
+	struct cgroup_pidlist *l = of->priv;
 
 	if (l)
 		mod_delayed_work(cgroup_pidlist_destroy_wq, &l->destroy_dwork,
@@ -493,8 +492,7 @@ static void cgroup_pidlist_stop(struct seq_file *s, void *v)
 static void *cgroup_pidlist_next(struct seq_file *s, void *v, loff_t *pos)
 {
 	struct kernfs_open_file *of = s->private;
-	struct cgroup_file_ctx *ctx = of->priv;
-	struct cgroup_pidlist *l = ctx->procs1.pidlist;
+	struct cgroup_pidlist *l = of->priv;
 	pid_t *p = v;
 	pid_t *end = l->list + l->length;
 	/*
@@ -537,11 +535,10 @@ static ssize_t __cgroup1_procs_write(struct kernfs_open_file *of,
 		goto out_unlock;
 
 	/*
-	 * Even if we're attaching all tasks in the thread group, we only need
-	 * to check permissions on one of them. Check permissions using the
-	 * credentials from file open to protect against inherited fd attacks.
+	 * Even if we're attaching all tasks in the thread group, we only
+	 * need to check permissions on one of them.
 	 */
-	cred = of->file->f_cred;
+	cred = current_cred();
 	tcred = get_task_cred(task);
 	if (!uid_eq(cred->euid, GLOBAL_ROOT_UID) &&
 	    !uid_eq(cred->euid, tcred->uid) &&

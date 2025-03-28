@@ -1200,8 +1200,8 @@ route_lookup:
 	 */
 	max_headroom = LL_RESERVED_SPACE(dst->dev) + sizeof(struct ipv6hdr)
 			+ dst->header_len + t->hlen;
-	if (max_headroom > READ_ONCE(dev->needed_headroom))
-		WRITE_ONCE(dev->needed_headroom, max_headroom);
+	if (max_headroom > dev->needed_headroom)
+		dev->needed_headroom = max_headroom;
 
 	err = ip6_tnl_encap(skb, t, &proto, fl6);
 	if (err)
@@ -1431,7 +1431,6 @@ static void ip6_tnl_link_config(struct ip6_tnl *t)
 	struct __ip6_tnl_parm *p = &t->parms;
 	struct flowi6 *fl6 = &t->fl.u.ip6;
 	int t_hlen;
-	int mtu;
 
 	memcpy(dev->dev_addr, &p->laddr, sizeof(struct in6_addr));
 	memcpy(dev->broadcast, &p->raddr, sizeof(struct in6_addr));
@@ -1474,13 +1473,12 @@ static void ip6_tnl_link_config(struct ip6_tnl *t)
 			dev->hard_header_len = rt->dst.dev->hard_header_len +
 				t_hlen;
 
-			mtu = rt->dst.dev->mtu - t_hlen;
+			dev->mtu = rt->dst.dev->mtu - t_hlen;
 			if (!(t->parms.flags & IP6_TNL_F_IGN_ENCAP_LIMIT))
-				mtu -= 8;
+				dev->mtu -= 8;
 
-			if (mtu < IPV6_MIN_MTU)
-				mtu = IPV6_MIN_MTU;
-			WRITE_ONCE(dev->mtu, mtu);
+			if (dev->mtu < IPV6_MIN_MTU)
+				dev->mtu = IPV6_MIN_MTU;
 		}
 		ip6_rt_put(rt);
 	}

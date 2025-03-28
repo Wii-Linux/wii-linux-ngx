@@ -918,13 +918,9 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 
 	for (i = 0; i < pdata->num_regulators; i++) {
 		const struct sec_voltage_desc *desc;
-		unsigned int id = pdata->regulators[i].id;
+		int id = pdata->regulators[i].id;
 		int enable_reg, enable_val;
 		struct regulator_dev *rdev;
-
-		BUILD_BUG_ON(ARRAY_SIZE(regulators) != ARRAY_SIZE(reg_voltage_map));
-		if (WARN_ON_ONCE(id >= ARRAY_SIZE(regulators)))
-			continue;
 
 		desc = reg_voltage_map[id];
 		if (desc) {

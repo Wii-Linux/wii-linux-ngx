@@ -432,7 +432,6 @@ static int chipsfb_pci_init(struct pci_dev *dp, const struct pci_device_id *ent)
  err_release_fb:
 	framebuffer_release(p);
  err_disable:
-	pci_disable_device(dp);
  err_out:
 	return rc;
 }

@@ -500,7 +500,9 @@ long arch_ptrace(struct task_struct *child, long request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		return put_user(child->thread.last_break, (unsigned long __user *)data);
+		put_user(child->thread.last_break,
+			 (unsigned long __user *) data);
+		return 0;
 	case PTRACE_ENABLE_TE:
 		if (!MACHINE_HAS_TE)
 			return -EIO;
@@ -852,7 +854,9 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		return put_user(child->thread.last_break, (unsigned int __user *)data);
+		put_user(child->thread.last_break,
+			 (unsigned int __user *) data);
+		return 0;
 	}
 	return compat_ptrace_request(child, request, addr, data);
 }

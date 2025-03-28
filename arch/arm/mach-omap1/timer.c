@@ -165,7 +165,7 @@ err_free_pdata:
 	kfree(pdata);
 
 err_free_pdev:
-	platform_device_put(pdev);
+	platform_device_unregister(pdev);
 
 	return ret;
 }

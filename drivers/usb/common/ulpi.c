@@ -214,7 +214,7 @@ static int ulpi_read_id(struct ulpi *ulpi)
 
 	ret = ulpi_read(ulpi, ULPI_SCRATCH);
 	if (ret < 0)
-		goto err;
+		return ret;
 
 	if (ret != 0xaa)
 		goto err;

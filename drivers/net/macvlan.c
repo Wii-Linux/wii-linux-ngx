@@ -1139,7 +1139,7 @@ void macvlan_common_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 
-	/* ether_setup() has set dev->min_mtu to ETH_MIN_MTU. */
+	dev->min_mtu		= 0;
 	dev->max_mtu		= ETH_MAX_MTU;
 	dev->priv_flags	       &= ~IFF_TX_SKB_SHARING;
 	netif_keep_dst(dev);
@@ -1456,10 +1456,8 @@ destroy_macvlan_port:
 	/* the macvlan port may be freed by macvlan_uninit when fail to register.
 	 * so we destroy the macvlan port only when it's valid.
 	 */
-	if (create && macvlan_port_get_rtnl(lowerdev)) {
-		macvlan_flush_sources(port, vlan);
+	if (create && macvlan_port_get_rtnl(lowerdev))
 		macvlan_port_destroy(port->dev);
-	}
 	return err;
 }
 EXPORT_SYMBOL_GPL(macvlan_common_newlink);

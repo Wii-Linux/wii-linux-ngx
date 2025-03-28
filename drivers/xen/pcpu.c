@@ -228,7 +228,7 @@ static int register_pcpu(struct pcpu *pcpu)
 
 	err = device_register(dev);
 	if (err) {
-		put_device(dev);
+		pcpu_release(dev);
 		return err;
 	}
 

@@ -2547,7 +2547,9 @@ void __noreturn die_if_kernel(char *str, struct pt_regs *regs)
 	}
 	if (panic_on_oops)
 		panic("Fatal exception");
-	make_task_dead((regs->tstate & TSTATE_PRIV)? SIGKILL : SIGSEGV);
+	if (regs->tstate & TSTATE_PRIV)
+		do_exit(SIGKILL);
+	do_exit(SIGSEGV);
 }
 EXPORT_SYMBOL(die_if_kernel);
 

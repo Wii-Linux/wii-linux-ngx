@@ -150,8 +150,6 @@ struct capsule_info {
 	size_t			page_bytes_remain;
 };
 
-int efi_capsule_setup_info(struct capsule_info *cap_info, void *kbuff,
-                           size_t hdr_bytes);
 int __efi_capsule_setup_info(struct capsule_info *cap_info);
 
 /*
@@ -1607,7 +1605,7 @@ efi_status_t efi_exit_boot_services(efi_system_table_t *sys_table,
 				    void *priv,
 				    efi_exit_boot_map_processing priv_func);
 
-#define EFI_RANDOM_SEED_SIZE		32U // BLAKE2S_HASH_SIZE
+#define EFI_RANDOM_SEED_SIZE		64U
 
 struct linux_efi_random_seed {
 	u32	size;

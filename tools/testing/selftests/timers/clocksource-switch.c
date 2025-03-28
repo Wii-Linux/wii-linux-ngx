@@ -110,10 +110,10 @@ int run_tests(int secs)
 
 	sprintf(buf, "./inconsistency-check -t %i", secs);
 	ret = system(buf);
-	if (WIFEXITED(ret) && WEXITSTATUS(ret))
-		return WEXITSTATUS(ret);
+	if (ret)
+		return ret;
 	ret = system("./nanosleep");
-	return WIFEXITED(ret) ? WEXITSTATUS(ret) : 0;
+	return ret;
 }
 
 

@@ -2267,12 +2267,8 @@ static void sci_set_termios(struct uart_port *port, struct ktermios *termios,
 	unsigned long max_freq = 0;
 	int best_clk = -1;
 
-	if ((termios->c_cflag & CSIZE) == CS7) {
+	if ((termios->c_cflag & CSIZE) == CS7)
 		smr_val |= SCSMR_CHR;
-	} else {
-		termios->c_cflag &= ~CSIZE;
-		termios->c_cflag |= CS8;
-	}
 	if (termios->c_cflag & PARENB)
 		smr_val |= SCSMR_PE;
 	if (termios->c_cflag & PARODD)
@@ -2839,7 +2835,7 @@ static int sci_init_single(struct platform_device *dev,
 	port->flags		= UPF_FIXED_PORT | UPF_BOOT_AUTOCONF | p->flags;
 	port->fifosize		= sci_port->params->fifosize;
 
-	if (port->type == PORT_SCI && !dev->dev.of_node) {
+	if (port->type == PORT_SCI) {
 		if (sci_port->reg_size >= 0x20)
 			port->regshift = 2;
 		else

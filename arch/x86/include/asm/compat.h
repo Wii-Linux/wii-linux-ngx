@@ -57,13 +57,15 @@ struct compat_timeval {
 };
 
 struct compat_stat {
-	u32		st_dev;
+	compat_dev_t	st_dev;
+	u16		__pad1;
 	compat_ino_t	st_ino;
 	compat_mode_t	st_mode;
 	compat_nlink_t	st_nlink;
 	__compat_uid_t	st_uid;
 	__compat_gid_t	st_gid;
-	u32		st_rdev;
+	compat_dev_t	st_rdev;
+	u16		__pad2;
 	u32		st_size;
 	u32		st_blksize;
 	u32		st_blocks;

@@ -86,7 +86,9 @@ void __noreturn die_if_kernel(char *str, struct pt_regs *regs)
 	}
 	printk("Instruction DUMP:");
 	instruction_dump ((unsigned long *) regs->pc);
-	make_task_dead((regs->psr & PSR_PS) ? SIGKILL : SIGSEGV);
+	if(regs->psr & PSR_PS)
+		do_exit(SIGKILL);
+	do_exit(SIGSEGV);
 }
 
 void do_hw_interrupt(struct pt_regs *regs, unsigned long type)

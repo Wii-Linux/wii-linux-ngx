@@ -2125,12 +2125,10 @@ static int stfsm_probe(struct platform_device *pdev)
 		(long long)fsm->mtd.size, (long long)(fsm->mtd.size >> 20),
 		fsm->mtd.erasesize, (fsm->mtd.erasesize >> 10));
 
-	ret = mtd_device_register(&fsm->mtd, NULL, 0);
-	if (ret) {
-err_clk_unprepare:
-		clk_disable_unprepare(fsm->clk);
-	}
+	return mtd_device_register(&fsm->mtd, NULL, 0);
 
+err_clk_unprepare:
+	clk_disable_unprepare(fsm->clk);
 	return ret;
 }
 

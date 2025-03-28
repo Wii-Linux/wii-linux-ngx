@@ -1309,8 +1309,8 @@ static ssize_t outlen_write(struct file *filp, const char __user *buf,
 		return -EFAULT;
 
 	err = sscanf(outlen_str, "%d", &outlen);
-	if (err != 1)
-		return -EINVAL;
+	if (err < 0)
+		return err;
 
 	ptr = kzalloc(outlen, GFP_KERNEL);
 	if (!ptr)

@@ -70,7 +70,7 @@ void xenvif_skb_zerocopy_complete(struct xenvif_queue *queue)
 	wake_up(&queue->dealloc_wq);
 }
 
-static int xenvif_schedulable(struct xenvif *vif)
+int xenvif_schedulable(struct xenvif *vif)
 {
 	return netif_running(vif->dev) &&
 		test_bit(VIF_STATUS_CONNECTED, &vif->status) &&
@@ -178,6 +178,20 @@ irqreturn_t xenvif_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+int xenvif_queue_stopped(struct xenvif_queue *queue)
+{
+	struct net_device *dev = queue->vif->dev;
+	unsigned int id = queue->id;
+	return netif_tx_queue_stopped(netdev_get_tx_queue(dev, id));
+}
+
+void xenvif_wake_queue(struct xenvif_queue *queue)
+{
+	struct net_device *dev = queue->vif->dev;
+	unsigned int id = queue->id;
+	netif_tx_wake_queue(netdev_get_tx_queue(dev, id));
+}
+
 static u16 xenvif_select_queue(struct net_device *dev, struct sk_buff *skb,
 			       void *accel_priv,
 			       select_queue_fallback_t fallback)
@@ -254,16 +268,14 @@ xenvif_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (vif->hash.alg == XEN_NETIF_CTRL_HASH_ALGORITHM_NONE)
 		skb_clear_hash(skb);
 
-	if (!xenvif_rx_queue_tail(queue, skb))
-		goto drop;
-
+	xenvif_rx_queue_tail(queue, skb);
 	xenvif_kick_thread(queue);
 
 	return NETDEV_TX_OK;
 
  drop:
 	vif->dev->stats.tx_dropped++;
-	dev_kfree_skb_any(skb);
+	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
 
