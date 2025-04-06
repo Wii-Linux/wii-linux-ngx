@@ -498,22 +498,13 @@ static int ug_tty_init(void)
 	driver->type = TTY_DRIVER_TYPE_SYSCONS;
 	driver->init_termios = tty_std_termios;
 	tty_set_operations(driver, &ug_tty_ops);
+
+	driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	retval = tty_register_driver(driver);
 	if (retval) {
 		put_tty_driver(driver);
 		return retval;
 	}
-	driver->ports[0] = kmalloc(sizeof(**driver->ports), GFP_KERNEL);
-	driver->ports[1] = kmalloc(sizeof(**driver->ports), GFP_KERNEL);
-
-	if (!driver->ports[0]) {
-		return -ENOMEM;
-	}
-	if (!driver->ports[1]) {
-		return -ENOMEM;
-	}
-	tty_port_init(driver->ports[0]);
-	tty_port_init(driver->ports[1]);
 	ug_tty_driver = driver;
 	return 0;
 }
@@ -552,6 +543,7 @@ static int ug_probe(struct exi_device *exi_device)
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
+	struct tty_port *port;
 
 	pr_info("usbgecko: ug_probe() called for channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
@@ -572,9 +564,24 @@ static int ug_probe(struct exi_device *exi_device)
 
 	pr_info("usbgecko: adapter appears present, continuing with init\n");
 
+
+	ug_tty_init();
 	slot = to_channel(exi_get_exi_channel(exi_device));
 	console = &ug_consoles[slot];
 	adapter = console->data;
+
+	if (!ug_tty_driver->ports[slot]) {
+		pr_info("usbgecko: initializing console on slot %c\n", 'A'+slot);
+		port = kmalloc(sizeof(*port), GFP_KERNEL);
+
+		if (!port)
+			return -ENOMEM;
+
+		tty_port_init(port);
+		ug_tty_driver->ports[slot] = port;
+		tty_port_register_device(port, ug_tty_driver, slot, NULL);
+	}
+
 
 	drv_printk(KERN_INFO, "USB Gecko detected in memcard slot-%c\n",
 		   'A'+slot);
@@ -587,7 +594,6 @@ static int ug_probe(struct exi_device *exi_device)
 	exi_set_drvdata(exi_device, adapter);
 	register_console(console);
 
-	ug_tty_init();
 
 	return 0;
 }
@@ -601,6 +607,8 @@ static void ug_remove(struct exi_device *exi_device)
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
+	struct tty_port *port;
+
 	pr_info("usbgecko: ug_remove() called for channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
 
@@ -611,12 +619,21 @@ static void ug_remove(struct exi_device *exi_device)
 	if (adapter->refcnt)
 		drv_printk(KERN_ERR, "adapter removed while in use!\n");
 
-	ug_tty_exit();
-
 	unregister_console(console);
+
+	if (ug_tty_driver->ports[slot]) {
+		tty_unregister_device(ug_tty_driver, slot);
+		tty_port_destroy(ug_tty_driver->ports[slot]);
+		kfree(ug_tty_driver->ports[slot]);
+		ug_tty_driver->ports[slot] = NULL;
+	}
+
+
 	exi_set_drvdata(exi_device, NULL);
 	adapter->exi_device = NULL;
 	exi_device_put(exi_device);
+
+
 
 	mutex_destroy(&adapter->mutex);
 
