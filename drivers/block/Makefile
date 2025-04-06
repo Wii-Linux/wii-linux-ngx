@@ -16,7 +16,6 @@ obj-$(CONFIG_ATARI_FLOPPY)	+= ataflop.o
 obj-$(CONFIG_AMIGA_Z2RAM)	+= z2ram.o
 obj-$(CONFIG_GAMECUBE_SD)	+= gcn-sd.o
 obj-$(CONFIG_GAMECUBE_DI)	+= gcn-di/
-obj-$(CONFIG_WII_SD)		+= rvl-stsd.o
 obj-$(CONFIG_WII_DI)		+= rvl-di.o
 obj-$(CONFIG_BLK_DEV_RAM)	+= brd.o
 obj-$(CONFIG_BLK_DEV_LOOP)	+= loop.o

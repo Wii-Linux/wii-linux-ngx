@@ -153,48 +153,7 @@ config WII
 	  More information at: <http://gc-linux.sourceforge.net/>
 endchoice
 
-choice
-	prompt "Boot Method"
-	depends on WII
-	help
-	  While it's technically possible to build Kernels with both
-	  IOS and MINI support, it's not recommended as it neadlessly
-	  increases both Kernel size and memory consumption.  Instead,
-	  two sperate Kernels should be build and it's now enforced here by
-	  default for simplicity.  If the default MINI setup in "Whiite"
-	  format isn't used, it's recommended to first edit the boot
-	  parameter "root=" in the wii.dts file located in
-	  "arch/powerpc/boot/" before compiling.
-
-config STARLET_IOS
-	bool "Nintendo Wii Starlet IOS support"
-	select PPC_LIB_RHEAP
-	help
-	  Select STARLET_IOS if configuring to load through HBC.
-	  Although this mode generally requires less CPU, it lacks
-	  the ability to use it's full RAM capabilies and also lacks
-	  some hardward functionality.  Of it's limitations, the most
-	  noticiable are the lack of the DVD drive functionality and
-	  wireless capabilities (except Bluetooth).
-	  More information at: <http://gc-linux.sourceforge.net/>
-
-config STARLET_MINI
-	bool "Team Twiizers 'mini' firmware support"
-	select USB_ARCH_HAS_EHCI if USB_SUPPORT
-	select USB_ARCH_HAS_OHCI if USB_SUPPORT
-	help
-	  Select STARLET_MINI if configuring to load through BootMii.
-	  This mode is generally more unstable and requires more CPU,
-	  but gains the ability to utilize the hardward to its full
-	  potential.  All of the RAM, as well as most of the hardward
-	  in the Wii is supported in this mode.  There are a few
-	  limitations such as their being a lack of ability to read/write
-	  to Gamecube memory cards and not being unable to soft reboot.
-	  More information at: <http://gc-linux.sourceforge.net/>
-
-endchoice
-
 config HLWD_PIC
 	bool
-	depends on STARLET_MINI
+	depends on WII
 	default y

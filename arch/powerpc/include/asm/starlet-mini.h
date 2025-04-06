@@ -15,7 +15,7 @@
 #ifndef __STARLET_MINI_H
 #define __STARLET_MINI_H
 
-#ifdef CONFIG_STARLET_MINI
+#ifdef CONFIG_WII
 
 /*
  * mini ipc call numbering scheme
@@ -167,6 +167,6 @@ static inline int mipc_discover(struct mipc_infohdr **hdrp)
 	return -ENODEV;
 }
 
-#endif /* CONFIG_STARLET_MINI */
+#endif /* CONFIG_WII */
 
 #endif /* __STARLET_MINI_H */

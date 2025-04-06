@@ -30,7 +30,6 @@
 #include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/starlet.h>
-#include <asm/starlet-ios.h>
 #include <asm/starlet-mini.h>
 #include <asm/udbg.h>
 
@@ -156,36 +155,6 @@ static void __init wii_setup_arch(void)
 	starlet_discover_ipc_flavour();
 }
 
-#ifdef CONFIG_STARLET_IOS
-static void wii_restart(char *cmd)
-{
-	local_irq_disable();
-
-	/* try first to launch The Homebrew Channel... */
-	starlet_es_reload_ios_and_launch(STARLET_TITLE_HBC_V107);
-	starlet_es_reload_ios_and_launch(STARLET_TITLE_HBC_JODI);
-	starlet_es_reload_ios_and_launch(STARLET_TITLE_HBC_HAXX);
-	/* ..and if that fails, try an assisted restart */
-	starlet_stm_restart();
-
-	/* fallback to spinning until the power button pressed */
-	for (;;)
-		cpu_relax();
- }
-
-static void wii_power_off(void)
-{
-	local_irq_disable();
-
-	/* try an assisted poweroff */
-	starlet_stm_power_off();
-
-	/* fallback to spinning until the power button pressed */
-	for (;;)
-		cpu_relax();
-}
-
-#elif defined CONFIG_STARLET_MINI /* end of CONFIG_STARLET_IOS */
 static void wii_restart(char *cmd)
 {
 	local_irq_disable();
@@ -216,7 +185,6 @@ static void wii_power_off(void)
 	}
 	wii_spin();
 }
-#endif /* CONFIG_STARLET_MINI */
 
 static void __noreturn wii_halt(void)
 {
@@ -335,15 +303,6 @@ static void wii_machine_kexec(struct kimage *image)
 {
 	local_irq_disable();
 
-#ifdef CONFIG_STARLET_IOS
-	/*
-	 * Reload IOS to make sure that I/O resources are freed before
-	 * the final kexec phase.
-	 */
-	if (starlet_get_ipc_flavour() == STARLET_IPC_IOS)
-		starlet_es_reload_ios_and_discard();
-#endif
-
 	default_machine_kexec(image);
 }
 
@@ -379,12 +338,7 @@ define_machine(wii) {
 
 static const struct of_device_id wii_of_bus[] = {
 	{ .compatible = "nintendo,hollywood", },
-#ifdef CONFIG_STARLET_IOS
-	{ .compatible = "nintendo,starlet-ios-ipc", },
-#endif
-#ifdef CONFIG_STARLET_MINI
 	{ .compatible = "twiizers,starlet-mini-ipc", },
-#endif
 	{ },
 };
 
