@@ -356,47 +356,59 @@ EXPORT_SYMBOL(exi_driver_unregister);
  */
 static void exi_device_rescan(struct exi_device *exi_device)
 {
-	unsigned int id;
+	struct exi_channel *channel = exi_get_exi_channel(exi_device);
+	u32 old_id, new_id;
 	int error;
 
 	mutex_lock(&exi_core_lock);
 
-	/* now ID the device */
-	id = exi_get_id(exi_device);
+	old_id = exi_device->eid.id;
+	exi_device->eid.id = EXI_ID_INVALID;
 
-	if (exi_device->eid.id != EXI_ID_INVALID) {
-		/* device removed or changed */
+	new_id = exi_get_id(exi_device);
+
+	/* Device was removed */
+	if (old_id != EXI_ID_INVALID && new_id == EXI_ID_INVALID) {
 		drv_printk(KERN_INFO, "about to remove [%s] id=0x%08x %s\n",
-			   dev_name(&exi_device->dev),
-			   exi_device->eid.id,
-			   exi_name_id(exi_device->eid.id));
+		           dev_name(&exi_device->dev),
+		           old_id, exi_name_id(old_id));
+
+		/* Ensure we release the lock before calling .remove() */
+		mutex_unlock(&exi_core_lock);
 		device_unregister(&exi_device->dev);
+		mutex_lock(&exi_core_lock);
+
 		drv_printk(KERN_INFO, "remove completed\n");
+
 		exi_device->eid.id = EXI_ID_INVALID;
+		channel->flags &= ~EXI_EXT;
+		goto out;
 	}
 
-	if (id != EXI_ID_INVALID) {
-		/* a new device has been found */
+	/* Device was inserted or replaced */
+	if (new_id != EXI_ID_INVALID && old_id == EXI_ID_INVALID) {
 		drv_printk(KERN_INFO, "about to add [%s] id=0x%08x %s\n",
-			   dev_name(&exi_device->dev),
-			   id, exi_name_id(id));
-		exi_device->eid.id = id;
+		           dev_name(&exi_device->dev),
+		           new_id, exi_name_id(new_id));
 
-		/* release the lock for exi_device_probe */
+		exi_device->eid.id = new_id;
+
+		/* Ensure we release the lock before calling .probe() */
 		mutex_unlock(&exi_core_lock);
 		error = device_register(&exi_device->dev);
-
-		/* pick it back up again */
 		mutex_lock(&exi_core_lock);
+
 		if (error) {
 			drv_printk(KERN_INFO, "add failed (%d)\n", error);
 			exi_device->eid.id = EXI_ID_INVALID;
-		} else
+			channel->flags &= ~EXI_EXT;
+		} else {
 			drv_printk(KERN_INFO, "add completed\n");
+			channel->flags |= EXI_EXT;
+		}
 	}
 
-	exi_update_ext_status(exi_get_exi_channel(exi_device));
-
+out:
 	mutex_unlock(&exi_core_lock);
 }
 
