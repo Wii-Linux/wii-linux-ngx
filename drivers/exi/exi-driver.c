@@ -24,6 +24,8 @@
 #include <linux/of_irq.h>
 #include <linux/dma-mapping.h>
 
+static DEFINE_MUTEX(exi_core_lock);
+
 #define DRV_MODULE_NAME	"exi"
 #define DRV_DESCRIPTION	"Nintendo GameCube/Wii EXternal Interface (EXI) driver"
 #define DRV_AUTHOR	"Arthur Othieno <a.othieno@bluewin.ch>, " \
@@ -172,6 +174,7 @@ static void exi_device_release(struct device *dev);
 static void exi_device_init(struct exi_device *exi_device,
 			    unsigned int channel, unsigned int device)
 {
+	mutex_lock(&exi_core_lock);
 	memset(exi_device, 0, sizeof(*exi_device));
 
 	exi_device->eid.id = EXI_ID_INVALID;
@@ -186,6 +189,8 @@ static void exi_device_init(struct exi_device *exi_device,
 	exi_device->dev.platform_data = to_exi_channel(channel);
 	set_dma_ops(&exi_device->dev, &dma_direct_ops);
 	exi_device->dev.release = exi_device_release;
+
+	mutex_unlock(&exi_core_lock);
 }
 
 /*
@@ -254,6 +259,8 @@ static int exi_device_probe(struct device *dev)
 	const struct exi_device_id *eid;
 	int retval = -ENODEV;
 
+	mutex_lock(&exi_core_lock);
+
 	if (!exi_driver->eid_table)
 		goto out;
 
@@ -267,6 +274,7 @@ static int exi_device_probe(struct device *dev)
 		retval = 0;
 
 out:
+	mutex_unlock(&exi_core_lock);
 	return retval;
 }
 
@@ -278,8 +286,12 @@ static int exi_device_remove(struct device *dev)
 	struct exi_device *exi_device = to_exi_device(dev);
 	struct exi_driver *exi_driver = to_exi_driver(dev->driver);
 
+	mutex_lock(&exi_core_lock);
+
 	if (exi_driver->remove)
 		exi_driver->remove(exi_device);
+
+	mutex_unlock(&exi_core_lock);
 
 	return 0;
 }
@@ -294,10 +306,12 @@ static int exi_device_remove(struct device *dev)
  */
 int exi_driver_register(struct exi_driver *driver)
 {
+	mutex_lock(&exi_core_lock);
 	driver->driver.name = driver->name;
 	driver->driver.bus = &exi_bus_type;
 	driver->driver.probe = exi_device_probe;
 	driver->driver.remove = exi_device_remove;
+	mutex_unlock(&exi_core_lock);
 
 	return driver_register(&driver->driver);
 }
@@ -312,7 +326,9 @@ EXPORT_SYMBOL(exi_driver_register);
  */
 void exi_driver_unregister(struct exi_driver *driver)
 {
+	mutex_lock(&exi_core_lock);
 	driver_unregister(&driver->driver);
+	mutex_unlock(&exi_core_lock);
 }
 EXPORT_SYMBOL(exi_driver_unregister);
 
@@ -324,6 +340,8 @@ static void exi_device_rescan(struct exi_device *exi_device)
 {
 	unsigned int id;
 	int error;
+
+	mutex_lock(&exi_core_lock);
 
 	/* now ID the device */
 	id = exi_get_id(exi_device);
@@ -354,6 +372,8 @@ static void exi_device_rescan(struct exi_device *exi_device)
 	}
 
 	exi_update_ext_status(exi_get_exi_channel(exi_device));
+
+	mutex_unlock(&exi_core_lock);
 }
 
 /*

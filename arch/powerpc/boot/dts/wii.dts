@@ -35,7 +35,7 @@
 		/* bootargs are here so that you can modify them with a hex editor if you want 
 		 * space is purposefully left after the root parameter so you may replace sda1 with a block device with a longer name if you so wish.
 		 */
-		bootargs = "mark.start=1 root=/dev/sda1                     console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto,nostalgic             rootwait nobats panic=0 keep_bootcon loglevel=4 consoleblank=0                          mark.end=1";
+		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto,nostalgic             rootwait nobats panic=0             loglevel=4 consoleblank=0                          mark.end=1";
 
 	};
 
