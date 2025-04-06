@@ -115,7 +115,7 @@ static int ug_check_adapter(struct exi_device *exi_device)
 		msleep(50); // give it some time to wake up
 	}
 
-	pr_info("usbgecko: probe failed, got 0x%04x from 0x9000\n", data);
+	drv_printk(KERN_ERR, "check failed, got 0x%04x from 0x9000\n", data);
 	return 0;
 
 }
@@ -545,25 +545,20 @@ static int ug_probe(struct exi_device *exi_device)
 	unsigned int slot;
 	struct tty_port *port;
 
-	pr_info("usbgecko: ug_probe() called for channel %d, device %d\n",
+	drv_printk(KERN_INFO, "probing for channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
 
 	/* don't try to drive a device which already has a real identifier */
 	if (exi_device->eid.id != EXI_ID_NONE) {
-		pr_info("usbgecko: device ID is not NONE (0x%x), skipping\n",
+		drv_printk(KERN_ERR, "device ID is not NONE (0x%x), skipping\n",
 		        exi_device->eid.id);
 		return -ENODEV;
 	}
 
-	pr_info("usbgecko: running check_adapter()\n");
-
 	if (!ug_check_adapter(exi_device)) {
-		pr_info("usbgecko: check_adapter() failed\n");
+		drv_printk(KERN_ERR, "check_adapter() failed\n");
 		return -ENODEV;
 	}
-
-	pr_info("usbgecko: adapter appears present, continuing with init\n");
-
 
 	ug_tty_init();
 	slot = to_channel(exi_get_exi_channel(exi_device));
@@ -571,7 +566,7 @@ static int ug_probe(struct exi_device *exi_device)
 	adapter = console->data;
 
 	if (!ug_tty_driver->ports[slot]) {
-		pr_info("usbgecko: initializing console on slot %c\n", 'A'+slot);
+		drv_printk(KERN_INFO, "initializing console on slot %c\n", 'A'+slot);
 		port = kmalloc(sizeof(*port), GFP_KERNEL);
 
 		if (!port)
@@ -609,7 +604,7 @@ static void ug_remove(struct exi_device *exi_device)
 	unsigned int slot;
 	struct tty_port *port;
 
-	pr_info("usbgecko: ug_remove() called for channel %d, device %d\n",
+	drv_printk(KERN_INFO, "removing device on channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
 
 	slot = to_channel(exi_get_exi_channel(exi_device));
