@@ -102,12 +102,22 @@ static void ug_io_transaction(struct ug_adapter *adapter, u16 i, u16 *o)
 static int ug_check_adapter(struct exi_device *exi_device)
 {
 	u16 data;
+	int tries = 10;
 
-	exi_dev_take(exi_device);
-	ug_exi_io_transaction(exi_device, 0x9000, &data);
-	exi_dev_give(exi_device);
+	while (tries--) {
+		exi_dev_take(exi_device);
+		ug_exi_io_transaction(exi_device, 0x9000, &data);
+		exi_dev_give(exi_device);
 
-	return data == 0x0470;
+		if (data == 0x0470)
+			return 1;
+
+		msleep(50); // give it some time to wake up
+	}
+
+	pr_info("usbgecko: probe failed, got 0x%04x from 0x9000\n", data);
+	return 0;
+
 }
 
 
@@ -543,12 +553,24 @@ static int ug_probe(struct exi_device *exi_device)
 	struct ug_adapter *adapter;
 	unsigned int slot;
 
-	/* don't try to drive a device which already has a real identifier */
-	if (exi_device->eid.id != EXI_ID_NONE)
-		return -ENODEV;
+	pr_info("usbgecko: ug_probe() called for channel %d, device %d\n",
+	exi_device->eid.channel, exi_device->eid.device);
 
-	if (!ug_check_adapter(exi_device))
+	/* don't try to drive a device which already has a real identifier */
+	if (exi_device->eid.id != EXI_ID_NONE) {
+		pr_info("usbgecko: device ID is not NONE (0x%x), skipping\n",
+		        exi_device->eid.id);
 		return -ENODEV;
+	}
+
+	pr_info("usbgecko: running check_adapter()\n");
+
+	if (!ug_check_adapter(exi_device)) {
+		pr_info("usbgecko: check_adapter() failed\n");
+		return -ENODEV;
+	}
+
+	pr_info("usbgecko: adapter appears present, continuing with init\n");
 
 	slot = to_channel(exi_get_exi_channel(exi_device));
 	console = &ug_consoles[slot];
@@ -579,6 +601,8 @@ static void ug_remove(struct exi_device *exi_device)
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
+	pr_info("usbgecko: ug_remove() called for channel %d, device %d\n",
+	exi_device->eid.channel, exi_device->eid.device);
 
 	slot = to_channel(exi_get_exi_channel(exi_device));
 	console = &ug_consoles[slot];

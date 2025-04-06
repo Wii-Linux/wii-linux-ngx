@@ -122,6 +122,10 @@ static int exi_device_match_one(const struct exi_device_id *eid,
 		/* match against channel and device */
 		if (exi_device->eid.channel == eid->channel &&
 		    exi_device->eid.device == eid->device) {
+			pr_info("EXI match: dev id=0x%x ch=%d dev=%d  |  match id=0x%x ch=%d dev=%d\n",
+			        exi_device->eid.id, exi_device->eid.channel, exi_device->eid.device,
+			        eid->id, eid->channel, eid->device);
+
 			return 1;
 		}
 	}
@@ -259,17 +263,31 @@ static int exi_device_probe(struct device *dev)
 	const struct exi_device_id *eid;
 	int retval = -ENODEV;
 
+	pr_info("EXI: probing driver '%s' for device exi%d:%d\n",
+            exi_driver->name, exi_device->eid.channel, exi_device->eid.device);
+
+
 	mutex_lock(&exi_core_lock);
 
-	if (!exi_driver->eid_table)
+	if (!exi_driver->eid_table) {
+		pr_info("EXI: no eid_table, bailing out!\n");
 		goto out;
+	}
 
 	eid = exi_device_match(exi_driver->eid_table, exi_device);
-	if (eid) {
-		exi_device->frequency = exi_driver->frequency;
-		if (exi_driver->probe)
-			retval = exi_driver->probe(exi_device);
+	if (!eid) {
+		pr_info("EXI: no eid, bailing out!\n");
+		goto out;
 	}
+	exi_device->frequency = exi_driver->frequency;
+	if (!exi_driver->probe) {
+		pr_info("EXI: no probe function to call, bailing out!\n");
+		goto out;
+	}
+	pr_info("EXI: really about to probe");
+	retval = exi_driver->probe(exi_device);
+	pr_info("EXI: probe returned %d", retval);
+
 	if (retval >= 0)
 		retval = 0;
 
@@ -363,7 +381,13 @@ static void exi_device_rescan(struct exi_device *exi_device)
 			   dev_name(&exi_device->dev),
 			   id, exi_name_id(id));
 		exi_device->eid.id = id;
+
+		/* release the lock for exi_device_probe */
+		mutex_unlock(&exi_core_lock);
 		error = device_register(&exi_device->dev);
+
+		/* pick it back up again */
+		mutex_lock(&exi_core_lock);
 		if (error) {
 			drv_printk(KERN_INFO, "add failed (%d)\n", error);
 			exi_device->eid.id = EXI_ID_INVALID;
