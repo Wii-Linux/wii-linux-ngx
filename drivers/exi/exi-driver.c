@@ -409,6 +409,9 @@ static void exi_device_rescan(struct exi_device *exi_device)
 	}
 
 out:
+	channel->flags &= ~EXI_EXT;
+	if (exi_get_ext_line(channel))
+		channel->flags |= EXI_EXT;
 	mutex_unlock(&exi_core_lock);
 }
 
