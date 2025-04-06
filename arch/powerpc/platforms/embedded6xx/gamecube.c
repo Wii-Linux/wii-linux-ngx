@@ -64,11 +64,6 @@ static void gamecube_setup_arch(void)
 {
 }
 
-static void __init gamecube_init_early(void)
-{
-	ug_udbg_init();
-}
-
 static int __init gamecube_probe(void)
 {
 	if (!of_machine_is_compatible("nintendo,gamecube"))
@@ -98,7 +93,6 @@ define_machine(gamecube) {
 	.name			= "gamecube",
 	.probe			= gamecube_probe,
 	.setup_arch		= gamecube_setup_arch,
-	.init_early		= gamecube_init_early,
 	.show_cpuinfo		= gamecube_show_cpuinfo,
 	.restart		= gamecube_restart,
 	.halt			= gamecube_halt,
