@@ -299,7 +299,7 @@ static struct tty_driver *ug_console_device(struct console *co, int *index)
 
 static struct console ug_consoles[] = {
 	{
-		.name   = DRV_MODULE_NAME "0",
+		.name   = DRV_MODULE_NAME,
 		.write  = ug_console_write,
 		.read   = ug_console_read,
 		.device = ug_console_device,
@@ -308,7 +308,7 @@ static struct console ug_consoles[] = {
 		.data	= &ug_adapters[0],
 	},
 	{
-		.name   = DRV_MODULE_NAME "1",
+		.name   = DRV_MODULE_NAME,
 		.write  = ug_console_write,
 		.read   = ug_console_read,
 		.device = ug_console_device,
