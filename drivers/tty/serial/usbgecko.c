@@ -335,14 +335,14 @@ static int ug_tty_poller(void *tty_)
 			count = ug_safe_getc(adapter, &ch);
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (count) {
-			tty_insert_flip_char(driver->ports[0], ch, TTY_NORMAL);
+			tty_insert_flip_char(ug_tty_driver->ports[tty->index], ch, TTY_NORMAL);
 			if (chunk++ > max_outstanding) {
-				tty_flip_buffer_push(driver->ports[0]);
+				tty_flip_buffer_push(ug_tty_driver->ports[tty->index]);
 				chunk = 0;
 			}
 		} else {
 			if (chunk) {
-				tty_flip_buffer_push(driver->ports[0]);
+				tty_flip_buffer_push(ug_tty_driver->ports[tty->index]);
 				chunk = 0;
 			}
 			schedule_timeout(1);
