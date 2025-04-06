@@ -1812,6 +1812,7 @@ static struct exi_device_id sd_eid_table[] = {
 };
 
 static struct exi_driver sd_driver = {
+	.name = DRV_MODULE_NAME,
 	.driver		= {
 		.name = DRV_MODULE_NAME,
 	},
