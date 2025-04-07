@@ -2319,10 +2319,12 @@ int vifb_do_probe(struct device *dev,
 
 	drv_printk(KERN_DEBUG, "vifb_do_probe called\n");
 
+#ifdef CONFIG_WII_AVE_RVL
 	if (!first_vi_ave) {
 		drv_printk(KERN_ERR, "AVE-RVL: vifb_do_probe !first_vi_ave, deferring\n");
 		return -EPROBE_DEFER;
 	}
+#endif
 
 
 	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
