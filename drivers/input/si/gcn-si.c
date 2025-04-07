@@ -129,14 +129,14 @@ struct si_drvdata {
 
 #ifdef HACK_FORCE_KEYBOARD_PORT
 
-static int si_force_keyboard_port = -1;
+int si_force_keyboard_port = -1;
 
 #ifdef MODULE
 module_param_named(force_keyboard_port, si_force_keyboard_port, int, 0644);
 MODULE_PARM_DESC(force_keyboard_port, "port n becomes a keyboard port if"
 		 " automatic identification fails");
 #else
-static int __init si_force_keyboard_port_setup(char *line)
+int __init si_force_keyboard_port_setup(char *line)
 {
 	if (sscanf(line, "%d", &si_force_keyboard_port) != 1)
 		si_force_keyboard_port = -1;
@@ -153,7 +153,7 @@ __setup("force_keyboard_port=", si_force_keyboard_port_setup);
  *
  */
 
-static void si_reset_all(void __iomem *io_base)
+void si_reset_all(void __iomem *io_base)
 {
 	int i;
 
@@ -184,14 +184,14 @@ static void si_reset_all(void __iomem *io_base)
 	out_be32(io_base + 0xac, 0);
 }
 
-static void si_set_rumbling(void __iomem *io_base, unsigned int index,
+void si_set_rumbling(void __iomem *io_base, unsigned int index,
 			    int rumble)
 {
 	out_be32(io_base + SICOUTBUF(index), 0x00400000 | (rumble) ? 1 : 0);
 	out_be32(io_base + SISR, 0x80000000);
 }
 
-static void si_wait_transfer_done(void __iomem *io_base)
+void si_wait_transfer_done(void __iomem *io_base)
 {
 	unsigned long deadline = jiffies + 2*HZ;
 	int borked = 0;
@@ -210,7 +210,7 @@ static void si_wait_transfer_done(void __iomem *io_base)
 		 in_be32(io_base + SICOMCSR) | (1 << 31)); /* ack IRQ */
 }
 
-static u32 si_get_controller_id(void __iomem *io_base,
+u32 si_get_controller_id(void __iomem *io_base,
 					  unsigned int index)
 {
 	out_be32(io_base + SICOUTBUF(index), 0);
@@ -223,7 +223,7 @@ static u32 si_get_controller_id(void __iomem *io_base,
 	return in_be32(io_base + 0x80) >> 16;
 }
 
-static void si_setup_polling(struct si_drvdata *drvdata)
+void si_setup_polling(struct si_drvdata *drvdata)
 {
 	void __iomem *io_base = drvdata->io_base;
 	unsigned long pad_bits = 0;
@@ -249,7 +249,7 @@ static void si_setup_polling(struct si_drvdata *drvdata)
 	si_wait_transfer_done(io_base);
 }
 
-static void si_timer(unsigned long data)
+void si_timer(unsigned long data)
 {
 	struct si_port *port = (struct si_port *)data;
 	unsigned int index = port->index;
@@ -365,7 +365,7 @@ static void si_timer(unsigned long data)
  *
  */
 
-static int si_open(struct input_dev *idev)
+int si_open(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
@@ -378,14 +378,14 @@ static int si_open(struct input_dev *idev)
 	return 0;
 }
 
-static void si_close(struct input_dev *idev)
+void si_close(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
 	del_timer(&port->timer);
 }
 
-static int si_event(struct input_dev *idev, unsigned int type,
+int si_event(struct input_dev *idev, unsigned int type,
 		    unsigned int code, int value)
 {
 	struct si_port *port = input_get_drvdata(idev);
@@ -400,10 +400,12 @@ static int si_event(struct input_dev *idev, unsigned int type,
 	return value;
 }
 
-static int si_setup_pad(struct input_dev *idev)
+int si_setup_pad(struct input_dev *idev)
 {
 	struct ff_device *ff;
 	int retval;
+
+	printk(KERN_INFO "gcn-si: in si_setup_pad(): idev=%lX\n", idev);
 
 	set_bit(EV_KEY, idev->evbit);
 	set_bit(EV_ABS, idev->evbit);
@@ -423,6 +425,9 @@ static int si_setup_pad(struct input_dev *idev)
 
 	/* a stick */
 	set_bit(ABS_X, idev->absbit);
+
+	input_alloc_absinfo(idev);
+	printk(KERN_INFO "gcn-si: absinfo=0x%lX\n", idev->absinfo);
 	idev->absinfo[ABS_X].minimum = 0;
 	idev->absinfo[ABS_X].maximum = 255;
 	idev->absinfo[ABS_X].fuzz = 8;
@@ -475,7 +480,7 @@ static int si_setup_pad(struct input_dev *idev)
 	return 0;
 }
 
-static void si_setup_keyboard(struct input_dev *idev)
+void si_setup_keyboard(struct input_dev *idev)
 {
 	int i;
 
@@ -486,12 +491,15 @@ static void si_setup_keyboard(struct input_dev *idev)
 		set_bit(gamecube_keymap[i], idev->keybit);
 }
 
-static int si_port_probe(struct si_port *port)
+int si_port_probe(struct si_port *port)
 {
-	unsigned int index = port->index;
-	void __iomem *io_base = port->drvdata->io_base;
+	unsigned int index;
+	void __iomem *io_base;
 	struct input_dev *idev;
 	int retval = 0;
+
+	index = port->index;
+	io_base = port->drvdata->io_base;
 
 	/*
 	 * Determine input device type from SI id.
@@ -572,7 +580,7 @@ done:
  *
  */
 
-static int si_init(struct si_drvdata *drvdata, struct resource *mem)
+int si_init(struct si_drvdata *drvdata, struct resource *mem)
 {
 	struct si_port *port;
 	int index;
@@ -608,7 +616,7 @@ static int si_init(struct si_drvdata *drvdata, struct resource *mem)
 	return 0;
 }
 
-static void si_exit(struct si_drvdata *drvdata)
+void si_exit(struct si_drvdata *drvdata)
 {
 	struct si_port *port;
 	int index;
@@ -630,7 +638,7 @@ static void si_exit(struct si_drvdata *drvdata)
  *
  */
 
-static int si_do_probe(struct device *dev, struct resource *mem)
+int si_do_probe(struct device *dev, struct resource *mem)
 {
 	struct si_drvdata *drvdata;
 	int retval;
@@ -651,7 +659,7 @@ static int si_do_probe(struct device *dev, struct resource *mem)
 	return retval;
 }
 
-static int si_do_remove(struct device *dev)
+int si_do_remove(struct device *dev)
 {
 	struct si_drvdata *drvdata = dev_get_drvdata(dev);
 
@@ -664,7 +672,7 @@ static int si_do_remove(struct device *dev)
 	return -ENODEV;
 }
 
-static int si_do_shutdown(struct device *dev)
+int si_do_shutdown(struct device *dev)
 {
 	struct si_drvdata *drvdata = dev_get_drvdata(dev);
 	int i;
@@ -684,7 +692,7 @@ static int si_do_shutdown(struct device *dev)
  *
  */
 
-static int si_of_probe(struct platform_device *odev)
+int si_of_probe(struct platform_device *odev)
 {
 	struct resource mem;
 	int retval;
@@ -698,17 +706,17 @@ static int si_of_probe(struct platform_device *odev)
 	return si_do_probe(&odev->dev, &mem);
 }
 
-static int __exit si_of_remove(struct platform_device *odev)
+int __exit si_of_remove(struct platform_device *odev)
 {
 	return si_do_remove(&odev->dev);
 }
 
-static void si_of_shutdown(struct platform_device *odev)
+void si_of_shutdown(struct platform_device *odev)
 {
 	si_do_shutdown(&odev->dev);
 }
 
-static struct of_device_id si_of_match[] = {
+struct of_device_id si_of_match[] = {
 	{ .compatible = "nintendo,flipper-si" },
 	{ .compatible = "nintendo,hollywood-si" },
 	{ },
@@ -717,7 +725,7 @@ static struct of_device_id si_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, si_of_match);
 
-static struct platform_driver si_of_driver = {
+struct platform_driver si_of_driver = {
 	.driver = {
 		.name = DRV_MODULE_NAME,
 		.owner = THIS_MODULE,
@@ -734,7 +742,7 @@ static struct platform_driver si_of_driver = {
  *
  */
 
-static int __init si_init_module(void)
+int __init si_init_module(void)
 {
 	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
 		   si_driver_version);
@@ -742,7 +750,7 @@ static int __init si_init_module(void)
 	return platform_driver_register(&si_of_driver);
 }
 
-static void __exit si_exit_module(void)
+void __exit si_exit_module(void)
 {
 	platform_driver_unregister(&si_of_driver);
 }
@@ -753,4 +761,3 @@ module_exit(si_exit_module);
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
 MODULE_AUTHOR(DRV_AUTHOR);
 MODULE_LICENSE("GPL");
-
