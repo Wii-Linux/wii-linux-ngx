@@ -196,9 +196,7 @@ static void __noreturn wii_halt(void)
 static void __init wii_pic_probe(void)
 {
 	flipper_pic_probe();
-#ifdef CONFIG_HLWD_PIC
 	hlwd_pic_probe();
-#endif
 }
 
 static int __init wii_probe(void)
@@ -245,9 +243,7 @@ EXPORT_SYMBOL_GPL(starlet_get_ipc_flavour);
 
 static void wii_shutdown(void)
 {
-#ifdef CONFIG_HLWD_PIC
 	hlwd_quiesce();
-#endif
 	exi_quiesce();
 	flipper_quiesce();
 }
