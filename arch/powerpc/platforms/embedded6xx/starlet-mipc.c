@@ -795,24 +795,6 @@ static void mipc_starlet_fixups(struct mipc_device *ipc_dev)
 	mipc_shutdown_mini_devs(ipc_dev);
 }
 
-static void mipc_init_ahbprot(struct mipc_device *ipc_dev)
-{
-	void __iomem *hw_ahbprot = (void __iomem *)0x0d800064;
-	u32 initial_ahbprot, ahbprot;
-
-	initial_ahbprot = mipc_readl(hw_ahbprot);
-	if (initial_ahbprot != 0xffffffff) {
-		pr_debug("AHBPROT=%08X (before)\n", initial_ahbprot);
-		mipc_writel(0xffffffff, hw_ahbprot);
-	}
-
-	ahbprot = mipc_readl(hw_ahbprot);
-	if (initial_ahbprot != ahbprot)
-		pr_debug("AHBPROT=%08X (after)\n", ahbprot);
-	if (ahbprot != 0xffffffff)
-		pr_err("failed to set AHBPROT\n");
-}
-
 static int mipc_init(struct mipc_device *ipc_dev, struct resource *mem, int irq)
 {
 	struct mipc_infohdr *hdr;
@@ -862,7 +844,6 @@ static int mipc_init(struct mipc_device *ipc_dev, struct resource *mem, int irq)
 	if (mipc_do_simple_tests)
 		mipc_simple_tests(ipc_dev);
 
-	mipc_init_ahbprot(ipc_dev);
 	mipc_starlet_fixups(ipc_dev);
 
 out:
