@@ -243,72 +243,6 @@ enum starlet_ipc_flavour starlet_get_ipc_flavour(void)
 }
 EXPORT_SYMBOL_GPL(starlet_get_ipc_flavour);
 
-#ifdef CONFIG_KEXEC
-
-static int restore_lowmem_stub(struct kimage *image)
-{
-	struct device_node *node;
-	struct resource res;
-	const unsigned long *prop;
-	unsigned long dst, src;
-	size_t size;
-	int error;
-
-	node = of_find_node_by_name(NULL, "lowmem-stub");
-	if (!node) {
-		printk(KERN_ERR "unable to find node %s\n", "lowmem-stub");
-		error = -ENODEV;
-		goto out;
-	}
-
-	error = of_address_to_resource(node, 0, &res);
-	if (error) {
-		printk(KERN_ERR "no lowmem-stub range found\n");
-	  goto out_put;
-	}
-	dst = res.start;
-	size = res.end - res.start + 1;
-
-	prop = of_get_property(node, "save-area", NULL);
-	if (!prop) {
-		printk(KERN_ERR "unable to find %s property\n", "save-area");
-		error = -EINVAL;
-		goto out_put;
-	}
-	src = *prop;
-
-	printk(KERN_DEBUG "lowmem-stub: preparing restore from %08lX to %08lX"
-		" (%u bytes)\n", src, dst, size);
-
-	/* schedule a copy of the lowmem stub to its original location */
-	//error = kimage_add_preserved_region(image, dst, src, PAGE_ALIGN(size));
-
-out_put:
-	of_node_put(node);
-out:
-	return error;
-}
-
-static int wii_machine_kexec_prepare(struct kimage *image)
-{
-	int error;
-
-	error = restore_lowmem_stub(image);
-	if (error)
-		printk(KERN_ERR "%s: error %d\n", __func__, error);
-	return error;
-}
-
-static void wii_machine_kexec(struct kimage *image)
-{
-	local_irq_disable();
-
-	default_machine_kexec(image);
-}
-
-#endif /* CONFIG_KEXEC */
-
-
 static void wii_shutdown(void)
 {
 #ifdef CONFIG_HLWD_PIC
@@ -330,10 +264,6 @@ define_machine(wii) {
 	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 	.machine_shutdown	= wii_shutdown,
-#ifdef CONFIG_KEXEC	/* REMOVE THIS (as of 2.6.39)? */
-	.machine_kexec_prepare	= wii_machine_kexec_prepare,
-	.machine_kexec		= wii_machine_kexec,
-#endif
 };
 
 static const struct of_device_id wii_of_bus[] = {
