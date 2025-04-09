@@ -155,7 +155,7 @@ static void __init wii_setup_arch(void)
 	starlet_discover_ipc_flavour();
 }
 
-static void wii_restart(char *cmd)
+static void __noreturn wii_restart(char *cmd)
 {
 	local_irq_disable();
 
