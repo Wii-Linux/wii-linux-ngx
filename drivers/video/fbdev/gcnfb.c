@@ -2208,71 +2208,11 @@ static int vfb_mmap(struct fb_info *info,
 
 }
 
-static int vifb_ioctl(struct fb_info *info,
-		       unsigned int cmd, unsigned long arg)
-{
-	struct vi_ctl *ctl = info->par;
-	void __user *argp;
-	unsigned long flags;
-	int page;
-
-	switch (cmd) {
-	case FBIOWAITRETRACE:
-		wait_event_interruptible(ctl->vtrace_waitq, signal_pending(current));
-		return signal_pending(current) ? -EINTR : 0;
-	case FBIOFLIPHACK:
-		/*
-		 * If arg == NULL then
-		 *   Try to flip the video page as soon as possible.
-		 *   Returns the current visible video page number.
-		 */
-		if (!arg) {
-			spin_lock_irqsave(&ctl->lock, flags);
-			if (ctl->in_vtrace)
-				vi_flip_page(ctl);
-			else
-				ctl->flip_pending = 1;
-			spin_unlock_irqrestore(&ctl->lock, flags);
-			return ctl->visible_page;
-		}
-
-		/*
-		 * If arg != NULL then
-		 *   Wait until the video page number pointed by arg
-		 *   is not visible.
-		 *   Returns the current visible video page number.
-		 */
-		argp = (void __user *)arg;
-		if (copy_from_user(&page, argp, sizeof(int)))
-			return -EFAULT;
-
-		if (page != 0 && page != 1)
-			return -EINVAL;
-
-		spin_lock_irqsave(&ctl->lock, flags);
-		ctl->flip_pending = 0;
-		if (ctl->visible_page == page) {
-			if (ctl->in_vtrace) {
-				vi_flip_page(ctl);
-			} else {
-				ctl->flip_pending = 1;
-				spin_unlock_irqrestore(&ctl->lock, flags);
-				wait_event_interruptible(ctl->vtrace_waitq, signal_pending(current));
-				return signal_pending(current) ?
-					-EINTR : ctl->visible_page;
-			}
-		}
-		spin_unlock_irqrestore(&ctl->lock, flags);
-		return ctl->visible_page;
-	}
-	return -EINVAL;
-}
-
 
 struct fb_ops vifb_ops = {
 	.owner = THIS_MODULE,
 	.fb_setcolreg = vifb_setcolreg,
-	.fb_ioctl = vifb_ioctl,
+	/*.fb_ioctl = vifb_ioctl,*/
 	.fb_set_par = vifb_set_par,
 	.fb_check_var = vifb_check_var,
 	.fb_mmap = vfb_mmap,
