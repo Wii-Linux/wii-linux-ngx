@@ -95,7 +95,7 @@
 
 		gamepad-controller@d006400 {
 			compatible = "nintendo,hollywood-si",
-			             "nintendo,flipper-si";
+					"nintendo,flipper-si";
 			reg = <0x0d006400 0x100>;
 			interrupts = <3>;
 		};
@@ -116,6 +116,49 @@
 			interrupts = <4>;
 		};
 
+		usb@d040000 {
+			compatible = "nintendo,hollywood-usb-ehci",
+					"usb-ehci";
+			reg = <0x0d040000 0x100
+			       0x133e0000 0x80000>; /* 512 KB */
+			interrupts = <4>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		usb@d050000 {
+			compatible = "nintendo,hollywood-usb-ohci",
+					"usb-ohci";
+			reg = <0x0d050000 0x100
+			       0x13460000 0x80000>; /* 512 KB */
+			interrupts = <5>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		usb@d060000 {
+			compatible = "nintendo,hollywood-usb-ohci",
+					"usb-ohci";
+			reg = <0x0d060000 0x100
+			       0x134e0000 0x80000>; /* 512 KB */
+			interrupts = <6>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		sd@d070000 {
+			compatible = "nintendo,hollywood-sdhci",
+					"sdhci";
+			reg = <0x0d070000 0x200>;
+			interrupts = <7>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		sdio@d080000 {
+			compatible = "nintendo,hollywood-sdhci",
+					"sdhci";
+			reg = <0x0d080000 0x200>;
+			interrupts = <8>;
+			interrupt-parent = <&PIC1>;
+		};
+
 		/*
 		 * Hardware accessible through Team Twiizers 'mini' firmware
 		 * replacement for Starlet.
@@ -131,74 +174,30 @@
 			ranges = <0x0d040000 0x0d040000 0x00050000
 			          0x0d800000 0x0d800000 0x00007000
 			          0x133e0000 0x133e0000 0x00c20000>;
+		};
 
-			usb@0d040000 {
-				compatible = "nintendo,hollywood-usb-ehci",
-				             "usb-ehci";
-				reg = <0x0d040000 0x100
-				       0x133e0000 0x80000>; /* 512 KB */
-				interrupts = <4>;
-				interrupt-parent = <&PIC1>;
-			};
+		PIC1: pic1@d800030 {
+			#interrupt-cells = <1>;
+			compatible = "nintendo,hollywood-pic";
+			reg = <0x0d800030 0x10>;
+			interrupt-controller;
+			interrupts = <14>;
+		};
 
-			usb@0d050000 {
-				compatible = "nintendo,hollywood-usb-ohci",
-				             "usb-ohci";
-				reg = <0x0d050000 0x100
-				       0x13460000 0x80000>; /* 512 KB */
-				interrupts = <5>;
-				interrupt-parent = <&PIC1>;
-			};
+		GPIO: gpio@d8000c0 {
+			#gpio-cells = <2>;
+			compatible = "nintendo,hollywood-gpio";
+			reg = <0x0d8000c0 0x40>;
+			gpio-controller;
+			ngpios = <24>;
 
-			usb@0d060000 {
-				compatible = "nintendo,hollywood-usb-ohci",
-				             "usb-ohci";
-				reg = <0x0d060000 0x100
-				       0x134e0000 0x80000>; /* 512 KB */
-				interrupts = <6>;
-				interrupt-parent = <&PIC1>;
-			};
-
-			sd@0d070000 {
-				compatible = "nintendo,hollywood-sdhci",
-				             "sdhci";
-				reg = <0x0d070000 0x200>;
-				interrupts = <7>;
-				interrupt-parent = <&PIC1>;
-			};
-
-			sdio@0d080000 {
-				compatible = "nintendo,hollywood-sdhci",
-				             "sdhci";
-				reg = <0x0d080000 0x200>;
-				interrupts = <8>;
-				interrupt-parent = <&PIC1>;
-			};
-
-			PIC1: pic1@0d800030 {
-				#interrupt-cells = <1>;
-				compatible = "nintendo,hollywood-pic";
-				reg = <0x0d800030 0x10>;
-				interrupt-controller;
-				interrupts = <14>;
-			};
-
-			GPIO: gpio@0d8000c0 {
-				#gpio-cells = <2>;
-				compatible = "nintendo,hollywood-gpio";
-				reg = <0x0d8000c0 0x40>;
-				gpio-controller;
-				ngpios = <24>;
-
-				gpio-line-names =
-				    "POWER", "SHUTDOWN", "FAN", "DC_DC",
-				    "DI_SPIN", "SLOT_LED", "EJECT_BTN", "SLOT_IN",
-				    "SENSOR_BAR", "DO_EJECT", "EEP_CS", "EEP_CLK",
-				    "EEP_MOSI", "EEP_MISO", "AVE_SCL", "AVE_SDA",
-				    "DEBUG0", "DEBUG1", "DEBUG2", "DEBUG3",
-				    "DEBUG4", "DEBUG5", "DEBUG6", "DEBUG7";
-			};
-
+			gpio-line-names =
+				"POWER", "SHUTDOWN", "FAN", "DC_DC",
+				"DI_SPIN", "SLOT_LED", "EJECT_BTN", "SLOT_IN",
+				"SENSOR_BAR", "DO_EJECT", "EEP_CS", "EEP_CLK",
+				"EEP_MOSI", "EEP_MISO", "AVE_SCL", "AVE_SDA",
+				"DEBUG0", "DEBUG1", "DEBUG2", "DEBUG3",
+				"DEBUG4", "DEBUG5", "DEBUG6", "DEBUG7";
 
 			i2c-video {
 				#address-cells = <1>;
@@ -218,7 +217,6 @@
 			                reg = <0x70>;
 			        };
 			};
-
 		};
 
 		control@d800100 {
