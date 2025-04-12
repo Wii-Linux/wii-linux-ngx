@@ -104,6 +104,11 @@ struct mipc_device {
 	u32 tag;
 };
 
+/*
+ * Hollywood GPIO address, used by tests and fixups.
+ */
+#define HW_GPIO (void __iomem *)0x0d8000c0
+
 #define __spin_event_timeout(condition, timeout_usecs, result, __end_tbl) \
 	for (__end_tbl = get_tbl() + tb_ticks_per_usec * timeout_usecs;	\
 	     !(result = (condition)) && (int)(__end_tbl - get_tbl()) > 0;)
@@ -531,16 +536,6 @@ void mipc_wmb(void)
 	BUG();
 }
 
-void __iomem *mipc_ioremap(phys_addr_t addr, unsigned long size)
-{
-	return (void __iomem *)addr;
-}
-
-void mipc_iounmap(volatile void __iomem *addr)
-{
-	/* nothing to do */
-}
-
 /*
  *
  *
@@ -724,7 +719,7 @@ static void mipc_simple_tests(struct mipc_device *ipc_dev)
 	u32 val;
 	int i;
 
-	gpio = mipc_ioremap(0x0d8000c0, 4);
+	gpio = HW_GPIO;
 	if (!gpio) {
 		pr_err("ioremap failed\n");
 		return;
@@ -761,8 +756,6 @@ static void mipc_simple_tests(struct mipc_device *ipc_dev)
 		t_mipc_write, tbl_to_ns(t_mipc_write));
 	pr_cont("mipc: ping=%lu (%lu ns)\n",
 		t_mipc_ping, tbl_to_ns(t_mipc_ping));
-
-	mipc_iounmap(gpio);
 }
 
 static void mipc_shutdown_mini_devs(struct mipc_device *ipc_dev)
@@ -785,10 +778,9 @@ static void mipc_starlet_fixups(struct mipc_device *ipc_dev)
 	 * Try to turn off the front led and sensor bar.
 	 * (not strictly starlet-only stuff but anyway...)
 	 */
-	gpio = mipc_ioremap(0x0d8000c0, 4);
+	gpio = HW_GPIO;
 	if (gpio) {
 		mipc_clearbitl(0x120, gpio);
-		mipc_iounmap(gpio);
 	}
 
 	/* tell 'mini' to relinquish control of hardware */
