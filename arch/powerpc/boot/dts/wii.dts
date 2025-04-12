@@ -16,7 +16,7 @@
 #include <dt-bindings/gpio/gpio.h>
 
 /memreserve/ 0x10000000 0x0004000;	/* DSP RAM */
-/memreserve/ 0x01698000 0x0168000;	/* framebuffer, see video@0c002000 */
+/memreserve/ 0x0174c000 0x00b4000;	/* framebuffer, see video@0c002000 */
 /memreserve/ 0x01800000 0xe800000;	/* memory hole */
 
 / {
@@ -41,7 +41,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x00000000 0x01698000	/* MEM1 24MB 1T-SRAM */
+		reg = <0x00000000 0x01800000	/* MEM1 24MB 1T-SRAM */
 		       0x10000000 0x04000000>;	/* MEM2 64MB GDDR3 */
 	};
 
@@ -77,8 +77,8 @@
 					"nintendo,flipper-vi";
 			reg = <0x0c002000 0x100>;
 			interrupts = <8>;
-			xfb-start = <0x01698000>; /* end-of-mem1 - xfb-size */
-			xfb-size = <0x168000>;    /* 640x576x2 x 2 bytes */
+			xfb-start = <0x0174c000>; /* end-of-mem1 - xfb-size */
+			xfb-size = <0xb4000>;     /* 640x576x2 bytes */
 		};
 
 		processor-interface@c003000 {
