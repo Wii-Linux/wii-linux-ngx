@@ -85,6 +85,7 @@
 			compatible = "nintendo,hollywood-pi",
 					"nintendo,flipper-pi";
 			reg = <0x0c003000 0x100>;
+			interrupts = <1>;
 
 			PIC0: pic0 {
 				#interrupt-cells = <1>;
