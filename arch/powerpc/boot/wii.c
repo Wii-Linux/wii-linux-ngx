@@ -133,34 +133,6 @@ static void platform_fixups(void)
 		setprop(mem, "reg", reg, sizeof(reg));
 	}
 
-	/* fixup local memory for EHCI controller */
-	mem = NULL;
-	while ((mem = find_node_by_compatible(mem,
-					       "nintendo,hollywood-usb-ehci"))) {
-		if (getprop(mem, "reg", &reg, sizeof(reg)) == sizeof(reg)) {
-			mem2_boundary -= reg[3];
-			printf("ehci %08X -> %08X\n", reg[2], mem2_boundary);
-			reg[2] = mem2_boundary;
-			setprop(mem, "reg", &reg, sizeof(reg));
-		}
-	}
-
-	/* fixup local memory for OHCI controllers */
-	mem = NULL;
-	while ((mem = find_node_by_compatible(mem,
-					       "nintendo,hollywood-usb-ohci"))) {
-		if (getprop(mem, "reg", &reg, sizeof(reg)) == sizeof(reg)) {
-			mem2_boundary -= reg[3];
-			printf("ohci %08X -> %08X\n", reg[2], mem2_boundary);
-			reg[2] = mem2_boundary;
-			setprop(mem, "reg", &reg, sizeof(reg));
-		}
-	}
-
-	/* fixup available memory */
-	dt_fixup_memory(0, mem2_boundary);
-	printf("top of mem @ %08X (%s)\n", mem2_boundary, "final");
-
 out:
 	return;
 }
