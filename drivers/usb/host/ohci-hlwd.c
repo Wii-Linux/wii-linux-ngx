@@ -30,7 +30,6 @@
 #include <linux/of_platform.h>
 
 #include <asm/prom.h>
-#include <asm/starlet.h>
 #include <asm/time.h>	/* for get_tbl() */
 
 #define DRV_MODULE_NAME "ohci-hlwd"

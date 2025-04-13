@@ -29,8 +29,6 @@
 #include <asm/machdep.h>
 #include <asm/prom.h>
 #include <asm/time.h>
-#include <asm/starlet.h>
-#include <asm/starlet-mini.h>
 #include <asm/udbg.h>
 
 #include "flipper-pic.h"
@@ -62,8 +60,6 @@ static void __iomem *hw_gpio;
 
 unsigned long wii_hole_start;
 unsigned long wii_hole_size;
-
-static enum starlet_ipc_flavour starlet_ipc_flavour;
 
 
 static int __init page_aligned(unsigned long x)
@@ -152,7 +148,6 @@ static void __init wii_setup_arch(void)
 
 	ug_udbg_init();
 	gcnvi_udbg_init();
-	starlet_discover_ipc_flavour();
 }
 
 static void __noreturn wii_restart(char *cmd)
@@ -216,30 +211,6 @@ static void wii_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "vendor\t\t: IBM\n");
 	seq_printf(m, "machine\t\t: Nintendo Wii\n");
 }
-
-int starlet_discover_ipc_flavour(void)
-{
-	struct mipc_infohdr *hdrp;
-	int error;
-
-	error = mipc_discover(&hdrp);
-
-	if (!error) {
-		starlet_ipc_flavour = STARLET_IPC_MINI;
-	} else {
-		starlet_ipc_flavour = STARLET_IPC_IOS;
-	}
-
-	ppc_md.restart = wii_restart;
-
-	return 0;
-}
-
-enum starlet_ipc_flavour starlet_get_ipc_flavour(void)
-{
-	return starlet_ipc_flavour;
-}
-EXPORT_SYMBOL_GPL(starlet_get_ipc_flavour);
 
 static void wii_shutdown(void)
 {

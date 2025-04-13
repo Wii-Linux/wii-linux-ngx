@@ -43,7 +43,6 @@
 #include <linux/timer.h>
 #include <linux/io.h>
 
-#include <asm/starlet.h>
 #include <asm/dma-mapping.h>
 
 

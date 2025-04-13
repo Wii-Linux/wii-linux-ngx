@@ -29,7 +29,6 @@
 
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <asm/starlet.h>
 
 #define DRV_MODULE_NAME "ehci-hlwd"
 #define DRV_DESCRIPTION "Nintendo Wii EHCI Host Controller"
