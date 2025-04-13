@@ -249,8 +249,6 @@ static int mipc_send_req(struct mipc_device *ipc_dev, unsigned long timeout,
 	mipc_poke_intail(ipc_dev, ipc_dev->intail_idx);
 	mipc_update_csr(ipc_dev->io_base, MIPC_CSR_TXSTART);
 out:
-	if (error)
-		pr_devel("exit %d\n", error);
 	return error;
 }
 
@@ -564,39 +562,6 @@ void mipc_clrsetbits_be32(const volatile u32 __iomem *addr, u32 clear, u32 set)
 {
 	mipc_clrsetbitsl(clear, set, (void __iomem *)addr);
 }
-
-u32 mipc_in_be32(const volatile u32 __iomem *addr)
-{
-	return mipc_readl((void __iomem *)addr);
-}
-
-void mipc_out_be32(const volatile u32 __iomem *addr, u32 val)
-{
-	mipc_writel(val, (void __iomem *)addr);
-}
-
-u16 mipc_in_be16(const volatile u16 __iomem *addr)
-{
-	return mipc_readw((void __iomem *)addr);
-}
-
-void mipc_out_be16(const volatile u16 __iomem *addr, u16 val)
-{
-	mipc_writew(val, (void __iomem *)addr);
-}
-
-u8 mipc_in_8(const volatile u8 __iomem *addr)
-{
-	return mipc_readb((void __iomem *)addr);
-}
-
-void mipc_out_8(const volatile u8 __iomem *addr, u8 val)
-{
-	mipc_writeb(val, (void __iomem *)addr);
-}
-
-
-
 
 static int mipc_check_address(phys_addr_t pa)
 {

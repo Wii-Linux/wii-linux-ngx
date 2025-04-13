@@ -140,14 +140,6 @@ struct mipc_req;
 
 extern int mipc_discover(struct mipc_infohdr **hdrp);
 
-extern u32 mipc_in_be32(const volatile u32 __iomem *addr);
-extern u16 mipc_in_be16(const volatile u16 __iomem *addr);
-extern u8 mipc_in_8(const volatile u8 __iomem *addr);
-
-extern void mipc_out_be32(const volatile u32 __iomem *addr, u32 val);
-extern void mipc_out_be16(const volatile u16 __iomem *addr, u16 val);
-extern void mipc_out_8(const volatile u8 __iomem *addr, u8 val);
-
 extern void mipc_clear_bit(int nr, volatile unsigned long *addr);
 extern void mipc_set_bit(int nr, volatile unsigned long *addr);
 extern void mipc_clrsetbits_be32(const volatile u32 __iomem *addr,
