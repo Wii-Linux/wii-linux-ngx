@@ -1649,7 +1649,6 @@ static int sd_init(struct sd_host *host)
 	spin_lock_init(&host->lock);
 
 	host->refcnt = 0;
-	host->disk->events |= DISK_EVENT_MEDIA_CHANGE;
 
 	host->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	sd_set_clock(host, SD_SPI_CLK);
@@ -1661,6 +1660,9 @@ static int sd_init(struct sd_host *host)
 			retval = -ENODEV;
 			goto err_blk_dev;
 		}
+
+		/* can only be done here, after sd_init_blk_dev has set host->disk */
+		host->disk->events |= DISK_EVENT_MEDIA_CHANGE;
 
 		retval = sd_init_io_thread(host);
 		if (retval)
