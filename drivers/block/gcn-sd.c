@@ -1656,13 +1656,24 @@ static int sd_init(struct sd_host *host)
 
 	retval = sd_init_blk_dev(host);
 	if (!retval) {
+		/* stolen from the now-removed sd_revalidate_disk */
+		retval = sd_welcome_card(host);
+		if (retval < 0 || sd_card_is_bad(host)) {
+		    retval = -ENODEV;
+		    goto err_blk_dev;
+		}
+
+		blk_queue_logical_block_size(host->queue, 1 << KERNEL_SECTOR_SHIFT);
+		set_capacity(host->disk, host->card.csd.capacity);
+		/*clear_bit(__SD_MEDIA_CHANGED, &host->flags);*/
+
 		if (!mmc_card_present(&host->card)) {
 			retval = -ENODEV;
 			goto err_blk_dev;
 		}
 
-		/* can only be done here, after sd_init_blk_dev has set host->disk */
-		host->disk->events |= DISK_EVENT_MEDIA_CHANGE;
+		/* can only be done here, after sd_init_blk_dev has set host->disk *
+		host->disk->events |= DISK_EVENT_MEDIA_CHANGE;*/
 
 		retval = sd_init_io_thread(host);
 		if (retval)
