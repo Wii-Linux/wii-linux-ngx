@@ -153,12 +153,14 @@ struct sdhci_host *sdhci_pltfm_init(struct platform_device *pdev,
 
 	host->irq = platform_get_irq(pdev, 0);
 
+#if 0
 	if (!request_mem_region(iomem->start, resource_size(iomem),
 		mmc_hostname(host->mmc))) {
 		dev_err(&pdev->dev, "cannot request region\n");
 		ret = -EBUSY;
 		goto err_request;
 	}
+#endif
 
 	host->ioaddr = ioremap(iomem->start, resource_size(iomem));
 	if (!host->ioaddr) {
