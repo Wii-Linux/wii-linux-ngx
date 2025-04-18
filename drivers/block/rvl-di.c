@@ -441,6 +441,41 @@ static inline u16 di_op(struct di_command *cmd)
 
 
 /*
+ * Validate that a command is not bogus.
+ */
+void di_validate_cmd(struct di_command *cmd) {
+	bool fail = false;
+	if ((cmd->cmdbuf0 & 0xFFFFFF00) == 0xDEADAA00) {
+		fail = true;
+		pr_warn("cmdbuf0 still poisoned!\n");
+	}
+	if ((cmd->cmdbuf1 & 0xFFFFFF00) == 0xDEADAA00) {
+		fail = true;
+		pr_warn("cmdbuf1 still poisoned!\n");
+	}
+	if ((cmd->cmdbuf2 & 0xFFFFFF00) == 0xDEADAA00) {
+		fail = true;
+		pr_warn("cmdbuf2 still poisoned!\n");
+	}
+	if (((u32)cmd->data & 0xFFFFFF00) == 0xDEADAA00) {
+		fail = true;
+		pr_warn("data still poisoned!\n");
+	}
+	if ((cmd->len & 0xFFFFFF00) == 0xDEADAA00) {
+		fail = true;
+		pr_warn("len still poisoned!\n");
+	}
+
+	if (fail) {
+		pr_warn("failed to validate!  You're in for a bad time...\n");
+	}
+	else {
+		pr_warn("command validated successfully, give it a shot...\n");
+	}
+}
+
+
+/*
  * Basic initialization for all commands.
  */
 static void di_op_basic(struct di_command *cmd,
@@ -448,7 +483,8 @@ static void di_op_basic(struct di_command *cmd,
 {
 	struct di_opcode *opcode;
 
-	memset(cmd, 0, sizeof(*cmd));
+	// poison it to catch bogus values
+	memset(cmd, 0xAA, sizeof(*cmd));
 	cmd->ddev = ddev;
 	cmd->opidx = opidx;
 	cmd->max_retries = cmd->retries = 0;
@@ -465,6 +501,7 @@ static void di_op_inq(struct di_command *cmd,
 		      struct di_drive_info *drive_info)
 {
 	di_op_basic(cmd, ddev, DI_OP_INQ);
+	cmd->cmdbuf1 = 0;
 	cmd->cmdbuf2 = sizeof(*drive_info);
 	cmd->data = drive_info;
 	cmd->len = sizeof(*drive_info);
@@ -477,6 +514,10 @@ static inline void di_op_stopmotor(struct di_command *cmd,
 				   struct di_device *ddev)
 {
 	di_op_basic(cmd, ddev, DI_OP_STOPMOTOR);
+	cmd->cmdbuf1 = 0;
+	cmd->cmdbuf2 = 0;
+	cmd->data = 0;
+	cmd->len = 0;
 }
 
 #if 0
@@ -519,6 +560,8 @@ static void di_op_readphysinfo(struct di_command *cmd,
 {
 	di_op_basic(cmd, ddev, DI_OP_READPHYSINFO);
 	cmd->cmdbuf0 |= (sector << 8);
+	cmd->cmdbuf1 = 0;
+	cmd->cmdbuf2 = 0;
 	cmd->data = data;
 	cmd->len = 2048;
 }
@@ -531,6 +574,10 @@ static inline void di_op_getstatus(struct di_command *cmd,
 				   struct di_device *ddev)
 {
 	di_op_basic(cmd, ddev, DI_OP_GETSTATUS);
+	cmd->cmdbuf1 = 0;
+	cmd->cmdbuf2 = 0;
+	cmd->data = 0;
+	cmd->len = 0;
 }
 
 /*
@@ -911,12 +958,14 @@ static void di_complete_transfer(struct di_device *ddev, u32 result)
 	u32 drive_status;
 	unsigned long flags;
 
+	printk("in di_complete_transfer\n");
 	spin_lock_irqsave(&ddev->lock, flags);
 
 	/* do nothing if we have nothing to complete */
 	cmd = ddev->cmd;
 	if (!cmd) {
 		spin_unlock_irqrestore(&ddev->lock, flags);
+		printk("nothing to complete\n");
 		goto out;
 	}
 
@@ -947,7 +996,11 @@ static void di_complete_transfer(struct di_device *ddev, u32 result)
 		 * garbage in files while reading them from a iso9660 disc.
 		 */
 		if (likely(di_opidx_to_dma_dir(cmd) == DMA_FROM_DEVICE))
-			__dma_sync(cmd->data, cmd->len, DMA_FROM_DEVICE);
+			dma_sync_single_for_cpu(ddev->dev,
+                        cmd->dma_addr,
+                        cmd->dma_len,
+                        DMA_FROM_DEVICE);
+
 #endif
 	}
 
@@ -1040,6 +1093,7 @@ static void di_complete_transfer(struct di_device *ddev, u32 result)
 	}
 
 out:
+	printk("leaving di_complete_transfer\n");
 	return;
 }
 
@@ -1051,12 +1105,15 @@ static void di_command_done(struct di_command *cmd)
 	struct di_device *ddev = cmd->ddev;
 	unsigned long flags;
 
+	printk("di_command_done called\n");
+
 	/* if specified, call the completion routine */
-	if (cmd->done)
+	if (cmd->done) 
 		cmd->done(cmd);
 
 	spin_lock_irqsave(&ddev->lock, flags);
 	spin_unlock_irqrestore(&ddev->lock, flags);
+	printk("leaving di_command_done\n");
 }
 
 /*
@@ -1064,6 +1121,7 @@ static void di_command_done(struct di_command *cmd)
  */
 static void di_wait_done(struct di_command *cmd)
 {
+	printk("di_wait_done called\n");
 	complete(cmd->done_data);
 }
 
@@ -1075,6 +1133,8 @@ static int di_run_command(struct di_command *cmd)
 	struct di_opcode *opcode = di_get_opcode(cmd);
 	int retval;
 
+	printk("di_run_command called\n");
+	di_validate_cmd(cmd);
 	if (cmd->retries > cmd->max_retries)
 		cmd->retries = cmd->max_retries;
 
@@ -1082,6 +1142,7 @@ static int di_run_command(struct di_command *cmd)
 		retval = di_start_command(cmd);
 	else
 		retval = di_start_dma_command(cmd);
+	printk("leaving di_run_command\n");
 	return retval;
 }
 
@@ -1095,8 +1156,11 @@ static int di_run_command_and_wait(struct di_command *cmd)
 
 	cmd->done_data = &complete;
 	cmd->done = di_wait_done;
-	if (di_run_command(cmd) > 0)
+	if (di_run_command(cmd) > 0) {
+		printk("di_run_command is waiting\n");
 		wait_for_completion(&complete);
+		printk("di_run_command is DONE\n");
+	}
 	return cmd->result;
 }
 
@@ -1112,6 +1176,7 @@ static irqreturn_t di_irq_handler(int irq, void *dev0)
 	u32 sr, cvr, reason, mask;
 	unsigned long flags;
 
+	printk("di_irq_handler called\n");
 	spin_lock_irqsave(&ddev->io_lock, flags);
 
 	sr = in_be32(sr_reg);
@@ -1144,6 +1209,7 @@ static irqreturn_t di_irq_handler(int irq, void *dev0)
 	}
 
 	spin_unlock_irqrestore(&ddev->io_lock, flags);
+	printk("leaving di_irq_handler\n");
 
 	return IRQ_HANDLED;
 }
@@ -1360,17 +1426,23 @@ static void di_request_done(struct di_command *cmd)
 	unsigned long flags;
 	int error = (cmd->result & DI_SR_TCINT) ? 0 : -EIO;
 
+	printk("in di_request_done\n");
+
 	spin_lock_irqsave(&ddev->lock, flags);
 	req = ddev->req;
 	ddev->req = NULL;
 	spin_unlock_irqrestore(&ddev->lock, flags);
 
+
 	if (req) {
+		printk("di_request_done: REQ DONE status=%d, result=0x%08x\n",
+		error, cmd->result);
 		spin_lock_irqsave(&ddev->queue_lock, flags);
 		__blk_end_request_cur(req, error);
-		blk_start_queue(ddev->queue);
+		//blk_start_queue(ddev->queue);
 		spin_unlock_irqrestore(&ddev->queue_lock, flags);
 	}
+	printk("leaving di_request_done\n");
 }
 
 static void di_do_request(struct request_queue *q)
@@ -1382,24 +1454,75 @@ static void di_do_request(struct request_queue *q)
 	unsigned long flags;
 	size_t len;
 	int error;
+	u64 pos;
+	u32 len_bytes, len_sectors;
 
-	req = blk_peek_request(q);
+	printk("di_do_request called\n");
+
+	req = blk_fetch_request(q);
+	if (!req) {
+		pr_warn("di_do_request: no request queued, spinning\n");
+		dump_stack();
+		msleep(50);
+		return;
+	}
+
+	printk("di_do_request: START REQ sector=%lu, bytes=%u\n",
+	blk_rq_pos(req), blk_rq_cur_bytes(req));
+
 	while (req) {
 		spin_lock_irqsave(&ddev->lock, flags);
 
+		if (!req->bio) {
+			pr_warn("null bio, something's gone very wrong\n");
+			goto done;
+		}
+
+		if (!bio_has_data(req->bio)) {
+			pr_warn("bio has no data, bailing\n");
+			goto done;
+		}
+
+		pos = blk_rq_pos(req);
+		len_bytes = blk_rq_cur_bytes(req);
+		len_sectors = blk_rq_cur_sectors(req);
+
 		if (ddev->req || ddev->cmd) {
+			printk("di_do_request: stopping queue because of ddev->req || ddev->cmd\n");
 			blk_stop_queue(q);
 			if (ddev->cmd)
 				set_bit(__DI_START_QUEUE, &ddev->flags);
 			spin_unlock_irqrestore(&ddev->lock, flags);
+			printk("di_do_request: new values of request after queue stop: sector=%lu, bytes=%u\n",
+			blk_rq_pos(req), blk_rq_cur_bytes(req));
 			break;
 		}
 
-		blk_start_request(req);
+		printk("di_do_request: values of request in loop: sector=%lu, bytes=%u, pos=%lu, len_bytes=%u, len_sectors=%u\n",
+		blk_rq_pos(req), blk_rq_cur_bytes(req), pos, len_bytes, len_sectors);
 		error = -EIO;
 
-		if (req->cmd_type != REQ_TYPE_FS)
+		if (req->cmd_type != REQ_TYPE_FS) {
+			printk("di_do_request: ignore non-fs request");
 			goto done;
+		}
+
+
+
+		if (len_bytes == 0 || len_sectors == 0) {
+			pr_err("di_do_request: zero-length request! sector=%llu len=%u\n",
+				(unsigned long long)pos, len_bytes);
+			error = -EINVAL;
+			goto done;
+		}
+
+		if (pos + len_sectors > ddev->nr_sectors) {
+			pr_err("di_do_request: request out of bounds! pos=%llu + %u > %lu\n",
+				(unsigned long long)pos, len_sectors, ddev->nr_sectors);
+			error = -EINVAL;
+			goto done;
+		}
+
 
 		/* it doesn't make sense to write to this device */
 		if (unlikely(rq_data_dir(req) == WRITE)) {
@@ -1426,21 +1549,47 @@ static void di_do_request(struct request_queue *q)
 
 		/* launch the corresponding read sector command */
 		start = blk_rq_pos(req);
+		pr_info("start=%lu (raw), shifted=%u\n", start,
+			start << KERNEL_SECTOR_SHIFT >> DI_SECTOR_SHIFT);
+
 		len = blk_rq_cur_bytes(req);
 		if (len & (DI_SECTOR_SIZE-1))
 			pr_devel("len=%u\n", len);
+
+		printk("di_do_request about to read\n");
+		if (!req->bio) {
+			pr_err("di_do_request: req->bio is NULL!\n");
+			__blk_end_request_all(req, -EIO);
+			return;
+		}
+
+		printk("=== struct request dump ===\n");
+		printk("  req: %p\n", req);
+		printk("  cmd_type: %d\n", req->cmd_type);
+		printk("  bio: %p\n", req->bio);
+		printk("  blk_rq_pos: %lu\n", blk_rq_pos(req));
+		printk("  blk_rq_cur_bytes: %u\n", blk_rq_cur_bytes(req));
+		printk("  blk_rq_cur_sectors: %lu\n", blk_rq_cur_sectors(req));
+		printk("  rq_data_dir: %d\n", rq_data_dir(req));
+		print_hex_dump(KERN_DEBUG, "  RAW: ", DUMP_PREFIX_OFFSET, 16, 1, req, sizeof(*req), true);
+
+		if (req->bio)
+			print_hex_dump(KERN_DEBUG, "  BIO: ", DUMP_PREFIX_OFFSET, 16, 1, req->bio, sizeof(*(req->bio)), true);
+
 
 		di_op_readsector(cmd, ddev, start, bio_data(req->bio), len);
 		cmd->done_data = cmd;
 		cmd->done = di_request_done;
 		di_run_command(cmd);
+		printk("di_do_request command done\n");
 		error = 0;
 		break;
 	done:
 		spin_unlock_irqrestore(&ddev->lock, flags);
 		if (!__blk_end_request_cur(req, error))
-			req = blk_peek_request(q);
+			req = blk_fetch_request(q);
 	}
+	printk("leaving di_do_request\n");
 }
 
 /*
