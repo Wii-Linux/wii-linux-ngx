@@ -35,7 +35,7 @@ The kernel can then load the rootfs (root filesystem, equivalent to the "C:\" dr
 You can use Priiloader to make Bootmii your default choice, effectively creating this chain:
 
 ```
-Wii power on -> MINI -> (Gumboot selection with power/eject buttons ->) Linux kernel zImage -> Void Linux userspace
+Wii power on -> MINI -> (Gumboot selection with power/eject buttons ->) Linux kernel zImage -> ArchPOWER userspace
 ```
 
 See also:
@@ -51,14 +51,13 @@ Currently not tested on GameCube, if you can, please [reach out](https://github.
 
 ### vWii
 
-Currently not tested on virtual Wii, if you can, please [reach out](https://github.com/Wii-Linux/wii-linux-ngx/blob/master/docs/index.md#frequently-asked-questions)
+Not possible due to lack of MINI.
 
 ## Default credentials
 
-The SD image and rootfs have `root:voidlinux` credentials.  
+The SD image and rootfs have `root:wiilinux` credentials.
 
-If you prefer to log in over USB serial or a USB gecko on the memory card slots, log in via the TTY, then run either:
-TODO: Add these when home
+If you prefer to log in over USB serial or a USB Gecko on the memory card slots, log in via the TTY, then run `systemctl enable --now getty@usbgeckocon[0/1]`, replacing `[0/1]` with either `0`, or `1`, depending on which memory card slot you've connected it to.
 
 ## History
 
@@ -68,7 +67,7 @@ Chronological history of Linux for Wii/GameCube:
 * [DeltaResero's fork (unofficial MIKEp7)](https://github.com/DeltaResero/GC-Wii-Linux-Kernels) - considerable work done by DeltaResero to bring up the GC/Wii patches into a v3.x kernel
 * [neagix's wii-linux-ngx](https://github.com/neagix/wii-linux-ngx) - continuation of the previous work, distribution packaging and maintenance
 * [This project, fork of wii-linux-ngx](https://github.com/Wii-Linux/wii-linux-ngx) 4.4 branch - fixups of the experimental-4.4 branch of neagix's kernel, CIP Patches, USB Gecko
-* [This project, fork of wii-linux-ngx](https://github.com/Wii-Linux/wii-linux-ngx) 4.5 branch - clean set of 4.4 patches applied to 4.5, ported several improvments back, such as the RGBA framebuffer, and contains several new fixes, such as for audio and gcn-si.
+* [This project, fork of wii-linux-ngx](https://github.com/Wii-Linux/wii-linux-ngx) 4.5 branch - clean set of 4.4 patches applied to 4.5, ported several improvments back, such as the RGBA framebuffer, and contains several new fixes, such as for audio and gcn-si.  Then ported to 4.6, 4.9, 4.14, and 4.19 (latest available).  Experimental work is available for 5.4 though it's very much unbootable right now.
 
 The original (2.6.32 and prior) gcLinux work can be found at: http://sourceforge.net/projects/gc-linux/; at the time of writing project has not seen activity since 2013.
 
@@ -98,7 +97,7 @@ See [open issues](https://github.com/Wii-Linux/wii-linux-ngx/issues) and the [pr
 
 Issues that persist from neagix's original repo:
 
-Boot from MINI is well tested, but booting from IOS is broken.  It seems that the IOS issues are very deeply rooted and stretch back very far.  TODO: Did it **ever** work properly?
+Boot from MINI is well tested, but booting from IOS is very broken, and as of 4.19, has been removed entirely.
 
 Bugs probably introduced in the port of MIKEp5 from v2.6 to v3.x tree:
 
@@ -161,7 +160,7 @@ To enable it by default on boot, add it to /etc/fstab.
 
 # Installing packages
 
-You may use `xbps-install -Su` to update your packages, or `xbps-install *package name*` to install a new package.
+You may use `pacman -Syu` to update your packages, or `pacman -S` to install a new package.
 
 # Building the kernel
 
