@@ -15,13 +15,9 @@
 /dts-v1/;
 #include <dt-bindings/gpio/gpio.h>
 
-/*
- * This is commented-out for now.
- * Until a later patch is merged, the kernel can use only the first
- * contiguous RAM range and will BUG() if the memreserve is outside
- * that range.
- */
-/*/memreserve/ 0x10000000 0x0004000;*/	/* DSP RAM */
+/memreserve/ 0x10000000 0x0004000;	/* DSP RAM */
+/memreserve/ 0x0174c000 0x00b4000;	/* framebuffer, see video@0c002000 */
+/memreserve/ 0x01800000 0xe800000;	/* memory hole */
 
 / {
 	model = "nintendo,wii";
@@ -30,7 +26,17 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "root=/dev/mmcblk0p2 rootwait udbg-immortal";
+		/* ramdisk example */
+		//bootargs = "nobats root=/dev/ram0 video=gcnfb ip=on force_keyboard_port=4";
+
+		/* nfsroot example */
+		//bootargs = "nobats root=/dev/nfs nfsroot=192.168.001.253:/nfsroot/cube ip=on video=gcnfb:tv=NTSC force_keyboard_port=4";
+
+		/* bootargs are here so that you can modify them with a hex editor if you want 
+		 * space is purposefully left after the root parameter so you may replace sda1 with a block device with a longer name if you so wish.
+		 */
+		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto,nostalgic             rootwait nobats panic=0             loglevel=4 consoleblank=0                          mark.end=1";
+
 	};
 
 	memory {
@@ -71,27 +77,21 @@
 					"nintendo,flipper-vi";
 			reg = <0x0c002000 0x100>;
 			interrupts = <8>;
+			xfb-start = <0x0174c000>; /* end-of-mem1 - xfb-size */
+			xfb-size = <0xb4000>;     /* 640x576x2 bytes */
 		};
 
 		processor-interface@c003000 {
 			compatible = "nintendo,hollywood-pi",
 					"nintendo,flipper-pi";
 			reg = <0x0c003000 0x100>;
+			interrupts = <1>;
 
 			PIC0: pic0 {
 				#interrupt-cells = <1>;
 				compatible = "nintendo,flipper-pic";
 				interrupt-controller;
 			};
-		};
-
-		dsp@c005000 {
-			#address-cells = <1>;
-			#size-cells = <1>;
-			compatible = "nintendo,hollywood-dsp",
-					"nintendo,flipper-dsp";
-			reg = <0x0c005000 0x200>;
-			interrupts = <6>;
 		};
 
 		gamepad-controller@d006400 {
@@ -101,10 +101,10 @@
 			interrupts = <3>;
 		};
 
-		audio@c006c00 {
-			compatible = "nintendo,hollywood-ai",
-					"nintendo,flipper-ai";
-			reg = <0x0d006c00 0x20>;
+		audio@c005000 {
+			compatible = "nintendo,hollywood-audio";
+			reg = <0x0c005000 0x200		/* DSP */
+			       0x0d006c00 0x20>;	/* AI */
 			interrupts = <6>;
 		};
 
@@ -120,7 +120,8 @@
 		usb@d040000 {
 			compatible = "nintendo,hollywood-usb-ehci",
 					"usb-ehci";
-			reg = <0x0d040000 0x100>;
+			reg = <0x0d040000 0x100
+			       0x133e0000 0x80000>; /* 512 KB */
 			interrupts = <4>;
 			interrupt-parent = <&PIC1>;
 		};
@@ -128,7 +129,8 @@
 		usb@d050000 {
 			compatible = "nintendo,hollywood-usb-ohci",
 					"usb-ohci";
-			reg = <0x0d050000 0x100>;
+			reg = <0x0d050000 0x100
+			       0x13460000 0x80000>; /* 512 KB */
 			interrupts = <5>;
 			interrupt-parent = <&PIC1>;
 		};
@@ -136,7 +138,8 @@
 		usb@d060000 {
 			compatible = "nintendo,hollywood-usb-ohci",
 					"usb-ohci";
-			reg = <0x0d060000 0x100>;
+			reg = <0x0d060000 0x100
+			       0x134e0000 0x80000>; /* 512 KB */
 			interrupts = <6>;
 			interrupt-parent = <&PIC1>;
 		};
@@ -157,11 +160,21 @@
 			interrupt-parent = <&PIC1>;
 		};
 
-		ipc@d000000 {
-			compatible = "nintendo,hollywood-ipc";
-			reg = <0x0d000000 0x10>;
-			interrupts = <30>;
-			interrupt-parent = <&PIC1>;
+		/*
+		 * Hardware accessible through Team Twiizers 'mini' firmware
+		 * replacement for Starlet.
+		 */
+		mini@d000000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			#interrupt-cells = <1>;
+			compatible = "twiizers,starlet-mini-ipc";
+			reg = <0x0d000000 0x40	/* IPC */
+			       0x13fffffc 0x4>;	/* mini header pointer */
+
+			ranges = <0x0d040000 0x0d040000 0x00050000
+			          0x0d800000 0x0d800000 0x00007000
+			          0x133e0000 0x133e0000 0x00c20000>;
 		};
 
 		PIC1: pic1@d800030 {
@@ -187,11 +200,6 @@
 				"DEBUG0", "DEBUG1", "DEBUG2", "DEBUG3",
 				"DEBUG4", "DEBUG5", "DEBUG6", "DEBUG7";
 
-			/*
-			 * This is commented out while a standard binding
-			 * for i2c over gpio is defined.
-			 */
-			/*
 			i2c-video {
 				#address-cells = <1>;
 				#size-cells = <0>;
@@ -210,7 +218,6 @@
 			                reg = <0x70>;
 			        };
 			};
-			*/
 		};
 
 		control@d800100 {
@@ -236,4 +243,3 @@
 		};
 	};
 };
-

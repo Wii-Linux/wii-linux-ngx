@@ -18,9 +18,12 @@
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/seq_file.h>
+#include <linux/kexec.h>
 #include <linux/of_platform.h>
 #include <linux/memblock.h>
 #include <mm/mmu_decl.h>
+#include <linux/exi.h>
+#include <linux/gpio.h>
 
 #include <asm/io.h>
 #include <asm/machdep.h>
@@ -30,6 +33,7 @@
 
 #include "flipper-pic.h"
 #include "hlwd-pic.h"
+#include "gcnvi_udbg.h"
 #include "usbgecko_udbg.h"
 
 /* control block */
@@ -137,6 +141,9 @@ static void __init wii_setup_arch(void)
 		clrbits32(hw_gpio + HW_GPIO_OUT(0),
 			  HW_GPIO_SLOT_LED | HW_GPIO_SENSOR_BAR);
 	}
+
+	ug_udbg_init();
+	gcnvi_udbg_init();
 }
 
 static void __noreturn wii_restart(char *cmd)
@@ -195,9 +202,16 @@ static int __init wii_probe(void)
 	return 1;
 }
 
+static void wii_show_cpuinfo(struct seq_file *m)
+{
+	seq_printf(m, "vendor\t\t: IBM\n");
+	seq_printf(m, "machine\t\t: Nintendo Wii\n");
+}
+
 static void wii_shutdown(void)
 {
 	hlwd_quiesce();
+	exi_quiesce();
 	flipper_quiesce();
 }
 
@@ -206,6 +220,7 @@ define_machine(wii) {
 	.probe			= wii_probe,
 	.setup_arch		= wii_setup_arch,
 	.restart		= wii_restart,
+	.show_cpuinfo		= wii_show_cpuinfo,
 	.halt			= wii_halt,
 	.init_IRQ		= wii_pic_probe,
 	.get_irq		= flipper_pic_get_irq,
@@ -216,15 +231,25 @@ define_machine(wii) {
 
 static const struct of_device_id wii_of_bus[] = {
 	{ .compatible = "nintendo,hollywood", },
+	{ .compatible = "twiizers,starlet-mini-ipc", },
 	{ },
 };
 
 static int __init wii_device_probe(void)
 {
+	struct device_node *np;
+
 	if (!machine_is(wii))
 		return 0;
 
 	of_platform_populate(NULL, wii_of_bus, NULL, NULL);
+
+	np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-mem2");
+	if (np) {
+		of_platform_device_create(np, NULL, NULL);
+		of_node_put(np);
+	}
+
 	return 0;
 }
 device_initcall(wii_device_probe);
