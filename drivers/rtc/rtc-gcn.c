@@ -259,10 +259,12 @@ static int gcnrtc_probe(struct exi_device *dev)
 		ppc_md.get_rtc_time = gcnrtc_plat_rtc_get_time;
 		spin_unlock_irqrestore(&drvdata->lock, flags);
 
-		drvdata->rtc_dev = rtc_device_register(DRV_MODULE_NAME,
-						       &dev->dev,
-						       &gcnrtc_ops,
-						       THIS_MODULE);
+		drvdata->rtc_dev = devm_rtc_allocate_device(&dev->dev);
+		if (IS_ERR(drvdata->rtc_dev))
+			return PTR_ERR(drvdata->rtc_dev);
+
+		drvdata->rtc_dev->ops = &gcnrtc_ops;
+		rtc_register_device(drvdata->rtc_dev);
 		retval = 0;
 	}
 
@@ -282,9 +284,6 @@ static void gcnrtc_remove(struct exi_device *dev)
 		ppc_md.set_rtc_time = NULL;
 		ppc_md.get_rtc_time = NULL;
 		spin_unlock_irqrestore(&drvdata->lock, flags);
-
-		if (!IS_ERR(drvdata->rtc_dev))
-			rtc_device_unregister(drvdata->rtc_dev);
 	}
 	exi_device_put(dev);
 }
