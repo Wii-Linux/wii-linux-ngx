@@ -1245,7 +1245,7 @@ MODULE_LICENSE ("GPL");
 
 #ifdef CONFIG_USB_OHCI_HCD_HLWD
 #include "ohci-hlwd.c"
-#define OF_PLATFORM_DRIVER	ohci_hcd_hlwd_driver
+#define OHCI_HLWD_DRIVER	ohci_hcd_hlwd_driver
 #endif
 
 #ifdef CONFIG_PPC_PS3
@@ -1281,6 +1281,12 @@ static int __init ohci_hcd_mod_init(void)
 	retval = ps3_ohci_driver_register(&PS3_SYSTEM_BUS_DRIVER);
 	if (retval < 0)
 		goto error_ps3;
+#endif
+
+#ifdef OHCI_HLWD_DRIVER
+	retval = platform_driver_register(&OHCI_HLWD_DRIVER);
+	if (retval < 0)
+		goto error_ohci_hlwd;
 #endif
 
 #ifdef OF_PLATFORM_DRIVER
@@ -1326,6 +1332,10 @@ static int __init ohci_hcd_mod_init(void)
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);
  error_of_platform:
 #endif
+#ifdef OHCI_HLWD_DRIVER
+	platform_driver_unregister(&OHCI_HLWD_DRIVER);
+ error_ohci_hlwd:
+#endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ohci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);
  error_ps3:
@@ -1351,6 +1361,9 @@ static void __exit ohci_hcd_mod_exit(void)
 #endif
 #ifdef OF_PLATFORM_DRIVER
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);
+#endif
+#ifdef OHCI_HLWD_DRIVER
+	platform_driver_unregister(&OHCI_HLWD_DRIVER);
 #endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ohci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);

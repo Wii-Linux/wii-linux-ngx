@@ -45,6 +45,19 @@
 		       0x10000000 0x04000000>;	/* MEM2 64MB GDDR3 */
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		USB_DMA: usb-dma {
+			compatible = "shared-dma-pool";
+			no-map;
+			size = <0x00080000>; /* 512 KiB */
+			alloc-ranges = <0x10000000 0x04000000>; /* MEM2 */
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -71,6 +84,8 @@
 			  0x0d000000 0x0d000000 0x00800000
 			  0x0d800000 0x0d800000 0x00800000>;
 		interrupt-parent = <&PIC0>;
+		dma-ranges;
+		dma-noncoherent;
 
 		video@c002000 {
 			compatible = "nintendo,hollywood-vi",
@@ -118,28 +133,28 @@
 		};
 
 		usb@d040000 {
-			compatible = "nintendo,hollywood-usb-ehci",
-					"usb-ehci";
-			reg = <0x0d040000 0x100
-			       0x133e0000 0x80000>; /* 512 KB */
+			compatible = "nintendo,hollywood-usb-ehci";
+			reg = <0x0d040000 0x100>;
+			big-endian-regs;
 			interrupts = <4>;
 			interrupt-parent = <&PIC1>;
+			memory-region = <&USB_DMA>;
 		};
 
 		usb@d050000 {
-			compatible = "nintendo,hollywood-usb-ohci",
-					"usb-ohci";
+			compatible = "nintendo,hollywood-usb-ohci";
 			reg = <0x0d050000 0x100
 			       0x13460000 0x80000>; /* 512 KB */
+			big-endian-regs;
 			interrupts = <5>;
 			interrupt-parent = <&PIC1>;
 		};
 
 		usb@d060000 {
-			compatible = "nintendo,hollywood-usb-ohci",
-					"usb-ohci";
+			compatible = "nintendo,hollywood-usb-ohci";
 			reg = <0x0d060000 0x100
 			       0x134e0000 0x80000>; /* 512 KB */
+			big-endian-regs;
 			interrupts = <6>;
 			interrupt-parent = <&PIC1>;
 		};

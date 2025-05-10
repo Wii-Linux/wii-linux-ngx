@@ -217,7 +217,8 @@ static const struct hc_driver ohci_hlwd_hc_driver = {
 
 static int ohci_hcd_hlwd_probe(struct platform_device *op)
 {
-	struct device_node *dn = op->dev.of_node;
+	struct device *dev = &op->dev;
+	struct device_node *dn = dev->of_node;
 	struct usb_hcd *hcd;
 	struct ohci_hcd	*ohci = NULL;
 	struct resource res;
@@ -229,13 +230,22 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	if (usb_disabled())
 		goto out;
 
-	dev_dbg(&op->dev, "initializing " DRV_MODULE_NAME " USB Controller\n");
+	/* big-endian registers (reversed little-endian), little-endian descriptors */
+	if (!of_property_read_bool(dn, "big-endian-regs") ||
+	    of_property_read_bool(dn, "big-endian-desc") ||
+	    of_property_read_bool(dn, "big-endian")) {
+		dev_warn(dev, "requires only 'big-endian-regs'\n");
+		error = -EINVAL;
+		goto out;
+	}
+
+	dev_dbg(dev, "initializing " DRV_MODULE_NAME " USB Controller\n");
 
 	error = of_address_to_resource(dn, 0, &res);
 	if (error)
 		goto out;
 
-	hcd = usb_create_hcd(&ohci_hlwd_hc_driver, &op->dev, DRV_MODULE_NAME);
+	hcd = usb_create_hcd(&ohci_hlwd_hc_driver, dev, DRV_MODULE_NAME);
 	if (!hcd) {
 		error = -ENOMEM;
 		goto out;
@@ -247,16 +257,16 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	error = of_address_to_resource(dn, 1, &res);
 	if (error) {
 		/* satisfy coherent memory allocations from mem1 or mem2 */
-		dev_warn(&op->dev, "using normal memory\n");
+		dev_warn(dev, "using normal memory\n");
 	} else {
 		coherent_mem_addr = res.start;
 		coherent_mem_size = res.end - res.start + 1;
-		error = dma_declare_coherent_memory(&op->dev, coherent_mem_addr,
+		error = dma_declare_coherent_memory(dev, coherent_mem_addr,
 						 coherent_mem_addr,
 						 coherent_mem_size,
 						 DMA_MEMORY_EXCLUSIVE);
 		if (error) {
-			dev_err(&op->dev, "error %d declaring %u bytes of"
+			dev_err(dev, "error %d declaring %u bytes of"
 				" coherent memory at 0x%p\n",
 				error, coherent_mem_size, (void *)coherent_mem_addr);
 			error = -EBUSY;
@@ -266,19 +276,20 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 
 	irq = irq_of_parse_and_map(dn, 0);
 	if (irq == NO_IRQ) {
-		printk(KERN_ERR __FILE__ ": irq_of_parse_and_map failed\n");
+		dev_err(dev, "irq_of_parse_and_map failed\n");
 		error = -EBUSY;
 		goto err_irq;
 	}
 
 	hcd->regs = ioremap(hcd->rsrc_start, hcd->rsrc_len);
 	if (!hcd->regs) {
-		printk(KERN_ERR __FILE__ ": ioremap failed\n");
+		dev_err(dev, "ioremap failed\n");
 		error = -EBUSY;
 		goto err_ioremap;
 	}
 
 	ohci = hcd_to_ohci(hcd);
+	ohci->flags |= OHCI_QUIRK_BE_MMIO;
 	ohci->flags |= OHCI_QUIRK_WII;
 
 	ohci_hcd_init(ohci);
@@ -294,7 +305,7 @@ err_add_hcd:
 err_ioremap:
 	irq_dispose_mapping(irq);
 err_irq:
-	dma_release_declared_memory(&op->dev);
+	dma_release_declared_memory(dev);
 err_decl_coherent:
 	usb_put_hcd(hcd);
 out:
@@ -303,16 +314,17 @@ out:
 
 static int ohci_hcd_hlwd_remove(struct platform_device *op)
 {
-	struct usb_hcd *hcd = dev_get_drvdata(&op->dev);
+	struct device *dev = &op->dev;
+	struct usb_hcd *hcd = dev_get_drvdata(dev);
 
-	dev_set_drvdata(&op->dev, NULL);
+	dev_set_drvdata(dev, NULL);
 
-	dev_dbg(&op->dev, "stopping " DRV_MODULE_NAME " USB Controller\n");
+	dev_dbg(dev, "stopping " DRV_MODULE_NAME " USB Controller\n");
 
 	usb_remove_hcd(hcd);
 	iounmap(hcd->regs);
 	irq_dispose_mapping(hcd->irq);
-	dma_release_declared_memory(&op->dev);
+	dma_release_declared_memory(dev);
 	usb_put_hcd(hcd);
 
 	return 0;
@@ -330,9 +342,7 @@ static void ohci_hcd_hlwd_shutdown(struct platform_device *op)
 
 
 static struct of_device_id ohci_hcd_hlwd_match[] = {
-	{
-		.compatible = "nintendo,hollywood-usb-ohci",
-	},
+	{ .compatible = "nintendo,hollywood-usb-ohci", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ohci_hcd_hlwd_match);
