@@ -1509,23 +1509,30 @@ static unsigned int sd_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	struct sd_host *host = disk->private_data;
 	unsigned int last_serial;
-	int retval;
+	int retval, changed = 0;
 
 	/* report a media change for zombies */
 	if (!host)
-		return 1;
-
-	/* report a media change if someone forced it */
-	if (test_bit(__SD_MEDIA_CHANGED, &host->flags))
-		return 1;
-
-	/* check if the serial number of the card changed */
-	last_serial = host->card.cid.serial;
-	retval = sd_read_cid(host);
-	if (!retval && last_serial == host->card.cid.serial && last_serial)
 		return DISK_EVENT_MEDIA_CHANGE;
 
-	return 0;
+	/* always check serial if host exists */
+	last_serial = host->card.cid.serial;
+	retval = sd_read_cid(host);
+
+	if (retval || last_serial != host->card.cid.serial) {
+		set_bit(__SD_MEDIA_CHANGED, &host->flags);
+		changed = 1;
+
+		retval = sd_welcome_card(host);
+		if (retval < 0 || sd_card_is_bad(host))
+			return DISK_EVENT_MEDIA_CHANGE;
+
+		blk_queue_logical_block_size(host->queue, 1 << KERNEL_SECTOR_SHIFT);
+		set_capacity(host->disk, host->card.csd.capacity);
+		clear_bit(__SD_MEDIA_CHANGED, &host->flags);
+	}
+
+	return changed ? DISK_EVENT_MEDIA_CHANGE : 0;
 }
 
 static int sd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
