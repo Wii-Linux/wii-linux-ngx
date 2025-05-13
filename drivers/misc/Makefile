@@ -33,7 +33,6 @@ obj-$(CONFIG_ISL29020)		+= isl29020.o
 obj-$(CONFIG_SENSORS_TSL2550)	+= tsl2550.o
 obj-$(CONFIG_DS1682)		+= ds1682.o
 obj-$(CONFIG_C2PORT)		+= c2port/
-obj-$(CONFIG_GAMECUBE_GQR)	+= gcn-gqr.o
 obj-$(CONFIG_GAMECUBE_MI)	+= gcn-mi.o
 obj-$(CONFIG_HMC6352)		+= hmc6352.o
 obj-y				+= eeprom/
