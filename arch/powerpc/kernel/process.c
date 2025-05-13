@@ -55,6 +55,7 @@
 #include <asm/syscalls.h>
 #include <asm/switch_to.h>
 #include <asm/tm.h>
+#include <asm/synch.h>
 #include <asm/debug.h>
 #ifdef CONFIG_PPC64
 #include <asm/firmware.h>
@@ -167,6 +168,20 @@ static void __giveup_fpu(struct task_struct *tsk)
 		msr &= ~MSR_VSX;
 #endif
 	tsk->thread.regs->msr = msr;
+
+#if defined(CONFIG_PPC_BOOK3S_750CL) && defined(CONFIG_PPC_PEDANTIC_PSE)
+	if (cpu_has_feature(CPU_FTR_PAIRED_SINGLE)) {
+		u32 hid2 = mfspr(SPRN_HID2_GEKKO);
+		/*
+		 * Disable paired singles to avoid problems with
+		 * instructions that change their behavior when
+		 * paired singles are enabled and software which is not
+		 * paired single aware.
+		 */
+		if (hid2 & HID2_PSE)
+			mtspr(SPRN_HID2_GEKKO, hid2 & ~HID2_PSE);
+	}
+#endif
 }
 
 void giveup_fpu(struct task_struct *tsk)
@@ -1803,6 +1818,10 @@ void start_thread(struct pt_regs *regs, unsigned long start, unsigned long sp)
 	current->thread.load_fp = 0;
 	memset(&current->thread.fp_state, 0, sizeof(current->thread.fp_state));
 	current->thread.fp_save_area = NULL;
+#ifdef CONFIG_PPC_BOOKS3S_750CL
+	memset(&current->thread.gqr_state, 0, sizeof(current->thread.gqr_state));
+	current->thread.gqr_save_area = NULL;
+#endif
 #ifdef CONFIG_ALTIVEC
 	memset(&current->thread.vr_state, 0, sizeof(current->thread.vr_state));
 	current->thread.vr_state.vscr.u[3] = 0x00010000; /* Java mode disabled */

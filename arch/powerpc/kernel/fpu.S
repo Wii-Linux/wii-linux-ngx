@@ -131,6 +131,13 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 	REST_32FPVSRS(0, R4, R10)
 	/* restore registers and return */
 	/* we haven't used ctr or xer or lr */
+#if defined(CONFIG_PPC_BOOK3S_750CL) && !defined(CONFIG_PPC_PEDANTIC_PSE)
+BEGIN_FTR_SECTION
+	blr
+END_FTR_SECTION_IFCLR(CPU_FTR_PAIRED_SINGLE)
+	addi r10,r5,THREAD_GQRSTATE
+	REST_8GQRS(0, r4, r10)
+#endif
 	blr
 
 /*
@@ -149,7 +156,30 @@ _GLOBAL(save_fpu)
 	mffs	fr0
 	stfd	fr0,FPSTATE_FPSCR(r6)
 	REST_1FPVSR(0, R4, R6)
+
+#ifdef CONFIG_PPC_BOOK3S_750CL
+BEGIN_FTR_SECTION
 	blr
+END_FTR_SECTION_IFCLR(CPU_FTR_PAIRED_SINGLE)
+#ifdef CONFIG_PPC_PEDANTIC_PSE
+	mfspr r4, SPRN_HID2_GEKKO
+	andis. r4, r4, HID2_PSE@h
+	beqlr
+#endif
+	PPC_LL r6,THREAD_GQRSAVEAREA(r3)
+	PPC_LCMPI 0,r6,0
+	bne 1f
+	addi r6,r3,THREAD_GQRSTATE
+1:	SAVE_8GQRS(0, r4, r6)
+#endif
+	blr
+
+#if defined(CONFIG_PPC_BOOK3S_750CL) && defined(CONFIG_PPC_PEDANTIC_PSE)
+_GLOBAL(load_gqrs)
+	addi	r3,r3,THREAD + THREAD_GQRSTATE	        /* want THREAD of task */
+	REST_8GQRS(0, r4, r3)
+	blr
+#endif
 
 /*
  * These are used in the alignment trap handler when emulating

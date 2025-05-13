@@ -51,6 +51,7 @@
 #include <asm/rtas.h>
 #include <asm/pmc.h>
 #include <asm/reg.h>
+#include <asm/synch.h>
 #ifdef CONFIG_PMAC_BACKLIGHT
 #include <asm/backlight.h>
 #endif
@@ -1250,6 +1251,9 @@ static int emulate_instruction(struct pt_regs *regs)
 {
 	u32 instword;
 	u32 rd;
+#ifdef CONFIG_PPC_BOOK3S_750CL
+	u8 gqr;
+#endif
 
 	if (!user_mode(regs))
 		return -EINVAL;
@@ -1310,6 +1314,105 @@ static int emulate_instruction(struct pt_regs *regs)
 		asm volatile("sync");
 		return 0;
 	}
+
+
+#ifdef CONFIG_PPC_BOOK3S_750CL
+	if (cpu_has_feature(CPU_FTR_PAIRED_SINGLE)) {
+		/* Emulate mfgqr rD, n */
+		if ((instword & PPC_INST_MFSPR_GQR_MASK) == PPC_INST_MFSPR_GQR) {
+			PPC_WARN_EMULATED(mfgqr, regs);
+			rd = (instword >> 21) & 0x1f;
+			gqr = (instword >> 16) & 7;
+			/* If the current thread is using the FPU, read from the true GQRs. */
+			if ((regs->msr & MSR_FP) 
+			#ifdef CONFIG_PPC_PEDANTIC_PSE 
+			&& (mfspr(SPRN_HID2_GEKKO) & HID2_PSE)
+			#endif
+			) {
+				switch (gqr) {
+					case 0:
+						regs->gpr[rd] = mfspr(912);
+						break;
+					case 1:
+						regs->gpr[rd] = mfspr(913);
+						break;
+					case 2:
+						regs->gpr[rd] = mfspr(914);
+						break;
+					case 3:
+						regs->gpr[rd] = mfspr(915);
+						break;
+					case 4:
+						regs->gpr[rd] = mfspr(916);
+						break;
+					case 5:
+						regs->gpr[rd] = mfspr(917);
+						break;
+					case 6:
+						regs->gpr[rd] = mfspr(918);
+						break;
+					case 7:
+						regs->gpr[rd] = mfspr(919);
+						break;
+					// Shouldn't be possible.
+					default:
+						return -EFAULT;
+				}
+			} else {
+				/* Else, read from the thread's GQR state. */
+				regs->gpr[rd] = current->thread.gqr_state.gqr[gqr];
+			}
+			return 0;
+		}
+
+		/* Emulate mtgqr n, rS */
+		if ((instword & PPC_INST_MTSPR_GQR_MASK) == PPC_INST_MTSPR_GQR) {
+			PPC_WARN_EMULATED(mtgqr, regs);
+			rd = (instword >> 21) & 0x1f;
+			gqr = (instword >> 16) & 7;
+			/* If the current thread is using the FPU, write to the true GQRs. */
+			if ((regs->msr & MSR_FP) 
+			#ifdef CONFIG_PPC_PEDANTIC_PSE 
+			&& (mfspr(SPRN_HID2_GEKKO) & HID2_PSE)
+			#endif
+			) {
+				switch (gqr) {
+					case 0:
+						mtspr(912, regs->gpr[rd]);
+						break;
+					case 1:
+						mtspr(913, regs->gpr[rd]);
+						break;
+					case 2:
+						mtspr(914, regs->gpr[rd]);
+						break;
+					case 3:
+						mtspr(915, regs->gpr[rd]);
+						break;
+					case 4:
+						mtspr(916, regs->gpr[rd]);
+						break;
+					case 5:
+						mtspr(917, regs->gpr[rd]);
+						break;
+					case 6:
+						mtspr(918, regs->gpr[rd]);
+						break;
+					case 7:
+						mtspr(919, regs->gpr[rd]);
+						break;
+					// Shouldn't be possible.
+					default:
+						return -EFAULT;
+				}
+			} else {
+				/* Else, write to the thread's GQR state. */
+				current->thread.gqr_state.gqr[gqr] = regs->gpr[rd];
+			}
+			return 0;
+		}
+	}
+#endif
 
 #ifdef CONFIG_PPC64
 	/* Emulate the mfspr rD, DSCR. */
@@ -1378,6 +1481,30 @@ static int emulate_math(struct pt_regs *regs)
 #else
 static inline int emulate_math(struct pt_regs *regs) { return -1; }
 #endif
+
+#if defined(CONFIG_PPC_BOOK3S_750CL) && defined(CONFIG_PPC_PEDANTIC_PSE)
+static int check_paired_single(struct pt_regs *regs) {
+	u32 instword;
+
+	if (!user_mode(regs))
+		return -EINVAL;
+
+	if (mfspr(SPRN_HID2_GEKKO) & HID2_PSE)
+		return -EINVAL;
+
+	if (get_user(instword, (u32 __user *)(regs->nip)))
+		return -EFAULT;
+
+	if ((instword & 0xFC000000) != 0x10000000)
+		return -EINVAL;
+
+	if ((instword & 0xFFE007FF) == 0x100007EC)
+		return -EINVAL;
+
+	return 0;
+}
+#endif
+
 
 void program_check_exception(struct pt_regs *regs)
 {
@@ -1474,6 +1601,26 @@ void program_check_exception(struct pt_regs *regs)
 	 */
 	if (!emulate_math(regs))
 		goto bail;
+
+#if defined(CONFIG_PPC_BOOK3S_750CL) && defined(CONFIG_PPC_PEDANTIC_PSE)
+	/*
+	 * If this CPU supports 750CL style paired singles,
+	 * check if paired singles are enabled.
+	 * If not, check if the instruction executed was (potentially)
+	 * a paired single instruction and if so,
+	 * enable paired singles and try again.
+	*/
+	if (cpu_has_feature(CPU_FTR_PAIRED_SINGLE) && (reason & REASON_ILLEGAL)) {
+		if (!check_paired_single(regs)) {
+			mtspr(SPRN_HID2_GEKKO, mfspr(SPRN_HID2_GEKKO) | HID2_PSE);
+			load_gqrs(current);
+			/* Invalidate instruction cache as per documentation. */
+			mtspr(SPRN_HID0, mfspr(SPRN_HID0) | HID0_ICFI);
+			isync();
+			return;
+		}
+	}
+#endif
 
 	/* Try to emulate it if we should. */
 	if (reason & (REASON_ILLEGAL | REASON_PRIVILEGED)) {

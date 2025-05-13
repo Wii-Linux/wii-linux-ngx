@@ -105,6 +105,10 @@ int main(void)
 	OFFSET(THREAD_FPEXC_MODE, thread_struct, fpexc_mode);
 	OFFSET(THREAD_FPSTATE, thread_struct, fp_state.fpr);
 	OFFSET(THREAD_FPSAVEAREA, thread_struct, fp_save_area);
+#ifdef CONFIG_PPC_BOOK3S_750CL
+	OFFSET(THREAD_GQRSTATE, thread_struct, gqr_state);
+	OFFSET(THREAD_GQRSAVEAREA, thread_struct, gqr_save_area);
+#endif
 	OFFSET(FPSTATE_FPSCR, thread_fp_state, fpscr);
 	OFFSET(THREAD_LOAD_FP, thread_struct, load_fp);
 #ifdef CONFIG_ALTIVEC

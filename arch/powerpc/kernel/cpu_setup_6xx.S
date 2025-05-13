@@ -51,6 +51,13 @@ _GLOBAL(__setup_cpu_750cx)
 	bl	setup_750cx
 	mtlr	r5
 	blr
+_GLOBAL(__setup_cpu_750cl)
+	mflr	r5
+	bl	setup_common_caches
+	bl	setup_604_hid0
+	bl	setup_750cl_paired_singles
+	mtlr	r5
+	blr
 _GLOBAL(__setup_cpu_750fx)
 	mflr	r5
 	bl	__init_fpu_registers
@@ -180,6 +187,44 @@ END_FTR_SECTION_IFSET(CPU_FTR_NO_DPM)
 	mtspr	SPRN_HID0,r11
 	sync
 	isync
+	blr
+
+/* 750CL
+ * Set up Paired Singles support on 750CL-based
+ * processors like Broadway and Espresso
+ *
+ * Credit to loganius for setup procedure.
+ * Source: https://gitlab.com/TheMiningTeamYT/linux-wiiu-2-electric-boogaloo/-/blob/af77fe21ec3d250163395472a029f640975cf423/arch/powerpc/kernel/cpu_setup_6xx.S#L280
+ */
+setup_750cl_paired_singles:
+	li r8, 0
+	mtspr SPRN_HID2_GEKKO, r8
+	sync
+	isync
+
+	lis r8, 0xb3b8 // 64B fetch, depth 4, SBE, ST0, LPE, L2MUM, L2CFI, PS1_CTL & PS2_CTL
+	mtspr SPRN_HID4_GEKKO, r8
+	sync
+
+#ifndef CONFIG_PPC_PEDANTIC_PSE
+	lis r8, 0x2000
+	mtspr SPRN_HID2_GEKKO, r8
+	sync
+	isync
+#endif
+
+	li r8, 0
+
+	// Initialize GQRs
+	mtspr 912, r8
+	mtspr 913, r8
+	mtspr 914, r8
+	mtspr 915, r8
+	mtspr 916, r8
+	mtspr 917, r8
+	mtspr 918, r8
+	mtspr 919, r8
+
 	blr
 
 /* 750cx specific

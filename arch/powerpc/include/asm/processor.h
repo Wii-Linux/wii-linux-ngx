@@ -202,6 +202,14 @@ struct thread_vr_state {
 	vector128	vscr __attribute__((aligned(16)));
 };
 
+/* Graphics Quantization Register (GQR) state for processors for 750CL style paired singles. */
+#ifdef CONFIG_PPC_BOOK3S_750CL
+struct thread_gqr_state {
+	/* There are 8 32-bit wide GQRs. */
+	u32 gqr[8];
+};
+#endif
+
 struct debug_reg {
 #ifdef CONFIG_PPC_ADV_DEBUG_REGS
 	/*
@@ -261,6 +269,10 @@ struct thread_struct {
 	struct debug_reg debug;
 	struct thread_fp_state	fp_state;
 	struct thread_fp_state	*fp_save_area;
+#ifdef CONFIG_PPC_BOOK3S_750CL
+	struct thread_gqr_state	gqr_state;
+	struct thread_gqr_state	*gqr_save_area;
+#endif
 	int		fpexc_mode;	/* floating-point exception mode */
 	unsigned int	align_ctl;	/* alignment handling control */
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
