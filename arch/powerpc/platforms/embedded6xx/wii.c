@@ -233,7 +233,6 @@ define_machine(wii) {
 
 static const struct of_device_id wii_of_bus[] = {
 	{ .compatible = "nintendo,hollywood", },
-	{ .compatible = "twiizers,starlet-mini-ipc", },
 	{ },
 };
 

@@ -10,5 +10,5 @@ obj-$(CONFIG_GAMECUBE_RSW)	+= gcn-rsw.o
 obj-$(CONFIG_USBGECKO_UDBG)	+= usbgecko_udbg.o
 obj-$(CONFIG_GAMECUBE_COMMON)	+= flipper-pic.o
 obj-$(CONFIG_GAMECUBE)		+= gamecube.o
-obj-$(CONFIG_WII)		+= wii.o starlet-mipc.o hlwd-pic.o
+obj-$(CONFIG_WII)		+= wii.o hlwd-pic.o
 obj-$(CONFIG_MVME5100)		+= mvme5100.o
