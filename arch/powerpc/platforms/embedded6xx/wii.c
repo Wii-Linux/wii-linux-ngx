@@ -33,7 +33,6 @@
 
 #include "flipper-pic.h"
 #include "hlwd-pic.h"
-#include "gcnvi_udbg.h"
 #include "usbgecko_udbg.h"
 
 /* control block */
@@ -147,7 +146,6 @@ static void __init wii_setup_arch(void)
 	}
 
 	ug_udbg_init();
-	gcnvi_udbg_init();
 }
 
 static void __noreturn wii_restart(char *cmd)
