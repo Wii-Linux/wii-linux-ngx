@@ -53,9 +53,10 @@ _GLOBAL(__setup_cpu_750cx)
 	blr
 _GLOBAL(__setup_cpu_750cl)
 	mflr	r5
-	bl	setup_common_caches
-	bl	setup_604_hid0
+	bl	__init_fpu_registers
 	bl	setup_750cl_paired_singles
+	bl	setup_common_caches
+	bl	setup_750_7400_hid0
 	mtlr	r5
 	blr
 _GLOBAL(__setup_cpu_750fx)
