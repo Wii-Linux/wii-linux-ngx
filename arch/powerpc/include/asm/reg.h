@@ -594,6 +594,7 @@
 #endif
 #define SPRN_HID2	0x3F8		/* Hardware Implementation Register 2 */
 #define SPRN_HID2_GEKKO	0x398		/* Gekko HID2 Register */
+#define HID2_LSQE	(1<<31)		/* Gekko HID2 Load/Store Quantized Enable (unconfirmed name) */
 #define HID2_PSE	(1<<29)		/* Gekko HID2 Paired Singles Enable */
 #define SPRN_IABR	0x3F2	/* Instruction Address Breakpoint Register */
 #define SPRN_IABR2	0x3FA		/* 83xx */

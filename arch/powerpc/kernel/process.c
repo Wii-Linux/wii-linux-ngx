@@ -179,7 +179,7 @@ static void __giveup_fpu(struct task_struct *tsk)
 		 * paired single aware.
 		 */
 		if (hid2 & HID2_PSE)
-			mtspr(SPRN_HID2_GEKKO, hid2 & ~HID2_PSE);
+			mtspr(SPRN_HID2_GEKKO, hid2 & ~(HID2_PSE | HID2_LSQE));
 	}
 #endif
 }

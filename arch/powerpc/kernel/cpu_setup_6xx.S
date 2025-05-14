@@ -207,7 +207,7 @@ setup_750cl_paired_singles:
 	sync
 
 #ifndef CONFIG_PPC_PEDANTIC_PSE
-	lis r8, 0x2000
+	lis r8, 0xA000 // LSQE, PSE
 	mtspr SPRN_HID2_GEKKO, r8
 	sync
 	isync
