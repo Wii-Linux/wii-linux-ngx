@@ -56,6 +56,7 @@ extern void __setup_cpu_apm821xx(unsigned long offset, struct cpu_spec *spec);
 extern void __setup_cpu_603(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_604(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750(unsigned long offset, struct cpu_spec* spec);
+extern void __setup_cpu_750cl(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750cx(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750fx(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_7400(unsigned long offset, struct cpu_spec* spec);
@@ -766,7 +767,7 @@ static struct cpu_spec __initdata cpu_specs[] = {
 		.dcache_bsize		= 32,
 		.num_pmcs		= 4,
 		.pmc_type		= PPC_PMC_IBM,
-		.cpu_setup		= __setup_cpu_750,
+		.cpu_setup		= __setup_cpu_750cl,
 		.machine_check		= machine_check_generic,
 		.platform		= "ppc750",
 		.oprofile_cpu_type      = "ppc/750",
