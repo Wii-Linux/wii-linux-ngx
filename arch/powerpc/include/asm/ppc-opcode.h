@@ -227,6 +227,10 @@
 #define PPC_INST_MCRXR_MASK		0xfc0007fe
 #define PPC_INST_MFSPR_PVR		0x7c1f42a6
 #define PPC_INST_MFSPR_PVR_MASK		0xfc1ffffe
+#define PPC_INST_MFSPR_GQR		0x7c10e2a6
+#define PPC_INST_MFSPR_GQR_MASK		0xfc18ffff
+#define PPC_INST_MTSPR_GQR		0x7c10e3a6
+#define PPC_INST_MTSPR_GQR_MASK		0xfc18ffff
 #define PPC_INST_MFTMR			0x7c0002dc
 #define PPC_INST_MSGSND			0x7c00019c
 #define PPC_INST_MSGCLR			0x7c0001dc

@@ -33,7 +33,6 @@
 
 #include "flipper-pic.h"
 #include "hlwd-pic.h"
-#include "gcnvi_udbg.h"
 #include "usbgecko_udbg.h"
 
 /* control block */
@@ -143,7 +142,6 @@ static void __init wii_setup_arch(void)
 	}
 
 	ug_udbg_init();
-	gcnvi_udbg_init();
 }
 
 static void __noreturn wii_restart(char *cmd)
@@ -231,7 +229,6 @@ define_machine(wii) {
 
 static const struct of_device_id wii_of_bus[] = {
 	{ .compatible = "nintendo,hollywood", },
-	{ .compatible = "twiizers,starlet-mini-ipc", },
 	{ },
 };
 

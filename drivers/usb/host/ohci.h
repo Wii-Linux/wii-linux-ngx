@@ -496,6 +496,20 @@ static inline int quirk_amdprefetch(struct ohci_hcd *ohci)
 }
 #endif
 
+#ifdef CONFIG_USB_OHCI_HCD_HLWD
+extern void ohci_hlwd_control_quirk(struct ohci_hcd *ohci);
+extern void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci);
+#else
+static inline void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
+{
+	return;
+}
+static inline void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
+{
+	return;
+}
+#endif
+
 /* convert between an hcd pointer and the corresponding ohci_hcd */
 static inline struct ohci_hcd *hcd_to_ohci (struct usb_hcd *hcd)
 {
@@ -574,37 +588,6 @@ static inline struct usb_hcd *ohci_to_hcd (const struct ohci_hcd *ohci)
 #define big_endian_mmio(ohci)	0		/* only little endian */
 #endif
 
-#ifdef CONFIG_USB_OHCI_HCD_HLWD
-
-#include <asm/starlet-mini.h>
-
-static inline unsigned int _ohci_readl(const struct ohci_hcd *ohci,
-				       __hc32 __iomem *regs)
-{
-	return in_be32(regs);
-}
-
-static inline void _ohci_writel(const struct ohci_hcd *ohci,
-				const unsigned int val, __hc32 __iomem *regs)
-{
-	out_be32(regs, val);
-}
-
-extern void ohci_hlwd_control_quirk(struct ohci_hcd *ohci);
-extern void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci);
-
-#else
-
-static inline void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
-{
-	return;
-}
-
-static inline void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
-{
-	return;
-}
-
 /*
  * Big-endian read/write functions are arch-specific.
  * Other arches can be added if/when they're needed.
@@ -633,8 +616,6 @@ static inline void _ohci_writel (const struct ohci_hcd *ohci,
 		writel (val, regs);
 #endif
 }
-
-#endif /* CONFIG_USB_OHCI_HCD_HLWD */
 
 #define ohci_readl(o,r)		_ohci_readl(o,r)
 #define ohci_writel(o,v,r)	_ohci_writel(o,v,r)

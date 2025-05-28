@@ -54,6 +54,30 @@ config E200
 
 endchoice
 
+config PPC_BOOK3S_750CL
+	bool "Support for 750CL style paired singles" if PPC_BOOK3S_32
+	depends on PPC_BOOK3S_32
+	default n
+	help
+	  Provides support for the paired single floats
+	  and graphics quantization registers (GQRs)
+	  provided by processors such as the 750CL,
+	  Broadway (the CPU of the Nintendo Wii),
+	  and Espresso (the CPU of the Nintendo Wii U).
+
+config PPC_PEDANTIC_PSE
+	bool "Selectively enable paired singles" if PPC_BOOK3S_750CL
+	depends on PPC_BOOK3S_32
+	default n
+	help
+	  Certain standard instructions change their behavior when
+	  paired single support is enabled. Generally, this doesn't seem
+	  to be a problem, but if you experience problems after enabling
+	  paired single support, try enabling this too.
+	  This will make the kernel selectively enable paired singles
+	  support for only those applications which attempt to use them.
+	  May reduce performance. Currently WIP.
+
 choice
 	prompt "Processor Type"
 	depends on PPC64

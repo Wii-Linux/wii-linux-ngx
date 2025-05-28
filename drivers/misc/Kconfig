@@ -91,15 +91,6 @@ config DUMMY_IRQ
 	  The sole purpose of this module is to help with debugging of systems on
 	  which spurious IRQs would happen on disabled IRQ vector.
 
-config GAMECUBE_GQR
-	tristate "Nintendo GameCube/Wii Graphic Quantization Registers (GQR)"
-	depends on GAMECUBE_COMMON
-	help
-          This option enables device driver support for the Gekko/Broadway
-	  processors' Graphic Quantization Registers.
-	  These registers are used with the psql and psqst instructions.
-	  The registers will appear in /proc/sys/gqr.
-
 config GAMECUBE_MI
 	tristate "Nintendo GameCube Memory Interface (MI)"
 	depends on GAMECUBE
