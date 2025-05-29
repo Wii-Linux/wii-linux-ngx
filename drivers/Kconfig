@@ -66,6 +66,8 @@ source "drivers/i2c/Kconfig"
 
 source "drivers/i3c/Kconfig"
 
+source "drivers/exi/Kconfig"
+
 source "drivers/spi/Kconfig"
 
 source "drivers/spmi/Kconfig"
