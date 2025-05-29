@@ -16,6 +16,7 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
+#include <linux/dma-noncoherent.h>
 #include <linux/genalloc.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
