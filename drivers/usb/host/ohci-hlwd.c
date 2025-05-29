@@ -292,8 +292,7 @@ err_add_hcd:
 err_ioremap:
 	irq_dispose_mapping(irq);
 err_irq:
-	dma_release_declared_memory(dev);
-err_decl_coherent:
+	of_reserved_mem_device_release(dev);
 	usb_put_hcd(hcd);
 out:
 	return error;
@@ -311,7 +310,7 @@ static int ohci_hcd_hlwd_remove(struct platform_device *op)
 	usb_remove_hcd(hcd);
 	iounmap(hcd->regs);
 	irq_dispose_mapping(hcd->irq);
-	dma_release_declared_memory(dev);
+	of_reserved_mem_device_release(dev);
 	usb_put_hcd(hcd);
 
 	return 0;
