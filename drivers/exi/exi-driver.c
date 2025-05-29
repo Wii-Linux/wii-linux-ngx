@@ -192,6 +192,7 @@ static void exi_device_init(struct exi_device *exi_device,
 	dev_set_name(&exi_device->dev, "exi%01x:%01x", channel, device);
 	exi_device->dev.platform_data = to_exi_channel(channel);
 	/*set_dma_ops(&exi_device->dev, &dma_nommu_ops);*/
+	dma_coerce_mask_and_coherent(&exi_device->dev, DMA_BIT_MASK(32));
 	exi_device->dev.release = exi_device_release;
 
 	mutex_unlock(&exi_core_lock);
