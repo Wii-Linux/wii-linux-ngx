@@ -166,6 +166,7 @@ void __iomem *devm_ioremap_resource(struct device *dev,
 
 	size = resource_size(res);
 
+<<<<<<< HEAD
 	if (res->name)
 		pretty_name = devm_kasprintf(dev, GFP_KERNEL, "%s %s",
 					     dev_name(dev), res->name);
@@ -174,10 +175,14 @@ void __iomem *devm_ioremap_resource(struct device *dev,
 	if (!pretty_name)
 		return IOMEM_ERR_PTR(-ENOMEM);
 
+// XXX: for some unknown reason it just doesn't work
+// figure out why later
+#if !defined(CONFIG_MMC_SDHCI_OF_HLWD) && !defined(CONFIG_MMC_SDHCI_OF_HLWD_MODULE)
 	if (!devm_request_mem_region(dev, res->start, size, pretty_name)) {
 		dev_err(dev, "can't request region for resource %pR\n", res);
 		return IOMEM_ERR_PTR(-EBUSY);
 	}
+#endif
 
 	dest_ptr = devm_ioremap(dev, res->start, size);
 	if (!dest_ptr) {

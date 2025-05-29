@@ -1293,6 +1293,11 @@ MODULE_LICENSE ("GPL");
 #define OF_PLATFORM_DRIVER	ehci_hcd_ppc_of_driver
 #endif
 
+#ifdef CONFIG_USB_EHCI_HCD_HLWD
+#include "ehci-hlwd.c"
+#define EHCI_HLWD_DRIVER	ehci_hcd_hlwd_driver
+#endif
+
 #ifdef CONFIG_XPS_USB_HCD_XILINX
 #include "ehci-xilinx-of.c"
 #define XILINX_OF_PLATFORM_DRIVER	ehci_hcd_xilinx_of_driver
@@ -1349,6 +1354,12 @@ static int __init ehci_hcd_init(void)
 		goto clean3;
 #endif
 
+#ifdef EHCI_HLWD_DRIVER
+	retval = platform_driver_register(&EHCI_HLWD_DRIVER);
+	if (retval < 0)
+		goto clean_ehci_hlwd;
+#endif
+
 #ifdef XILINX_OF_PLATFORM_DRIVER
 	retval = platform_driver_register(&XILINX_OF_PLATFORM_DRIVER);
 	if (retval < 0)
@@ -1359,6 +1370,10 @@ static int __init ehci_hcd_init(void)
 #ifdef XILINX_OF_PLATFORM_DRIVER
 	/* platform_driver_unregister(&XILINX_OF_PLATFORM_DRIVER); */
 clean4:
+#endif
+#ifdef EHCI_HLWD_DRIVER
+	platform_driver_unregister(&EHCI_HLWD_DRIVER);
+clean_ehci_hlwd:
 #endif
 #ifdef OF_PLATFORM_DRIVER
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);
@@ -1385,6 +1400,9 @@ static void __exit ehci_hcd_cleanup(void)
 {
 #ifdef XILINX_OF_PLATFORM_DRIVER
 	platform_driver_unregister(&XILINX_OF_PLATFORM_DRIVER);
+#endif
+#ifdef EHCI_HLWD_DRIVER
+	platform_driver_unregister(&EHCI_HLWD_DRIVER);
 #endif
 #ifdef OF_PLATFORM_DRIVER
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);

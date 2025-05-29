@@ -18,7 +18,7 @@
 
 	.text
 
-/* udelay (on non-601 processors) needs to know the period of the
+/* udelay needs to know the period of the
  * timebase in nanoseconds.  This used to be hardcoded to be 60ns
  * (period of 66MHz/4).  Now a variable is used that is initialized to
  * 60 for backward compatibility, but it can be overridden as necessary
