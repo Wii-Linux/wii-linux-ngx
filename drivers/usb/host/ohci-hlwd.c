@@ -28,6 +28,7 @@
 
 #include <linux/signal.h>
 #include <linux/of_platform.h>
+#include <linux/of_reserved_mem.h>
 
 #include <asm/prom.h>
 #include <asm/time.h>	/* for get_tbl() */
@@ -254,24 +255,10 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	hcd->rsrc_start = res.start;
 	hcd->rsrc_len = resource_size(&res);
 
-	error = of_address_to_resource(dn, 1, &res);
+	error = of_reserved_mem_device_init(dev);
 	if (error) {
 		/* satisfy coherent memory allocations from mem1 or mem2 */
-		dev_warn(dev, "using normal memory\n");
-	} else {
-		coherent_mem_addr = res.start;
-		coherent_mem_size = res.end - res.start + 1;
-		error = dma_declare_coherent_memory(dev, coherent_mem_addr,
-						 coherent_mem_addr,
-						 coherent_mem_size,
-						 DMA_MEMORY_EXCLUSIVE);
-		if (error) {
-			dev_err(dev, "error %d declaring %u bytes of"
-				" coherent memory at 0x%p\n",
-				error, coherent_mem_size, (void *)coherent_mem_addr);
-			error = -EBUSY;
-			goto err_decl_coherent;
-		}
+		dev_warn(&op->dev, "using normal memory\n");
 	}
 
 	irq = irq_of_parse_and_map(dn, 0);
