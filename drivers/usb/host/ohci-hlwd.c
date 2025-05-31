@@ -223,8 +223,6 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	struct usb_hcd *hcd;
 	struct ohci_hcd	*ohci = NULL;
 	struct resource res;
-	dma_addr_t coherent_mem_addr;
-	size_t coherent_mem_size;
 	int irq;
 	int error = -ENODEV;
 
