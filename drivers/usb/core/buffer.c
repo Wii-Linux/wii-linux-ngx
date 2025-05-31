@@ -16,6 +16,7 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
+#include <linux/dma-noncoherent.h>
 #include <linux/genalloc.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -66,7 +67,7 @@ int hcd_buffer_create(struct usb_hcd *hcd)
 	char		name[16];
 	int		i, size;
 
-	if (hcd->localmem_pool || !hcd_uses_dma(hcd))
+	if (hcd->localmem_pool || !hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev))
 		return 0;
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
@@ -127,10 +128,13 @@ void *hcd_buffer_alloc(
 		return gen_pool_dma_alloc(hcd->localmem_pool, size, dma);
 
 	/* some USB hosts just use PIO */
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev)) {
 		*dma = ~(dma_addr_t) 0;
 		return kmalloc(size, mem_flags);
 	}
+
+	/* make sure that we allocate correctly aligned dma memory */
+	size = _ALIGN_UP(size, dma_get_cache_alignment());
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
 		if (size <= pool_max[i])
@@ -152,15 +156,18 @@ void hcd_buffer_free(
 	if (!addr)
 		return;
 
-	if (hcd->localmem_pool) {
+	if (hcd->localmem_pool ) {
 		gen_pool_free(hcd->localmem_pool, (unsigned long)addr, size);
 		return;
 	}
 
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev)) {
 		kfree(addr);
 		return;
 	}
+
+	/* account for the real size */
+	size = _ALIGN_UP(size, dma_get_cache_alignment());
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
 		if (size <= pool_max[i]) {

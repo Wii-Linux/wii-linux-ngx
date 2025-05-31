@@ -119,6 +119,24 @@ END_FW_FTR_SECTION_IFSET(FW_FEATURE_SPLPAR)
 #define REST_8VRS(n,b,base)	REST_4VRS(n,b,base); REST_4VRS(n+4,b,base)
 #define REST_16VRS(n,b,base)	REST_8VRS(n,b,base); REST_8VRS(n+8,b,base)
 #define REST_32VRS(n,b,base)	REST_16VRS(n,b,base); REST_16VRS(n+16,b,base)
+ 
+#ifdef CONFIG_PPC_BOOK3S_750CL
+/*
+ * Using lwz and stw here because the only platforms that need this code
+ * are standard 32 bit book3s 604 compatible ones, so it doesn't matter,
+ * and it makes things a little more clear IMO.
+ */
+/* T for temporary */
+#define REST_GQR(n,t,base)	lwz t,4*(n)(base); mtspr 912+(n),t
+#define REST_2GQRS(n,t,base)	REST_GQR(n,t,base); REST_GQR(n+1,t,base)
+#define REST_4GQRS(n,t,base)	REST_2GQRS(n,t,base); REST_2GQRS(n+2,t,base)
+#define REST_8GQRS(n,t,base)	REST_4GQRS(n,t,base); REST_4GQRS(n+4,t,base)
+
+#define SAVE_GQR(n,t,base)	mfspr t,912+(n); stw t,4*(n)(base)
+#define SAVE_2GQRS(n,t,base)	SAVE_GQR(n,t,base); SAVE_GQR(n+1,t,base)
+#define SAVE_4GQRS(n,t,base)	SAVE_2GQRS(n,t,base); SAVE_2GQRS(n+2,t,base)
+#define SAVE_8GQRS(n,t,base)	SAVE_4GQRS(n,t,base); SAVE_4GQRS(n+4,t,base)
+#endif
 
 #ifdef __BIG_ENDIAN__
 #define STXVD2X_ROT(n,b,base)		STXVD2X(n,b,base)
