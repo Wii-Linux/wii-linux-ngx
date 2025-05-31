@@ -183,7 +183,7 @@ static void gcnrtc_plat_rtc_get_time(struct rtc_time *t)
 
 	nowtime = gcnrtc_read_time(drvdata->dev) +
 		  drvdata->sram.bias + RTC_OFFSET;
-	rtc_time_to_tm(nowtime, t);
+	rtc_time64_to_tm(nowtime, t);
 }
 
 /*
@@ -198,7 +198,7 @@ static int gcnrtc_plat_rtc_set_time(struct rtc_time *t)
 	if (!drvdata->dev)
 		return -ENODEV;
 
-	rtc_tm_to_time(t, &nowtime);
+	nowtime = rtc_tm_to_time64(t);
 	return gcnrtc_write_time(drvdata->dev,
 				 nowtime - RTC_OFFSET - drvdata->sram.bias);
 }
