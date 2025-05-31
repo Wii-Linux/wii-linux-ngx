@@ -16,7 +16,7 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
-#include <linux/dma-noncoherent.h>
+#include <linux/dma-map-ops.h>
 #include <linux/genalloc.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -134,7 +134,7 @@ void *hcd_buffer_alloc(
 	}
 
 	/* make sure that we allocate correctly aligned dma memory */
-	size = _ALIGN_UP(size, dma_get_cache_alignment());
+	size = ALIGN(size, dma_get_cache_alignment());
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
 		if (size <= pool_max[i])
@@ -167,7 +167,7 @@ void hcd_buffer_free(
 	}
 
 	/* account for the real size */
-	size = _ALIGN_UP(size, dma_get_cache_alignment());
+	size = ALIGN(size, dma_get_cache_alignment());
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
 		if (size <= pool_max[i]) {
