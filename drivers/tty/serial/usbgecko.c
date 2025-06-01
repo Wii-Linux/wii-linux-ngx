@@ -332,7 +332,6 @@ static int ug_tty_poller(void *tty_)
 	int count, chunk;
 	const int max_outstanding = 32;
 	char ch;
-	struct tty_driver *driver = ug_tty_driver;
 
 	sched_setscheduler(current, SCHED_FIFO, &param);
 	set_current_state(TASK_RUNNING);
@@ -489,9 +488,9 @@ static int ug_tty_init(void)
 	struct tty_driver *driver;
 	int retval;
 
-	driver = alloc_tty_driver(2);
-	if (!driver)
-		return -ENOMEM;
+	driver = tty_alloc_driver(2, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(driver))
+		return PTR_ERR(driver);
 	driver->name = DRV_MODULE_NAME "con";
 	driver->major = TTY_MAJOR;
 	driver->minor_start = 64;
@@ -499,10 +498,9 @@ static int ug_tty_init(void)
 	driver->init_termios = tty_std_termios;
 	tty_set_operations(driver, &ug_tty_ops);
 
-	driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	retval = tty_register_driver(driver);
 	if (retval) {
-		put_tty_driver(driver);
+		tty_driver_kref_put(driver);
 		return retval;
 	}
 	ug_tty_driver = driver;
@@ -524,7 +522,7 @@ static void ug_tty_exit(void)
 	ug_tty_driver = NULL;
 	if (driver) {
 		tty_unregister_driver(driver);
-		put_tty_driver(driver);
+		tty_driver_kref_put(driver);
 	}
 }
 
@@ -602,7 +600,6 @@ static void ug_remove(struct exi_device *exi_device)
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
-	struct tty_port *port;
 
 	drv_printk(KERN_INFO, "removing device on channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
