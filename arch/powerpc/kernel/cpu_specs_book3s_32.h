@@ -271,7 +271,7 @@ static struct cpu_spec cpu_specs[] __initdata = {
 		.dcache_bsize		= 32,
 		.num_pmcs		= 4,
 		.pmc_type		= PPC_PMC_IBM,
-		.cpu_setup		= __setup_cpu_750,
+		.cpu_setup		= __setup_cpu_750cl,
 		.machine_check		= machine_check_generic,
 		.platform		= "ppc750",
 	},
