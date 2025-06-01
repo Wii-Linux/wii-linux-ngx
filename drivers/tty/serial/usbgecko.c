@@ -434,12 +434,12 @@ static int ug_tty_write(struct tty_struct *tty,
 	return count;
 }
 
-static int ug_tty_write_room(struct tty_struct *tty)
+static unsigned int ug_tty_write_room(struct tty_struct *tty)
 {
 	return 0x123; /* whatever */
 }
 
-static int ug_tty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int ug_tty_chars_in_buffer(struct tty_struct *tty)
 {
 	return 0; /* unbuffered */
 }
