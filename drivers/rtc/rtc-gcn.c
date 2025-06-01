@@ -264,7 +264,7 @@ static int gcnrtc_probe(struct exi_device *dev)
 			return PTR_ERR(drvdata->rtc_dev);
 
 		drvdata->rtc_dev->ops = &gcnrtc_ops;
-		rtc_register_device(drvdata->rtc_dev);
+		devm_rtc_register_device(drvdata->rtc_dev);
 		retval = 0;
 	}
 
