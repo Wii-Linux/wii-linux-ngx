@@ -72,11 +72,26 @@ config MPC10X_BRIDGE
 	select PPC_INDIRECT_PCI
 
 config GAMECUBE_COMMON
+	select NOT_COHERENT_CACHE
+	default n
 	bool
+
+config GAMECUBE_UDBG
+	bool "Nintendo GameCube/Wii udbg support"
+	depends on GAMECUBE_COMMON
+	default n
+	help
+	  If you say yes to this option, you will be able to choose between
+	  several udbg drivers available for the Nintendo GameCube/Wii.
+
+	  If in doubt, say N here.
+
+choice
+	prompt "Nintendo GameCube/Wii udbg drivers"
+	depends on GAMECUBE_UDBG
 
 config USBGECKO_UDBG
 	bool "USB Gecko udbg console for the Nintendo GameCube/Wii"
-	depends on GAMECUBE_COMMON
 	help
 	  If you say yes to this option, support will be included for the
 	  USB Gecko adapter as an udbg console.
@@ -86,6 +101,32 @@ config USBGECKO_UDBG
 	  This driver bypasses the EXI layer completely.
 
 	  If in doubt, say N here.
+
+config GAMECUBE_VIDEO_UDBG
+	bool "Nintendo GameCube/Wii framebuffer udbg console"
+	select FONTS
+	select FONT_6x10
+	help
+	  If you say yes to this option, support will be included for a
+	  framebuffer based udbg console for the Nintendo GameCube/Wii.
+
+	  If in doubt, say N here.
+
+endchoice
+
+config GAMECUBE_RSW
+	bool "Nintendo GameCube/Wii reset switch/button"
+	depends on GAMECUBE_COMMON
+	default y
+	help
+	  If you say yes to this option, support will be included for the
+	  reset switch/button of the Nintendo GameCube/Wii.
+
+	  If in doubt, say Y here.
+
+choice
+	prompt "Nintendo Console Support"
+	depends on EMBEDDED6xx
 
 config GAMECUBE
 	bool "Nintendo-GameCube"
@@ -99,6 +140,8 @@ config WII
 	bool "Nintendo-Wii"
 	depends on EMBEDDED6xx
 	select GAMECUBE_COMMON
+	select HAVE_GENERIC_DMA_COHERENT
 	help
 	  Select WII if configuring for the Nintendo Wii.
 	  More information at: <http://gc-linux.sourceforge.net/>
+endchoice
