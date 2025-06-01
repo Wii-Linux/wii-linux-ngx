@@ -49,13 +49,14 @@ __ioremap_caller(phys_addr_t addr, unsigned long size, pgprot_t prot, void *call
 		 * On some systems, though, we may want to remap normal RAM
 		 * that we have memreserve'd at the device tree.
 		 * But we can't do that safely if we are using BATs.
-		 *
+		 * Sadly, the 'nobats' kernel parameter has been removed,
+		 * so we can't gate this check behind that.
 		 */
-		if (!__map_without_bats) {
+		/*if (!__map_without_bats) {*/
 			pr_warn("%s(): phys addr 0x%llx is RAM lr %ps\n", __func__,
 				(unsigned long long)p, __builtin_return_address(0));
-			return NULL;
-		}
+			/*return NULL;
+		}*/
 	}
 #endif
 
