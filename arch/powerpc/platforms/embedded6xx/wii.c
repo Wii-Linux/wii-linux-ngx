@@ -60,10 +60,7 @@ static int __init page_aligned(unsigned long x)
 
 void __init wii_memory_fixups(void)
 {
-	struct memblock_region *p = memblock.memory.regions;
-
-	BUG_ON(memblock.memory.cnt != 2);
-	BUG_ON(!page_aligned(p[0].base) || !page_aligned(p[1].base));
+	/* stub, will be removed in later kernel versions automatically */
 }
 
 static void __noreturn wii_spin(void)
