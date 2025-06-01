@@ -477,6 +477,11 @@ struct sdhci_host {
  * block count.
  */
 #define SDHCI_QUIRK2_USE_32BIT_BLK_CNT			(1<<18)
+/*
+ * Bounce buffers cannot work, don't use them.
+ */
+#define SDHCI_QUIRK2_NO_BOUNCE_BUFFER			(1<<19)
+
 
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
