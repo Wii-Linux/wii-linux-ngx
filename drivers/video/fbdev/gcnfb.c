@@ -1836,11 +1836,11 @@ static int vi_ave_probe(struct i2c_client *client,
 	return error;
 }
 
-static int vi_ave_remove(struct i2c_client *client)
+static void vi_ave_remove(struct i2c_client *client)
 {
 	if (first_vi_ave == client)
 		first_vi_ave = NULL;
-	return 0;
+	return;
 }
 
 static const struct i2c_device_id vi_ave_id[] = {
