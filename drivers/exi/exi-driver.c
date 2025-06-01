@@ -52,7 +52,6 @@ static struct bus_type exi_bus_type = {
 	.name = "exi",
 	.match = exi_bus_match,
 };
-EXPORT_SYMBOL(exi_bus_type);
 
 static struct device exi_bus_devices[EXI_MAX_CHANNELS] = {
 	[0] = {
