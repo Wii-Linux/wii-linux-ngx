@@ -31,8 +31,11 @@
 #define O2_SD_CAPS		0xE0
 #define O2_SD_ADMA1		0xE2
 #define O2_SD_ADMA2		0xE7
+#define O2_SD_MISC_CTRL2	0xF0
 #define O2_SD_INF_MOD		0xF1
 #define O2_SD_MISC_CTRL4	0xFC
+#define O2_SD_MISC_CTRL		0x1C0
+#define O2_SD_PWR_FORCE_L0	0x0002
 #define O2_SD_TUNING_CTRL	0x300
 #define O2_SD_PLL_SETTING	0x304
 #define O2_SD_MISC_SETTING	0x308
@@ -145,6 +148,8 @@ static int sdhci_o2_get_cd(struct mmc_host *mmc)
 
 	if (!(sdhci_readw(host, O2_PLL_DLL_WDT_CONTROL1) & O2_PLL_LOCK_STATUS))
 		sdhci_o2_enable_internal_clock(host);
+	else
+		sdhci_o2_wait_card_detect_stable(host);
 
 	return !!(sdhci_readl(host, SDHCI_PRESENT_STATE) & SDHCI_CARD_PRESENT);
 }
@@ -300,6 +305,8 @@ static int sdhci_o2_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
 	int current_bus_width = 0;
+	u32 scratch32 = 0;
+	u16 scratch = 0;
 
 	/*
 	 * This handler only implements the eMMC tuning that is specific to
@@ -312,6 +319,17 @@ static int sdhci_o2_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	if (WARN_ON((opcode != MMC_SEND_TUNING_BLOCK_HS200) &&
 			(opcode != MMC_SEND_TUNING_BLOCK)))
 		return -EINVAL;
+
+	/* Force power mode enter L0 */
+	scratch = sdhci_readw(host, O2_SD_MISC_CTRL);
+	scratch |= O2_SD_PWR_FORCE_L0;
+	sdhci_writew(host, scratch, O2_SD_MISC_CTRL);
+
+	/* wait DLL lock, timeout value 5ms */
+	if (readx_poll_timeout(sdhci_o2_pll_dll_wdt_control, host,
+		scratch32, (scratch32 & O2_DLL_LOCK_STATUS), 1, 5000))
+		pr_warn("%s: DLL can't lock in 5ms after force L0 during tuning.\n",
+				mmc_hostname(host->mmc));
 	/*
 	 * Judge the tuning reason, whether caused by dll shift
 	 * If cause by dll shift, should call sdhci_o2_dll_recovery
@@ -343,6 +361,11 @@ static int sdhci_o2_execute_tuning(struct mmc_host *mmc, u32 opcode)
 		mmc->ios.bus_width = MMC_BUS_WIDTH_8;
 		sdhci_set_bus_width(host, current_bus_width);
 	}
+
+	/* Cancel force power mode enter L0 */
+	scratch = sdhci_readw(host, O2_SD_MISC_CTRL);
+	scratch &= ~(O2_SD_PWR_FORCE_L0);
+	sdhci_writew(host, scratch, O2_SD_MISC_CTRL);
 
 	sdhci_reset(host, SDHCI_RESET_CMD);
 	sdhci_reset(host, SDHCI_RESET_DATA);
@@ -800,6 +823,12 @@ static int sdhci_pci_o2_probe(struct sdhci_pci_chip *chip)
 		/* Set Tuning Windows to 5 */
 		pci_write_config_byte(chip->pdev,
 				O2_SD_TUNING_CTRL, 0x55);
+		//Adjust 1st and 2nd CD debounce time
+		pci_read_config_dword(chip->pdev, O2_SD_MISC_CTRL2, &scratch_32);
+		scratch_32 &= 0xFFE7FFFF;
+		scratch_32 |= 0x00180000;
+		pci_write_config_dword(chip->pdev, O2_SD_MISC_CTRL2, scratch_32);
+		pci_write_config_dword(chip->pdev, O2_SD_DETECT_SETTING, 1);
 		/* Lock WP */
 		ret = pci_read_config_byte(chip->pdev,
 					   O2_SD_LOCK_WP, &scratch);

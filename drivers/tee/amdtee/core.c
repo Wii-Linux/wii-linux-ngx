@@ -59,10 +59,9 @@ static void release_session(struct amdtee_session *sess)
 			continue;
 
 		handle_close_session(sess->ta_handle, sess->session_info[i]);
+		handle_unload_ta(sess->ta_handle);
 	}
 
-	/* Unload Trusted Application once all sessions are closed */
-	handle_unload_ta(sess->ta_handle);
 	kfree(sess);
 }
 
@@ -204,9 +203,8 @@ static int copy_ta_binary(struct tee_context *ctx, void *ptr, void **ta,
 
 	*ta_size = roundup(fw->size, PAGE_SIZE);
 	*ta = (void *)__get_free_pages(GFP_KERNEL, get_order(*ta_size));
-	if (IS_ERR(*ta)) {
-		pr_err("%s: get_free_pages failed 0x%llx\n", __func__,
-		       (u64)*ta);
+	if (!*ta) {
+		pr_err("%s: get_free_pages failed\n", __func__);
 		rc = -ENOMEM;
 		goto rel_fw;
 	}
@@ -219,14 +217,12 @@ unlock:
 	return rc;
 }
 
+/* mutex must be held by caller */
 static void destroy_session(struct kref *ref)
 {
 	struct amdtee_session *sess = container_of(ref, struct amdtee_session,
 						   refcount);
 
-	/* Unload the TA from TEE */
-	handle_unload_ta(sess->ta_handle);
-	mutex_lock(&session_list_mutex);
 	list_del(&sess->list_node);
 	mutex_unlock(&session_list_mutex);
 	kfree(sess);
@@ -238,7 +234,7 @@ int amdtee_open_session(struct tee_context *ctx,
 {
 	struct amdtee_context_data *ctxdata = ctx->data;
 	struct amdtee_session *sess = NULL;
-	u32 session_info;
+	u32 session_info, ta_handle;
 	size_t ta_size;
 	int rc, i;
 	void *ta;
@@ -259,25 +255,14 @@ int amdtee_open_session(struct tee_context *ctx,
 	if (arg->ret != TEEC_SUCCESS)
 		goto out;
 
+	ta_handle = get_ta_handle(arg->session);
+
 	mutex_lock(&session_list_mutex);
 	sess = alloc_session(ctxdata, arg->session);
 	mutex_unlock(&session_list_mutex);
 
 	if (!sess) {
-		rc = -ENOMEM;
-		goto out;
-	}
-
-	/* Find an empty session index for the given TA */
-	spin_lock(&sess->lock);
-	i = find_first_zero_bit(sess->sess_mask, TEE_NUM_SESSIONS);
-	if (i < TEE_NUM_SESSIONS)
-		set_bit(i, sess->sess_mask);
-	spin_unlock(&sess->lock);
-
-	if (i >= TEE_NUM_SESSIONS) {
-		pr_err("reached maximum session count %d\n", TEE_NUM_SESSIONS);
-		kref_put(&sess->refcount, destroy_session);
+		handle_unload_ta(ta_handle);
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -286,15 +271,32 @@ int amdtee_open_session(struct tee_context *ctx,
 	handle_open_session(arg, &session_info, param);
 	if (arg->ret != TEEC_SUCCESS) {
 		pr_err("open_session failed %d\n", arg->ret);
-		spin_lock(&sess->lock);
-		clear_bit(i, sess->sess_mask);
-		spin_unlock(&sess->lock);
-		kref_put(&sess->refcount, destroy_session);
+		handle_unload_ta(ta_handle);
+		kref_put_mutex(&sess->refcount, destroy_session,
+			       &session_list_mutex);
 		goto out;
 	}
 
-	sess->session_info[i] = session_info;
-	set_session_id(sess->ta_handle, i, &arg->session);
+	/* Find an empty session index for the given TA */
+	spin_lock(&sess->lock);
+	i = find_first_zero_bit(sess->sess_mask, TEE_NUM_SESSIONS);
+	if (i < TEE_NUM_SESSIONS) {
+		sess->session_info[i] = session_info;
+		set_session_id(ta_handle, i, &arg->session);
+		set_bit(i, sess->sess_mask);
+	}
+	spin_unlock(&sess->lock);
+
+	if (i >= TEE_NUM_SESSIONS) {
+		pr_err("reached maximum session count %d\n", TEE_NUM_SESSIONS);
+		handle_close_session(ta_handle, session_info);
+		handle_unload_ta(ta_handle);
+		kref_put_mutex(&sess->refcount, destroy_session,
+			       &session_list_mutex);
+		rc = -ENOMEM;
+		goto out;
+	}
+
 out:
 	free_pages((u64)ta, get_order(ta_size));
 	return rc;
@@ -329,8 +331,9 @@ int amdtee_close_session(struct tee_context *ctx, u32 session)
 
 	/* Close the session */
 	handle_close_session(ta_handle, session_info);
+	handle_unload_ta(ta_handle);
 
-	kref_put(&sess->refcount, destroy_session);
+	kref_put_mutex(&sess->refcount, destroy_session, &session_list_mutex);
 
 	return 0;
 }

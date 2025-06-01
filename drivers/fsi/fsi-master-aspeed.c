@@ -8,6 +8,7 @@
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -19,6 +20,7 @@
 
 struct fsi_master_aspeed {
 	struct fsi_master	master;
+	struct mutex		lock;	/* protect HW access */
 	struct device		*dev;
 	void __iomem		*base;
 	struct clk		*clk;
@@ -254,6 +256,8 @@ static int aspeed_master_read(struct fsi_master *master, int link,
 	addr |= id << 21;
 	addr += link * FSI_HUB_LINK_SIZE;
 
+	mutex_lock(&aspeed->lock);
+
 	switch (size) {
 	case 1:
 		ret = opb_readb(aspeed, fsi_base + addr, val);
@@ -265,14 +269,14 @@ static int aspeed_master_read(struct fsi_master *master, int link,
 		ret = opb_readl(aspeed, fsi_base + addr, val);
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		goto done;
 	}
 
 	ret = check_errors(aspeed, ret);
-	if (ret)
-		return ret;
-
-	return 0;
+done:
+	mutex_unlock(&aspeed->lock);
+	return ret;
 }
 
 static int aspeed_master_write(struct fsi_master *master, int link,
@@ -287,6 +291,8 @@ static int aspeed_master_write(struct fsi_master *master, int link,
 	addr |= id << 21;
 	addr += link * FSI_HUB_LINK_SIZE;
 
+	mutex_lock(&aspeed->lock);
+
 	switch (size) {
 	case 1:
 		ret = opb_writeb(aspeed, fsi_base + addr, *(u8 *)val);
@@ -298,14 +304,14 @@ static int aspeed_master_write(struct fsi_master *master, int link,
 		ret = opb_writel(aspeed, fsi_base + addr, *(__be32 *)val);
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		goto done;
 	}
 
 	ret = check_errors(aspeed, ret);
-	if (ret)
-		return ret;
-
-	return 0;
+done:
+	mutex_unlock(&aspeed->lock);
+	return ret;
 }
 
 static int aspeed_master_link_enable(struct fsi_master *master, int link,
@@ -320,17 +326,21 @@ static int aspeed_master_link_enable(struct fsi_master *master, int link,
 
 	reg = cpu_to_be32(0x80000000 >> bit);
 
-	if (!enable)
-		return opb_writel(aspeed, ctrl_base + FSI_MCENP0 + (4 * idx),
-				  reg);
+	mutex_lock(&aspeed->lock);
+
+	if (!enable) {
+		ret = opb_writel(aspeed, ctrl_base + FSI_MCENP0 + (4 * idx), reg);
+		goto done;
+	}
 
 	ret = opb_writel(aspeed, ctrl_base + FSI_MSENP0 + (4 * idx), reg);
 	if (ret)
-		return ret;
+		goto done;
 
 	mdelay(FSI_LINK_ENABLE_SETUP_TIME);
-
-	return 0;
+done:
+	mutex_unlock(&aspeed->lock);
+	return ret;
 }
 
 static int aspeed_master_term(struct fsi_master *master, int link, uint8_t id)
@@ -431,9 +441,13 @@ static ssize_t cfam_reset_store(struct device *dev, struct device_attribute *att
 {
 	struct fsi_master_aspeed *aspeed = dev_get_drvdata(dev);
 
+	mutex_lock(&aspeed->lock);
 	gpiod_set_value(aspeed->cfam_reset_gpio, 1);
 	usleep_range(900, 1000);
 	gpiod_set_value(aspeed->cfam_reset_gpio, 0);
+	usleep_range(900, 1000);
+	opb_writel(aspeed, ctrl_base + FSI_MRESP0, cpu_to_be32(FSI_MRESP_RST_ALL_MASTER));
+	mutex_unlock(&aspeed->lock);
 
 	return count;
 }
@@ -513,7 +527,6 @@ static int tacoma_cabled_fsi_fixup(struct device *dev)
 static int fsi_master_aspeed_probe(struct platform_device *pdev)
 {
 	struct fsi_master_aspeed *aspeed;
-	struct resource *res;
 	int rc, links, reg;
 	__be32 raw;
 
@@ -523,26 +536,28 @@ static int fsi_master_aspeed_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	aspeed = devm_kzalloc(&pdev->dev, sizeof(*aspeed), GFP_KERNEL);
+	aspeed = kzalloc(sizeof(*aspeed), GFP_KERNEL);
 	if (!aspeed)
 		return -ENOMEM;
 
 	aspeed->dev = &pdev->dev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	aspeed->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(aspeed->base))
-		return PTR_ERR(aspeed->base);
+	aspeed->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(aspeed->base)) {
+		rc = PTR_ERR(aspeed->base);
+		goto err_free_aspeed;
+	}
 
 	aspeed->clk = devm_clk_get(aspeed->dev, NULL);
 	if (IS_ERR(aspeed->clk)) {
 		dev_err(aspeed->dev, "couldn't get clock\n");
-		return PTR_ERR(aspeed->clk);
+		rc = PTR_ERR(aspeed->clk);
+		goto err_free_aspeed;
 	}
 	rc = clk_prepare_enable(aspeed->clk);
 	if (rc) {
 		dev_err(aspeed->dev, "couldn't enable clock\n");
-		return rc;
+		goto err_free_aspeed;
 	}
 
 	rc = setup_cfam_reset(aspeed);
@@ -577,7 +592,7 @@ static int fsi_master_aspeed_probe(struct platform_device *pdev)
 	rc = opb_readl(aspeed, ctrl_base + FSI_MVER, &raw);
 	if (rc) {
 		dev_err(&pdev->dev, "failed to read hub version\n");
-		return rc;
+		goto err_release;
 	}
 
 	reg = be32_to_cpu(raw);
@@ -597,6 +612,7 @@ static int fsi_master_aspeed_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(&pdev->dev, aspeed);
 
+	mutex_init(&aspeed->lock);
 	aspeed_master_init(aspeed);
 
 	rc = fsi_master_register(&aspeed->master);
@@ -615,6 +631,8 @@ static int fsi_master_aspeed_probe(struct platform_device *pdev)
 
 err_release:
 	clk_disable_unprepare(aspeed->clk);
+err_free_aspeed:
+	kfree(aspeed);
 	return rc;
 }
 
@@ -632,6 +650,7 @@ static const struct of_device_id fsi_master_aspeed_match[] = {
 	{ .compatible = "aspeed,ast2600-fsi-master" },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, fsi_master_aspeed_match);
 
 static struct platform_driver fsi_master_aspeed_driver = {
 	.driver = {

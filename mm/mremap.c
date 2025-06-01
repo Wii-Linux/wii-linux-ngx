@@ -260,6 +260,9 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 	struct mmu_notifier_range range;
 	pmd_t *old_pmd, *new_pmd;
 
+	if (!len)
+		return 0;
+
 	old_end = old_addr + len;
 	flush_cache_range(vma, old_addr, old_end);
 
@@ -307,12 +310,10 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 			 */
 			bool moved;
 
-			if (need_rmap_locks)
-				take_rmap_locks(vma);
+			take_rmap_locks(vma);
 			moved = move_normal_pmd(vma, old_addr, new_addr,
 						old_pmd, new_pmd);
-			if (need_rmap_locks)
-				drop_rmap_locks(vma);
+			drop_rmap_locks(vma);
 			if (moved)
 				continue;
 #endif

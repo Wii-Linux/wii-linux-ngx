@@ -45,6 +45,9 @@ void mte_sync_tags(pte_t *ptep, pte_t pte)
 		if (!test_and_set_bit(PG_mte_tagged, &page->flags))
 			mte_sync_page_tags(page, ptep, check_swap);
 	}
+
+	/* ensure the tags are visible before the PTE is set */
+	smp_wmb();
 }
 
 int memcmp_pages(struct page *page1, struct page *page2)
@@ -189,7 +192,8 @@ long get_mte_ctrl(struct task_struct *task)
 
 	switch (task->thread.sctlr_tcf0) {
 	case SCTLR_EL1_TCF0_NONE:
-		return PR_MTE_TCF_NONE;
+		ret |= PR_MTE_TCF_NONE;
+		break;
 	case SCTLR_EL1_TCF0_SYNC:
 		ret |= PR_MTE_TCF_SYNC;
 		break;
@@ -238,11 +242,12 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 		 * would cause the existing tags to be cleared if the page
 		 * was never mapped with PROT_MTE.
 		 */
-		if (!test_bit(PG_mte_tagged, &page->flags)) {
+		if (!(vma->vm_flags & VM_MTE)) {
 			ret = -EOPNOTSUPP;
 			put_page(page);
 			break;
 		}
+		WARN_ON_ONCE(!test_bit(PG_mte_tagged, &page->flags));
 
 		/* limit access to the end of the page */
 		offset = offset_in_page(addr);

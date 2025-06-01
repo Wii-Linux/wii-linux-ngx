@@ -329,11 +329,10 @@ static int stmfx_chip_init(struct i2c_client *client)
 
 	stmfx->vdd = devm_regulator_get_optional(&client->dev, "vdd");
 	ret = PTR_ERR_OR_ZERO(stmfx->vdd);
-	if (ret == -ENODEV) {
+	if (ret) {
 		stmfx->vdd = NULL;
-	} else {
-		return dev_err_probe(&client->dev, ret,
-				     "Failed to get VDD regulator\n");
+		if (ret != -ENODEV)
+			return dev_err_probe(&client->dev, ret, "Failed to get VDD regulator\n");
 	}
 
 	if (stmfx->vdd) {
@@ -387,7 +386,7 @@ static int stmfx_chip_init(struct i2c_client *client)
 
 err:
 	if (stmfx->vdd)
-		return regulator_disable(stmfx->vdd);
+		regulator_disable(stmfx->vdd);
 
 	return ret;
 }

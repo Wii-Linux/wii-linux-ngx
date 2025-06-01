@@ -243,7 +243,7 @@ int saa7134_pgtable_build(struct pci_dev *pci, struct saa7134_pgtable *pt,
 
 	ptr = pt->cpu + startpage;
 	for (i = 0; i < length; i++, list = sg_next(list)) {
-		for (p = 0; p * 4096 < list->length; p++, ptr++)
+		for (p = 0; p * 4096 < sg_dma_len(list); p++, ptr++)
 			*ptr = cpu_to_le32(sg_dma_address(list) +
 						list->offset + p * 4096);
 	}
@@ -977,7 +977,7 @@ static void saa7134_unregister_video(struct saa7134_dev *dev)
 	}
 	if (dev->radio_dev) {
 		if (video_is_registered(dev->radio_dev))
-			vb2_video_unregister_device(dev->radio_dev);
+			video_unregister_device(dev->radio_dev);
 		else
 			video_device_release(dev->radio_dev);
 		dev->radio_dev = NULL;

@@ -42,6 +42,8 @@ struct cdns3_role_driver {
 struct cdns3_platform_data {
 	int (*platform_suspend)(struct device *dev,
 			bool suspend, bool wakeup);
+	unsigned long quirks;
+#define CDNS3_DEFAULT_PM_RUNTIME_ALLOW	BIT(0)
 };
 
 /**
@@ -53,7 +55,9 @@ struct cdns3_platform_data {
  * @otg_res: the resource for otg
  * @otg_v0_regs: pointer to base of v0 otg registers
  * @otg_v1_regs: pointer to base of v1 otg registers
+ * @otg_cdnsp_regs: pointer to base of CDNSP otg registers
  * @otg_regs: pointer to base of otg registers
+ * @otg_irq_regs: pointer to interrupt registers
  * @otg_irq: irq number for otg controller
  * @dev_irq: irq number for device controller
  * @wakeup_irq: irq number for wakeup event, it is optional
@@ -73,6 +77,7 @@ struct cdns3_platform_data {
  * @wakeup_pending: wakeup interrupt pending
  * @pdata: platform data from glue layer
  * @lock: spinlock structure
+ * @xhci_plat_data: xhci private data structure pointer
  */
 struct cdns3 {
 	struct device			*dev;
@@ -83,9 +88,12 @@ struct cdns3 {
 	struct resource			otg_res;
 	struct cdns3_otg_legacy_regs	*otg_v0_regs;
 	struct cdns3_otg_regs		*otg_v1_regs;
+	struct cdnsp_otg_regs		*otg_cdnsp_regs;
 	struct cdns3_otg_common_regs	*otg_regs;
+	struct cdns3_otg_irq_regs	*otg_irq_regs;
 #define CDNS3_CONTROLLER_V0	0
 #define CDNS3_CONTROLLER_V1	1
+#define CDNSP_CONTROLLER_V2	2
 	u32				version;
 	bool				phyrst_a_enable;
 
@@ -106,6 +114,7 @@ struct cdns3 {
 	bool				wakeup_pending;
 	struct cdns3_platform_data	*pdata;
 	spinlock_t			lock;
+	struct xhci_plat_priv		*xhci_plat_data;
 };
 
 int cdns3_hw_role_switch(struct cdns3 *cdns);

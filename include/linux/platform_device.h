@@ -30,7 +30,11 @@ struct platform_device {
 	struct resource	*resource;
 
 	const struct platform_device_id	*id_entry;
-	char *driver_override; /* Driver name to force a match */
+	/*
+	 * Driver name to force a match.  Do not set directly, because core
+	 * frees it.  Use driver_set_override() to set or clear it.
+	 */
+	const char *driver_override;
 
 	/* MFD cell pointer */
 	struct mfd_cell *mfd_cell;
@@ -349,5 +353,8 @@ static inline int is_sh_early_platform_device(struct platform_device *pdev)
 	return 0;
 }
 #endif /* CONFIG_SUPERH */
+
+/* For now only SuperH uses it */
+void early_platform_cleanup(void);
 
 #endif /* _PLATFORM_DEVICE_H_ */

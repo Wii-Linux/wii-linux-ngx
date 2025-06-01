@@ -1720,13 +1720,13 @@ static bool copy_data(struct prb_data_ring *data_ring,
 
 	/* Caller interested in the line count? */
 	if (line_count)
-		*line_count = count_lines(data, data_size);
+		*line_count = count_lines(data, len);
 
 	/* Caller interested in the data content? */
 	if (!buf || !buf_size)
 		return true;
 
-	data_size = min_t(u16, buf_size, len);
+	data_size = min_t(unsigned int, buf_size, len);
 
 	memcpy(&buf[0], data, data_size); /* LMM(copy_data:A) */
 	return true;

@@ -35,6 +35,9 @@
 #define KVM_VECTOR_PREAMBLE	(2 * AARCH64_INSN_SIZE)
 
 #define __SMCCC_WORKAROUND_1_SMC_SZ 36
+#define __SMCCC_WORKAROUND_3_SMC_SZ 36
+#define __SPECTRE_BHB_LOOP_SZ       44
+#define __SPECTRE_BHB_CLEARBHB_SZ   12
 
 #define KVM_HOST_SMCCC_ID(id)						\
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
@@ -49,7 +52,7 @@
 #define __KVM_HOST_SMCCC_FUNC___kvm_flush_vm_context		2
 #define __KVM_HOST_SMCCC_FUNC___kvm_tlb_flush_vmid_ipa		3
 #define __KVM_HOST_SMCCC_FUNC___kvm_tlb_flush_vmid		4
-#define __KVM_HOST_SMCCC_FUNC___kvm_tlb_flush_local_vmid	5
+#define __KVM_HOST_SMCCC_FUNC___kvm_flush_cpu_context		5
 #define __KVM_HOST_SMCCC_FUNC___kvm_timer_set_cntvoff		6
 #define __KVM_HOST_SMCCC_FUNC___kvm_enable_ssbs			7
 #define __KVM_HOST_SMCCC_FUNC___vgic_v3_get_ich_vtr_el2		8
@@ -180,10 +183,10 @@ DECLARE_KVM_HYP_SYM(__bp_harden_hyp_vecs);
 #define __bp_harden_hyp_vecs	CHOOSE_HYP_SYM(__bp_harden_hyp_vecs)
 
 extern void __kvm_flush_vm_context(void);
+extern void __kvm_flush_cpu_context(struct kvm_s2_mmu *mmu);
 extern void __kvm_tlb_flush_vmid_ipa(struct kvm_s2_mmu *mmu, phys_addr_t ipa,
 				     int level);
 extern void __kvm_tlb_flush_vmid(struct kvm_s2_mmu *mmu);
-extern void __kvm_tlb_flush_local_vmid(struct kvm_s2_mmu *mmu);
 
 extern void __kvm_timer_set_cntvoff(u64 cntvoff);
 
@@ -199,6 +202,11 @@ extern void __vgic_v3_init_lrs(void);
 extern u32 __kvm_get_mdcr_el2(void);
 
 extern char __smccc_workaround_1_smc[__SMCCC_WORKAROUND_1_SMC_SZ];
+extern char __smccc_workaround_3_smc[__SMCCC_WORKAROUND_3_SMC_SZ];
+extern char __spectre_bhb_loop_k8[__SPECTRE_BHB_LOOP_SZ];
+extern char __spectre_bhb_loop_k24[__SPECTRE_BHB_LOOP_SZ];
+extern char __spectre_bhb_loop_k32[__SPECTRE_BHB_LOOP_SZ];
+extern char __spectre_bhb_clearbhb[__SPECTRE_BHB_LOOP_SZ];
 
 /*
  * Obtain the PC-relative address of a kernel symbol

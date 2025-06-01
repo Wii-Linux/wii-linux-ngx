@@ -91,7 +91,7 @@ static int rxrpc_service_prealloc_one(struct rxrpc_sock *rx,
 				  (head + 1) & (size - 1));
 
 		trace_rxrpc_conn(conn->debug_id, rxrpc_conn_new_service,
-				 atomic_read(&conn->usage), here);
+				 refcount_read(&conn->ref), here);
 	}
 
 	/* Now it gets complicated, because calls get registered with the
@@ -104,7 +104,7 @@ static int rxrpc_service_prealloc_one(struct rxrpc_sock *rx,
 	call->state = RXRPC_CALL_SERVER_PREALLOC;
 
 	trace_rxrpc_call(call->debug_id, rxrpc_call_new_service,
-			 atomic_read(&call->usage),
+			 refcount_read(&call->ref),
 			 here, (const void *)user_call_ID);
 
 	write_lock(&rx->call_lock);
@@ -197,6 +197,7 @@ void rxrpc_discard_prealloc(struct rxrpc_sock *rx)
 	tail = b->peer_backlog_tail;
 	while (CIRC_CNT(head, tail, size) > 0) {
 		struct rxrpc_peer *peer = b->peer_backlog[tail];
+		rxrpc_put_local(peer->local);
 		kfree(peer);
 		tail = (tail + 1) & (size - 1);
 	}

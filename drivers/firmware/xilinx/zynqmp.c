@@ -2,7 +2,7 @@
 /*
  * Xilinx Zynq MPSoC Firmware layer
  *
- *  Copyright (C) 2014-2020 Xilinx, Inc.
+ *  Copyright (C) 2014-2021 Xilinx, Inc.
  *
  *  Michal Simek <michal.simek@xilinx.com>
  *  Davorin Mista <davorin.mista@aggios.com>
@@ -171,7 +171,7 @@ static int zynqmp_pm_feature(u32 api_id)
 	}
 
 	/* Add new entry if not present */
-	feature_data = kmalloc(sizeof(*feature_data), GFP_KERNEL);
+	feature_data = kmalloc(sizeof(*feature_data), GFP_ATOMIC);
 	if (!feature_data)
 		return -ENOMEM;
 
@@ -1280,12 +1280,13 @@ static int zynqmp_firmware_probe(struct platform_device *pdev)
 static int zynqmp_firmware_remove(struct platform_device *pdev)
 {
 	struct pm_api_feature_data *feature_data;
+	struct hlist_node *tmp;
 	int i;
 
 	mfd_remove_devices(&pdev->dev);
 	zynqmp_pm_api_debugfs_exit();
 
-	hash_for_each(pm_api_features_map, i, feature_data, hentry) {
+	hash_for_each_safe(pm_api_features_map, i, tmp, feature_data, hentry) {
 		hash_del(&feature_data->hentry);
 		kfree(feature_data);
 	}

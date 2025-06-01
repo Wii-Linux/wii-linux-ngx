@@ -69,7 +69,10 @@
 #define VC5_FEEDBACK_FRAC_DIV(n)		(0x19 + (n))
 #define VC5_RC_CONTROL0				0x1e
 #define VC5_RC_CONTROL1				0x1f
-/* Register 0x20 is factory reserved */
+
+/* These registers are named "Unused Factory Reserved Registers" */
+#define VC5_RESERVED_X0(idx)		(0x20 + ((idx) * 0x10))
+#define VC5_RESERVED_X0_BYPASS_SYNC	BIT(7) /* bypass_sync<idx> bit */
 
 /* Output divider control for divider 1,2,3,4 */
 #define VC5_OUT_DIV_CONTROL(idx)	(0x21 + ((idx) * 0x10))
@@ -87,7 +90,6 @@
 #define VC5_OUT_DIV_SKEW_INT(idx, n)	(0x2b + ((idx) * 0x10) + (n))
 #define VC5_OUT_DIV_INT(idx, n)		(0x2d + ((idx) * 0x10) + (n))
 #define VC5_OUT_DIV_SKEW_FRAC(idx)	(0x2f + ((idx) * 0x10))
-/* Registers 0x30, 0x40, 0x50 are factory reserved */
 
 /* Clock control register for clock 1,2 */
 #define VC5_CLK_OUTPUT_CFG(idx, n)	(0x60 + ((idx) * 0x2) + (n))
@@ -140,6 +142,8 @@
 #define VC5_HAS_INTERNAL_XTAL	BIT(0)
 /* chip has PFD requency doubler */
 #define VC5_HAS_PFD_FREQ_DBL	BIT(1)
+/* chip has bits to disable FOD sync */
+#define VC5_HAS_BYPASS_SYNC_BIT	BIT(2)
 
 /* Supported IDT VC5 models. */
 enum vc5_model {
@@ -582,6 +586,23 @@ static int vc5_clk_out_prepare(struct clk_hw *hw)
 	int ret;
 
 	/*
+	 * When enabling a FOD, all currently enabled FODs are briefly
+	 * stopped in order to synchronize all of them. This causes a clock
+	 * disruption to any unrelated chips that might be already using
+	 * other clock outputs. Bypass the sync feature to avoid the issue,
+	 * which is possible on the VersaClock 6E family via reserved
+	 * registers.
+	 */
+	if (vc5->chip_info->flags & VC5_HAS_BYPASS_SYNC_BIT) {
+		ret = regmap_update_bits(vc5->regmap,
+					 VC5_RESERVED_X0(hwdata->num),
+					 VC5_RESERVED_X0_BYPASS_SYNC,
+					 VC5_RESERVED_X0_BYPASS_SYNC);
+		if (ret)
+			return ret;
+	}
+
+	/*
 	 * If the input mux is disabled, enable it first and
 	 * select source from matching FOD.
 	 */
@@ -739,8 +760,8 @@ static int vc5_update_power(struct device_node *np_output,
 {
 	u32 value;
 
-	if (!of_property_read_u32(np_output,
-				  "idt,voltage-microvolts", &value)) {
+	if (!of_property_read_u32(np_output, "idt,voltage-microvolt",
+				  &value)) {
 		clk_out->clk_output_cfg0_mask |= VC5_CLK_OUTPUT_CFG0_PWR_MASK;
 		switch (value) {
 		case 1800000:
@@ -885,6 +906,11 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	}
 
 	init.name = kasprintf(GFP_KERNEL, "%pOFn.mux", client->dev.of_node);
+	if (!init.name) {
+		ret = -ENOMEM;
+		goto err_clk;
+	}
+
 	init.ops = &vc5_mux_ops;
 	init.flags = 0;
 	init.parent_names = parent_names;
@@ -899,6 +925,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		memset(&init, 0, sizeof(init));
 		init.name = kasprintf(GFP_KERNEL, "%pOFn.dbl",
 				      client->dev.of_node);
+		if (!init.name) {
+			ret = -ENOMEM;
+			goto err_clk;
+		}
 		init.ops = &vc5_dbl_ops;
 		init.flags = CLK_SET_RATE_PARENT;
 		init.parent_names = parent_names;
@@ -914,6 +944,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	/* Register PFD */
 	memset(&init, 0, sizeof(init));
 	init.name = kasprintf(GFP_KERNEL, "%pOFn.pfd", client->dev.of_node);
+	if (!init.name) {
+		ret = -ENOMEM;
+		goto err_clk;
+	}
 	init.ops = &vc5_pfd_ops;
 	init.flags = CLK_SET_RATE_PARENT;
 	init.parent_names = parent_names;
@@ -931,6 +965,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	/* Register PLL */
 	memset(&init, 0, sizeof(init));
 	init.name = kasprintf(GFP_KERNEL, "%pOFn.pll", client->dev.of_node);
+	if (!init.name) {
+		ret = -ENOMEM;
+		goto err_clk;
+	}
 	init.ops = &vc5_pll_ops;
 	init.flags = CLK_SET_RATE_PARENT;
 	init.parent_names = parent_names;
@@ -950,6 +988,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		memset(&init, 0, sizeof(init));
 		init.name = kasprintf(GFP_KERNEL, "%pOFn.fod%d",
 				      client->dev.of_node, idx);
+		if (!init.name) {
+			ret = -ENOMEM;
+			goto err_clk;
+		}
 		init.ops = &vc5_fod_ops;
 		init.flags = CLK_SET_RATE_PARENT;
 		init.parent_names = parent_names;
@@ -968,6 +1010,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	memset(&init, 0, sizeof(init));
 	init.name = kasprintf(GFP_KERNEL, "%pOFn.out0_sel_i2cb",
 			      client->dev.of_node);
+	if (!init.name) {
+		ret = -ENOMEM;
+		goto err_clk;
+	}
 	init.ops = &vc5_clk_out_ops;
 	init.flags = CLK_SET_RATE_PARENT;
 	init.parent_names = parent_names;
@@ -994,6 +1040,10 @@ static int vc5_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		memset(&init, 0, sizeof(init));
 		init.name = kasprintf(GFP_KERNEL, "%pOFn.out%d",
 				      client->dev.of_node, idx + 1);
+		if (!init.name) {
+			ret = -ENOMEM;
+			goto err_clk;
+		}
 		init.ops = &vc5_clk_out_ops;
 		init.flags = CLK_SET_RATE_PARENT;
 		init.parent_names = parent_names;
@@ -1095,14 +1145,14 @@ static const struct vc5_chip_info idt_5p49v6901_info = {
 	.model = IDT_VC6_5P49V6901,
 	.clk_fod_cnt = 4,
 	.clk_out_cnt = 5,
-	.flags = VC5_HAS_PFD_FREQ_DBL,
+	.flags = VC5_HAS_PFD_FREQ_DBL | VC5_HAS_BYPASS_SYNC_BIT,
 };
 
 static const struct vc5_chip_info idt_5p49v6965_info = {
 	.model = IDT_VC6_5P49V6965,
 	.clk_fod_cnt = 4,
 	.clk_out_cnt = 5,
-	.flags = 0,
+	.flags = VC5_HAS_BYPASS_SYNC_BIT,
 };
 
 static const struct i2c_device_id vc5_id[] = {

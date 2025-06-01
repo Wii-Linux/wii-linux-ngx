@@ -221,6 +221,11 @@ int mount_bpffs_for_pin(const char *name)
 	int err = 0;
 
 	file = malloc(strlen(name) + 1);
+	if (!file) {
+		p_err("mem alloc failed");
+		return -1;
+	}
+
 	strcpy(file, name);
 	dir = dirname(file);
 
@@ -265,6 +270,9 @@ int do_pin_any(int argc, char **argv, int (*get_fd)(int *, char ***))
 {
 	int err;
 	int fd;
+
+	if (!REQ_ARGS(3))
+		return -EINVAL;
 
 	fd = get_fd(&argc, &argv);
 	if (fd < 0)

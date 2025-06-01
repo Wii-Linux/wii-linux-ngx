@@ -303,8 +303,10 @@ static int udl_handle_damage(struct drm_framebuffer *fb, int x, int y,
 	}
 
 	urb = udl_get_urb(dev);
-	if (!urb)
+	if (!urb) {
+		ret = -ENOMEM;
 		goto out_drm_gem_shmem_vunmap;
+	}
 	cmd = urb->transfer_buffer;
 
 	for (i = clip.y1; i < clip.y2; i++) {
@@ -397,9 +399,6 @@ udl_simple_display_pipe_enable(struct drm_simple_display_pipe *pipe,
 	udl->mode_buf_len = wrptr - buf;
 
 	udl_handle_damage(fb, 0, 0, fb->width, fb->height);
-
-	if (!crtc_state->mode_changed)
-		return;
 
 	/* enable display */
 	udl_crtc_write_mode_to_hw(crtc);
