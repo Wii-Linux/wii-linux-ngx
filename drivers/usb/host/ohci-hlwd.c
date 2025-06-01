@@ -31,7 +31,7 @@
 #include <linux/of_reserved_mem.h>
 
 #include <asm/prom.h>
-#include <asm/time.h>	/* for get_tbl() */
+#include <asm/time.h>	/* for mftb() */
 
 #define DRV_MODULE_NAME "ohci-hlwd"
 #define DRV_DESCRIPTION "Nintendo Wii OHCI Host Controller"
@@ -42,8 +42,8 @@
 #define HLWD_EHCI_CTL_OH1INTE	(1<<12)	/* oh1 interrupt enable */
 
 #define __spin_event_timeout(condition, timeout_usecs, result, __end_tbl) \
-        for (__end_tbl = get_tbl() + tb_ticks_per_usec * timeout_usecs; \
-             !(result = (condition)) && (int)(__end_tbl - get_tbl()) > 0;)
+        for (__end_tbl = mftb() + tb_ticks_per_usec * timeout_usecs; \
+             !(result = (condition)) && (int)(__end_tbl - mftb()) > 0;)
 
 
 static DEFINE_SPINLOCK(control_quirk_lock);
