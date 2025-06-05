@@ -86,17 +86,6 @@ config CDROM
 	tristate
 	select BLK_SCSI_REQUEST
 
-config GAMECUBE_DI
-	tristate "Nintendo GameCube Disk Interface (DI)"
-	depends on GAMECUBE
-	help
-	  This enables support for using the DVD drive unit found
-	  in the Nintendo GameCube.
-	  Say Y if you want to include this driver in the kernel.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called gcn-di.
-
 config GDROM
 	tristate "SEGA Dreamcast GD-ROM drive"
 	depends on SH_DREAMCAST
