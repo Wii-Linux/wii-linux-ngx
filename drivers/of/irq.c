@@ -36,15 +36,11 @@
 unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
 {
 	struct of_phandle_args oirq;
-	unsigned int ret;
 
 	if (of_irq_parse_one(dev, index, &oirq))
 		return 0;
 
-	ret = irq_create_of_mapping(&oirq);
-	of_node_put(oirq.np);
-
-	return ret;
+	return irq_create_of_mapping(&oirq);
 }
 EXPORT_SYMBOL_GPL(irq_of_parse_and_map);
 
@@ -292,8 +288,7 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 	struct device_node *p;
 	const __be32 *addr;
 	u32 intsize;
-	int i, res, addr_len;
-	__be32 addr_buf[3] = { 0 };
+	int i, res;
 
 	pr_debug("of_irq_parse_one: dev=%pOF, index=%d\n", device, index);
 
@@ -302,20 +297,13 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 		return of_irq_parse_oldworld(device, index, out_irq);
 
 	/* Get the reg property (if any) */
-	addr_len = 0;
-	addr = of_get_property(device, "reg", &addr_len);
-
-	/* Prevent out-of-bounds read in case of longer interrupt parent address size */
-	if (addr_len > sizeof(addr_buf))
-		addr_len = sizeof(addr_buf);
-	if (addr)
-		memcpy(addr_buf, addr, addr_len);
+	addr = of_get_property(device, "reg", NULL);
 
 	/* Try the new-style interrupts-extended first */
 	res = of_parse_phandle_with_args(device, "interrupts-extended",
 					"#interrupt-cells", index, out_irq);
 	if (!res)
-		return of_irq_parse_raw(addr_buf, out_irq);
+		return of_irq_parse_raw(addr, out_irq);
 
 	/* Look for the interrupt parent. */
 	p = of_irq_find_parent(device);
@@ -345,7 +333,7 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 
 
 	/* Check if there are any interrupt-map translations to process */
-	res = of_irq_parse_raw(addr_buf, out_irq);
+	res = of_irq_parse_raw(addr, out_irq);
  out:
 	of_node_put(p);
 	return res;
@@ -447,10 +435,8 @@ int of_irq_count(struct device_node *dev)
 	struct of_phandle_args irq;
 	int nr = 0;
 
-	while (of_irq_parse_one(dev, nr, &irq) == 0) {
-		of_node_put(irq.np);
+	while (of_irq_parse_one(dev, nr, &irq) == 0)
 		nr++;
-	}
 
 	return nr;
 }
@@ -555,8 +541,6 @@ void __init of_irq_init(const struct of_device_id *matches)
 						desc->interrupt_parent);
 			if (ret) {
 				of_node_clear_flag(desc->dev, OF_POPULATED);
-				of_node_put(desc->interrupt_parent);
-				of_node_put(desc->dev);
 				kfree(desc);
 				continue;
 			}
@@ -587,7 +571,6 @@ void __init of_irq_init(const struct of_device_id *matches)
 err:
 	list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
 		list_del(&desc->list);
-		of_node_put(desc->interrupt_parent);
 		of_node_put(desc->dev);
 		kfree(desc);
 	}
@@ -652,7 +635,8 @@ struct irq_domain *of_msi_map_get_device_domain(struct device *dev, u32 id,
  * @np: device node for @dev
  * @token: bus type for this domain
  *
- * Parse the msi-parent property and returns the corresponding MSI domain.
+ * Parse the msi-parent property (both the simple and the complex
+ * versions), and returns the corresponding MSI domain.
  *
  * Returns: the MSI domain for this device (or NULL on failure).
  */
@@ -660,14 +644,33 @@ struct irq_domain *of_msi_get_domain(struct device *dev,
 				     struct device_node *np,
 				     enum irq_domain_bus_token token)
 {
-	struct of_phandle_iterator it;
+	struct device_node *msi_np;
 	struct irq_domain *d;
-	int err;
 
-	of_for_each_phandle(&it, err, np, "msi-parent", "#msi-cells", 0) {
-		d = irq_find_matching_host(it.node, token);
-		if (d)
-			return d;
+	/* Check for a single msi-parent property */
+	msi_np = of_parse_phandle(np, "msi-parent", 0);
+	if (msi_np && !of_property_read_bool(msi_np, "#msi-cells")) {
+		d = irq_find_matching_host(msi_np, token);
+		if (!d)
+			of_node_put(msi_np);
+		return d;
+	}
+
+	if (token == DOMAIN_BUS_PLATFORM_MSI) {
+		/* Check for the complex msi-parent version */
+		struct of_phandle_args args;
+		int index = 0;
+
+		while (!of_parse_phandle_with_args(np, "msi-parent",
+						   "#msi-cells",
+						   index, &args)) {
+			d = irq_find_matching_host(args.np, token);
+			if (d)
+				return d;
+
+			of_node_put(args.np);
+			index++;
+		}
 	}
 
 	return NULL;

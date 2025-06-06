@@ -3505,7 +3505,6 @@ static long st_ioctl_common(struct file *file, unsigned int cmd_in, void __user 
 	int i, cmd_nr, cmd_type, bt;
 	int retval = 0;
 	unsigned int blk;
-	bool cmd_mtiocget;
 	struct scsi_tape *STp = file->private_data;
 	struct st_modedef *STm;
 	struct st_partstat *STps;
@@ -3619,7 +3618,6 @@ static long st_ioctl_common(struct file *file, unsigned int cmd_in, void __user 
 			 */
 			if (mtc.mt_op != MTREW &&
 			    mtc.mt_op != MTOFFL &&
-			    mtc.mt_op != MTLOAD &&
 			    mtc.mt_op != MTRETEN &&
 			    mtc.mt_op != MTERASE &&
 			    mtc.mt_op != MTSEEK &&
@@ -3733,28 +3731,17 @@ static long st_ioctl_common(struct file *file, unsigned int cmd_in, void __user 
 		goto out;
 	}
 
-	cmd_mtiocget = cmd_type == _IOC_TYPE(MTIOCGET) && cmd_nr == _IOC_NR(MTIOCGET);
-
 	if ((i = flush_buffer(STp, 0)) < 0) {
-		if (cmd_mtiocget && STp->pos_unknown) {
-			/* flush fails -> modify status accordingly */
-			reset_state(STp);
-			STp->pos_unknown = 1;
-		} else { /* return error */
-			retval = i;
-			goto out;
-		}
-	} else { /* flush_buffer succeeds */
-		if (STp->can_partitions) {
-			i = switch_partition(STp);
-			if (i < 0) {
-				retval = i;
-				goto out;
-			}
-		}
+		retval = i;
+		goto out;
+	}
+	if (STp->can_partitions &&
+	    (i = switch_partition(STp)) < 0) {
+		retval = i;
+		goto out;
 	}
 
-	if (cmd_mtiocget) {
+	if (cmd_type == _IOC_TYPE(MTIOCGET) && cmd_nr == _IOC_NR(MTIOCGET)) {
 		struct mtget mt_status;
 
 		if (_IOC_SIZE(cmd_in) != sizeof(struct mtget)) {
@@ -3768,7 +3755,7 @@ static long st_ioctl_common(struct file *file, unsigned int cmd_in, void __user 
 		    ((STp->density << MT_ST_DENSITY_SHIFT) & MT_ST_DENSITY_MASK);
 		mt_status.mt_blkno = STps->drv_block;
 		mt_status.mt_fileno = STps->drv_file;
-		if (STp->block_size != 0 && mt_status.mt_blkno >= 0) {
+		if (STp->block_size != 0) {
 			if (STps->rw == ST_WRITING)
 				mt_status.mt_blkno +=
 				    (STp->buffer)->buffer_bytes / STp->block_size;
@@ -4144,7 +4131,7 @@ static void validate_options(void)
  */
 static int __init st_setup(char *str)
 {
-	int i, len, ints[ARRAY_SIZE(parms) + 1];
+	int i, len, ints[5];
 	char *stp;
 
 	stp = get_options(str, ARRAY_SIZE(ints), ints);

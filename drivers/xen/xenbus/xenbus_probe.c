@@ -250,16 +250,10 @@ int xenbus_dev_probe(struct device *_dev)
 	if (err) {
 		dev_warn(&dev->dev, "watch_otherend on %s failed.\n",
 		       dev->nodename);
-		goto fail_remove;
+		return err;
 	}
 
 	return 0;
-fail_remove:
-	if (drv->remove) {
-		down(&dev->reclaim_sem);
-		drv->remove(dev);
-		up(&dev->reclaim_sem);
-	}
 fail_put:
 	module_put(drv->driver.owner);
 fail:

@@ -13,6 +13,7 @@
  * more details.
  */
 
+#if !defined(HAS_NO_HMEM)
 
 #include "ia_css_types.h"
 #include "sh_css_internal.h"
@@ -31,3 +32,4 @@ ia_css_raa_encode(
 	(void)from;
 }
 
+#endif

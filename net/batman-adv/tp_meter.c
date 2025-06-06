@@ -23,7 +23,6 @@
 #include <linux/kthread.h>
 #include <linux/limits.h>
 #include <linux/list.h>
-#include <linux/minmax.h>
 #include <linux/netdevice.h>
 #include <linux/param.h>
 #include <linux/printk.h>

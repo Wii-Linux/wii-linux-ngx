@@ -82,8 +82,6 @@ struct pmbus_data {
 
 	u32 flags;		/* from platform data */
 
-	u8 revision;	/* The PMBus revision the device is compliant with */
-
 	int exponent[PMBUS_PAGES];
 				/* linear mode: exponent for output voltages */
 
@@ -267,24 +265,6 @@ static int _pmbus_write_word_data(struct i2c_client *client, int page, int reg,
 	return pmbus_write_word_data(client, page, reg, word);
 }
 
-/*
- * _pmbus_write_byte_data() is similar to pmbus_write_byte_data(), but checks if
- * a device specific mapping function exists and calls it if necessary.
- */
-static int _pmbus_write_byte_data(struct i2c_client *client, int page, int reg, u8 value)
-{
-	struct pmbus_data *data = i2c_get_clientdata(client);
-	const struct pmbus_driver_info *info = data->info;
-	int status;
-
-	if (info->write_byte_data) {
-		status = info->write_byte_data(client, page, reg, value);
-		if (status != -ENODATA)
-			return status;
-	}
-	return pmbus_write_byte_data(client, page, reg, value);
-}
-
 int pmbus_update_fan(struct i2c_client *client, int page, int id,
 		     u8 config, u8 mask, u16 command)
 {
@@ -299,7 +279,7 @@ int pmbus_update_fan(struct i2c_client *client, int page, int id,
 
 	to = (from & ~mask) | (config & mask);
 	if (to != from) {
-		rv = _pmbus_write_byte_data(client, page,
+		rv = pmbus_write_byte_data(client, page,
 					   pmbus_fan_config_registers[id], to);
 		if (rv < 0)
 			return rv;
@@ -406,7 +386,7 @@ int pmbus_update_byte_data(struct i2c_client *client, int page, u8 reg,
 	tmp = (rv & ~mask) | (value & mask);
 
 	if (tmp != rv)
-		rv = _pmbus_write_byte_data(client, page, reg, tmp);
+		rv = pmbus_write_byte_data(client, page, reg, tmp);
 
 	return rv;
 }
@@ -919,14 +899,9 @@ static int pmbus_get_boolean(struct i2c_client *client, struct pmbus_boolean *b,
 
 	regval = status & mask;
 	if (regval) {
-		if (data->revision >= PMBUS_REV_12) {
-			ret = _pmbus_write_byte_data(client, page, reg, regval);
-			if (ret)
-				goto unlock;
-		} else {
-			pmbus_clear_fault_page(client, page);
-		}
-
+		ret = pmbus_write_byte_data(client, page, reg, regval);
+		if (ret)
+			goto unlock;
 	}
 	if (s1 && s2) {
 		s64 v1, v2;
@@ -2246,10 +2221,6 @@ static int pmbus_init_common(struct i2c_client *client, struct pmbus_data *data,
 	ret = i2c_smbus_read_byte_data(client, PMBUS_WRITE_PROTECT);
 	if (ret > 0 && (ret & PB_WP_ANY))
 		data->flags |= PMBUS_WRITE_PROTECTED | PMBUS_SKIP_STATUS_CHECK;
-
-	ret = i2c_smbus_read_byte_data(client, PMBUS_REVISION);
-	if (ret >= 0)
-		data->revision = ret;
 
 	if (data->info->pages)
 		pmbus_clear_faults(client);

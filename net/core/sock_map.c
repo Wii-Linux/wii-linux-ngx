@@ -161,7 +161,6 @@ static void sock_map_del_link(struct sock *sk,
 				verdict_stop = true;
 			list_del(&link->list);
 			sk_psock_free_link(link);
-			break;
 		}
 	}
 	spin_unlock_bh(&psock->link_lock);
@@ -420,14 +419,15 @@ static void *sock_map_lookup_sys(struct bpf_map *map, void *key)
 static int __sock_map_delete(struct bpf_stab *stab, struct sock *sk_test,
 			     struct sock **psk)
 {
-	struct sock *sk = NULL;
+	struct sock *sk;
 	int err = 0;
 
 	if (irqs_disabled())
 		return -EOPNOTSUPP; /* locks here are hardirq-unsafe */
 
 	raw_spin_lock_bh(&stab->lock);
-	if (!sk_test || sk_test == *psk)
+	sk = *psk;
+	if (!sk_test || sk_test == sk)
 		sk = xchg(psk, NULL);
 
 	if (likely(sk))
@@ -1219,7 +1219,6 @@ static void sock_hash_free(struct bpf_map *map)
 			sock_put(elem->sk);
 			sock_hash_free_elem(htab, elem);
 		}
-		cond_resched();
 	}
 
 	/* wait for psock readers accessing its map link */
@@ -1566,28 +1565,6 @@ void sock_map_unhash(struct sock *sk)
 	rcu_read_unlock();
 	saved_unhash(sk);
 }
-
-void sock_map_destroy(struct sock *sk)
-{
-	void (*saved_destroy)(struct sock *sk);
-	struct sk_psock *psock;
-
-	rcu_read_lock();
-	psock = sk_psock_get(sk);
-	if (unlikely(!psock)) {
-		rcu_read_unlock();
-		if (sk->sk_prot->destroy)
-			sk->sk_prot->destroy(sk);
-		return;
-	}
-
-	saved_destroy = psock->saved_destroy;
-	sock_map_remove_links(sk, psock);
-	rcu_read_unlock();
-	sk_psock_put(sk, psock);
-	saved_destroy(sk);
-}
-EXPORT_SYMBOL_GPL(sock_map_destroy);
 
 void sock_map_close(struct sock *sk, long timeout)
 {

@@ -4,6 +4,8 @@
  * Copyright (C) 2017 SiFive
  */
 
+#define GENERATING_ASM_OFFSETS
+
 #include <linux/kbuild.h>
 #include <linux/sched.h>
 #include <asm/thread_info.h>

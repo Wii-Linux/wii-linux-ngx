@@ -173,7 +173,6 @@ err_init_txq:
 	hinic_sq_dbgfs_uninit(nic_dev);
 
 	devm_kfree(&netdev->dev, nic_dev->txqs);
-	nic_dev->txqs = NULL;
 	return err;
 }
 
@@ -270,7 +269,6 @@ err_init_rxq:
 	hinic_rq_dbgfs_uninit(nic_dev);
 
 	devm_kfree(&netdev->dev, nic_dev->rxqs);
-	nic_dev->rxqs = NULL;
 	return err;
 }
 

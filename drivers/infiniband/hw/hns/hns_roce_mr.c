@@ -478,19 +478,13 @@ static int hns_roce_set_page(struct ib_mr *ibmr, u64 addr)
 }
 
 int hns_roce_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
-		       unsigned int *sg_offset_p)
+		       unsigned int *sg_offset)
 {
-	unsigned int sg_offset = sg_offset_p ? *sg_offset_p : 0;
 	struct hns_roce_dev *hr_dev = to_hr_dev(ibmr->device);
 	struct ib_device *ibdev = &hr_dev->ib_dev;
 	struct hns_roce_mr *mr = to_hr_mr(ibmr);
 	struct hns_roce_mtr *mtr = &mr->pbl_mtr;
 	int ret, sg_num = 0;
-
-	if (!IS_ALIGNED(sg_offset, HNS_ROCE_FRMR_ALIGN_SIZE) ||
-	    ibmr->page_size < HNS_HW_PAGE_SIZE ||
-	    ibmr->page_size > HNS_HW_MAX_PAGE_SIZE)
-		return sg_num;
 
 	mr->npages = 0;
 	mr->page_list = kvcalloc(mr->pbl_mtr.hem_cfg.buf_pg_count,
@@ -498,7 +492,7 @@ int hns_roce_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
 	if (!mr->page_list)
 		return sg_num;
 
-	sg_num = ib_sg_to_pages(ibmr, sg, sg_nents, sg_offset_p, hns_roce_set_page);
+	sg_num = ib_sg_to_pages(ibmr, sg, sg_nents, sg_offset, hns_roce_set_page);
 	if (sg_num < 1) {
 		ibdev_err(ibdev, "failed to store sg pages %u %u, cnt = %d.\n",
 			  mr->npages, mr->pbl_mtr.hem_cfg.buf_pg_count, sg_num);
@@ -634,26 +628,30 @@ int hns_roce_dealloc_mw(struct ib_mw *ibmw)
 }
 
 static int mtr_map_region(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
-			  struct hns_roce_buf_region *region, dma_addr_t *pages,
-			  int max_count)
+			  dma_addr_t *pages, struct hns_roce_buf_region *region)
 {
-	int count, npage;
-	int offset, end;
 	__le64 *mtts;
+	int offset;
+	int count;
+	int npage;
 	u64 addr;
+	int end;
 	int i;
+
+	/* if hopnum is 0, buffer cannot store BAs, so skip write mtt */
+	if (!region->hopnum)
+		return 0;
 
 	offset = region->offset;
 	end = offset + region->count;
 	npage = 0;
-	while (offset < end && npage < max_count) {
-		count = 0;
+	while (offset < end) {
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
-						  offset, &count);
+						  offset, &count, NULL);
 		if (!mtts)
 			return -ENOBUFS;
 
-		for (i = 0; i < count && npage < max_count; i++) {
+		for (i = 0; i < count; i++) {
 			if (hr_dev->hw_rev == HNS_ROCE_HW_VER1)
 				addr = to_hr_hw_page_addr(pages[npage]);
 			else
@@ -665,7 +663,7 @@ static int mtr_map_region(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		offset += count;
 	}
 
-	return npage;
+	return 0;
 }
 
 static inline bool mtr_has_mtt(struct hns_roce_buf_attr *attr)
@@ -832,8 +830,8 @@ int hns_roce_mtr_map(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 {
 	struct ib_device *ibdev = &hr_dev->ib_dev;
 	struct hns_roce_buf_region *r;
-	unsigned int i, mapped_cnt;
-	int ret = 0;
+	unsigned int i;
+	int err;
 
 	/*
 	 * Only use the first page address as root ba when hopnum is 0, this
@@ -844,42 +842,26 @@ int hns_roce_mtr_map(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		return 0;
 	}
 
-	for (i = 0, mapped_cnt = 0; i < mtr->hem_cfg.region_count &&
-	     mapped_cnt < page_cnt; i++) {
+	for (i = 0; i < mtr->hem_cfg.region_count; i++) {
 		r = &mtr->hem_cfg.region[i];
-		/* if hopnum is 0, no need to map pages in this region */
-		if (!r->hopnum) {
-			mapped_cnt += r->count;
-			continue;
-		}
-
 		if (r->offset + r->count > page_cnt) {
-			ret = -EINVAL;
+			err = -EINVAL;
 			ibdev_err(ibdev,
 				  "failed to check mtr%u end %u + %u, max %u.\n",
 				  i, r->offset, r->count, page_cnt);
-			return ret;
+			return err;
 		}
 
-		ret = mtr_map_region(hr_dev, mtr, r, &pages[r->offset],
-				     page_cnt - mapped_cnt);
-		if (ret < 0) {
+		err = mtr_map_region(hr_dev, mtr, &pages[r->offset], r);
+		if (err) {
 			ibdev_err(ibdev,
 				  "failed to map mtr%u offset %u, ret = %d.\n",
-				  i, r->offset, ret);
-			return ret;
+				  i, r->offset, err);
+			return err;
 		}
-		mapped_cnt += ret;
-		ret = 0;
 	}
 
-	if (mapped_cnt < page_cnt) {
-		ret = -ENOBUFS;
-		ibdev_err(ibdev, "failed to map mtr pages count: %u < %u.\n",
-			  mapped_cnt, page_cnt);
-	}
-
-	return ret;
+	return 0;
 }
 
 int hns_roce_mtr_find(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
@@ -923,7 +905,7 @@ int hns_roce_mtr_find(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		mtt_count = 0;
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
 						  start_index + total,
-						  &mtt_count);
+						  &mtt_count, NULL);
 		if (!mtts || !mtt_count)
 			goto done;
 

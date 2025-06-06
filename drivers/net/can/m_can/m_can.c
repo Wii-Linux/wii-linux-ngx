@@ -21,7 +21,6 @@
 #include <linux/iopoll.h>
 #include <linux/can/dev.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/phy/phy.h>
 
 #include "m_can.h"
 
@@ -1427,6 +1426,7 @@ static int m_can_close(struct net_device *dev)
 		napi_disable(&cdev->napi);
 
 	m_can_stop(dev);
+	m_can_clk_stop(cdev);
 	free_irq(dev->irq, dev);
 
 	if (cdev->is_peripheral) {
@@ -1437,9 +1437,6 @@ static int m_can_close(struct net_device *dev)
 
 	close_candev(dev);
 	can_led_event(dev, CAN_LED_EVENT_STOP);
-
-	m_can_clk_stop(cdev);
-	phy_power_off(cdev->transceiver);
 
 	return 0;
 }
@@ -1627,13 +1624,9 @@ static int m_can_open(struct net_device *dev)
 	struct m_can_classdev *cdev = netdev_priv(dev);
 	int err;
 
-	err = phy_power_on(cdev->transceiver);
-	if (err)
-		return err;
-
 	err = m_can_clk_start(cdev);
 	if (err)
-		goto out_phy_power_off;
+		return err;
 
 	/* open the can device */
 	err = open_candev(dev);
@@ -1686,8 +1679,6 @@ out_wq_fail:
 	close_candev(dev);
 exit_disable_clks:
 	m_can_clk_stop(cdev);
-out_phy_power_off:
-	phy_power_off(cdev->transceiver);
 	return err;
 }
 

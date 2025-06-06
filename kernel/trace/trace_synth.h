@@ -18,7 +18,6 @@ struct synth_field {
 	bool is_signed;
 	bool is_string;
 	bool is_dynamic;
-	bool is_stack;
 };
 
 struct synth_event {

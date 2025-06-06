@@ -909,18 +909,13 @@ int setup_purgatory_ppc64(struct kimage *image, const void *slave_code,
 	if (dn) {
 		u64 val;
 
-		ret = of_property_read_u64(dn, "opal-base-address", &val);
-		if (ret)
-			goto out;
-
+		of_property_read_u64(dn, "opal-base-address", &val);
 		ret = kexec_purgatory_get_set_symbol(image, "opal_base", &val,
 						     sizeof(val), false);
 		if (ret)
 			goto out;
 
-		ret = of_property_read_u64(dn, "opal-entry-address", &val);
-		if (ret)
-			goto out;
+		of_property_read_u64(dn, "opal-entry-address", &val);
 		ret = kexec_purgatory_get_set_symbol(image, "opal_entry", &val,
 						     sizeof(val), false);
 	}

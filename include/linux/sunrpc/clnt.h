@@ -14,7 +14,6 @@
 #include <linux/socket.h>
 #include <linux/in.h>
 #include <linux/in6.h>
-#include <linux/refcount.h>
 
 #include <linux/sunrpc/msg_prot.h>
 #include <linux/sunrpc/sched.h>
@@ -35,7 +34,7 @@ struct rpc_inode;
  * The high-level client handle
  */
 struct rpc_clnt {
-	refcount_t		cl_count;	/* Number of references */
+	atomic_t		cl_count;	/* Number of references */
 	unsigned int		cl_clid;	/* client id */
 	struct list_head	cl_clients;	/* Global list of clients */
 	struct list_head	cl_tasks;	/* List of tasks */

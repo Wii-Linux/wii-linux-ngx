@@ -767,14 +767,18 @@ static int vdec_session_init(struct venus_inst *inst)
 {
 	int ret;
 
-	ret = venus_helper_session_init(inst);
-	if (ret == -EALREADY)
+	ret = hfi_session_init(inst, inst->fmt_out->pixfmt);
+	if (ret == -EINVAL)
 		return 0;
 	else if (ret)
 		return ret;
 
 	ret = venus_helper_set_input_resolution(inst, frame_width_min(inst),
 						frame_height_min(inst));
+	if (ret)
+		goto deinit;
+
+	ret = venus_helper_init_codec_freq_data(inst);
 	if (ret)
 		goto deinit;
 
@@ -1138,7 +1142,7 @@ static int vdec_stop_output(struct venus_inst *inst)
 		break;
 	case VENUS_DEC_STATE_INIT:
 	case VENUS_DEC_STATE_CAPTURE_SETUP:
-		ret = hfi_session_flush(inst, HFI_FLUSH_ALL, true);
+		ret = hfi_session_flush(inst, HFI_FLUSH_INPUT, true);
 		break;
 	default:
 		break;
@@ -1583,7 +1587,6 @@ static int vdec_close(struct file *file)
 
 	vdec_pm_get(inst);
 
-	cancel_work_sync(&inst->delayed_process_work);
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
 	v4l2_m2m_release(inst->m2m_dev);
 	vdec_ctrl_deinit(inst);

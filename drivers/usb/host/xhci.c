@@ -2826,7 +2826,7 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 				xhci->num_active_eps);
 		return -ENOMEM;
 	}
-	if ((xhci->quirks & XHCI_SW_BW_CHECKING) && !ctx_change &&
+	if ((xhci->quirks & XHCI_SW_BW_CHECKING) &&
 	    xhci_reserve_bandwidth(xhci, virt_dev, command->in_ctx)) {
 		if ((xhci->quirks & XHCI_EP_LIMIT_QUIRK))
 			xhci_free_host_resources(xhci, ctrl_ctx);
@@ -4116,18 +4116,12 @@ disable_slot:
 	return 0;
 }
 
-/**
- * xhci_setup_device - issues an Address Device command to assign a unique
- *			USB bus address.
- * @hcd: USB host controller data structure.
- * @udev: USB dev structure representing the connected device.
- * @setup: Enum specifying setup mode: address only or with context.
- * @timeout_ms: Max wait time (ms) for the command operation to complete.
- *
- * Return: 0 if successful; otherwise, negative error code.
+/*
+ * Issue an Address Device command and optionally send a corresponding
+ * SetAddress request to the device.
  */
 static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
-			     enum xhci_setup_dev setup, unsigned int timeout_ms)
+			     enum xhci_setup_dev setup)
 {
 	const char *act = setup == SETUP_CONTEXT_ONLY ? "context" : "address";
 	unsigned long flags;
@@ -4184,7 +4178,6 @@ static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
 	}
 
 	command->in_ctx = virt_dev->in_ctx;
-	command->timeout_ms = timeout_ms;
 
 	slot_ctx = xhci_get_slot_ctx(xhci, virt_dev->in_ctx);
 	ctrl_ctx = xhci_get_input_control_ctx(virt_dev->in_ctx);
@@ -4249,10 +4242,8 @@ static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
 		mutex_unlock(&xhci->mutex);
 		ret = xhci_disable_slot(xhci, udev->slot_id);
 		xhci_free_virt_device(xhci, udev->slot_id);
-		if (!ret) {
-			if (xhci_alloc_dev(hcd, udev) == 1)
-				xhci_setup_addressable_virt_dev(xhci, udev);
-		}
+		if (!ret)
+			xhci_alloc_dev(hcd, udev);
 		kfree(command->completion);
 		kfree(command);
 		return -EPROTO;
@@ -4313,16 +4304,14 @@ out:
 	return ret;
 }
 
-static int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev,
-			       unsigned int timeout_ms)
+static int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 {
-	return xhci_setup_device(hcd, udev, SETUP_CONTEXT_ADDRESS, timeout_ms);
+	return xhci_setup_device(hcd, udev, SETUP_CONTEXT_ADDRESS);
 }
 
 static int xhci_enable_device(struct usb_hcd *hcd, struct usb_device *udev)
 {
-	return xhci_setup_device(hcd, udev, SETUP_CONTEXT_ONLY,
-				 XHCI_CMD_DEFAULT_TIMEOUT);
+	return xhci_setup_device(hcd, udev, SETUP_CONTEXT_ONLY);
 }
 
 /*

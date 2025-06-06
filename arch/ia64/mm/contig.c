@@ -20,7 +20,6 @@
 #include <linux/nmi.h>
 #include <linux/swap.h>
 
-#include <asm/efi.h>
 #include <asm/meminit.h>
 #include <asm/sections.h>
 #include <asm/mca.h>

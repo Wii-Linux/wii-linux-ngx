@@ -23,7 +23,6 @@
 #include <linux/kernel.h>
 #include <linux/limits.h>
 #include <linux/list.h>
-#include <linux/minmax.h>
 #include <linux/netdevice.h>
 #include <linux/netlink.h>
 #include <linux/printk.h>

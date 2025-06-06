@@ -2093,8 +2093,8 @@ static void hclgevf_flr_done(struct hnae3_ae_dev *ae_dev)
 			 ret);
 
 	hdev->reset_type = HNAE3_NONE_RESET;
-	if (test_and_clear_bit(HCLGEVF_STATE_RST_HANDLING, &hdev->state))
-		up(&hdev->reset_sem);
+	clear_bit(HCLGEVF_STATE_RST_HANDLING, &hdev->state);
+	up(&hdev->reset_sem);
 }
 
 static u32 hclgevf_get_fw_version(struct hnae3_handle *handle)
@@ -3726,10 +3726,8 @@ static int hclgevf_init(void)
 
 static void hclgevf_exit(void)
 {
-	hnae3_acquire_unload_lock();
 	hnae3_unregister_ae_algo(&ae_algovf);
 	destroy_workqueue(hclgevf_wq);
-	hnae3_release_unload_lock();
 }
 module_init(hclgevf_init);
 module_exit(hclgevf_exit);

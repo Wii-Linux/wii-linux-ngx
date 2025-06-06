@@ -70,6 +70,7 @@ struct silead_ts_data {
 	struct regulator_bulk_data regulators[2];
 	char fw_name[64];
 	struct touchscreen_properties prop;
+	u32 max_fingers;
 	u32 chip_id;
 	struct input_mt_pos pos[SILEAD_MAX_FINGERS];
 	int slots[SILEAD_MAX_FINGERS];
@@ -97,7 +98,7 @@ static int silead_ts_request_input_dev(struct silead_ts_data *data)
 	input_set_abs_params(data->input, ABS_MT_POSITION_Y, 0, 4095, 0, 0);
 	touchscreen_parse_properties(data->input, true, &data->prop);
 
-	input_mt_init_slots(data->input, SILEAD_MAX_FINGERS,
+	input_mt_init_slots(data->input, data->max_fingers,
 			    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED |
 			    INPUT_MT_TRACK);
 
@@ -144,10 +145,10 @@ static void silead_ts_read_data(struct i2c_client *client)
 		return;
 	}
 
-	if (buf[0] > SILEAD_MAX_FINGERS) {
+	if (buf[0] > data->max_fingers) {
 		dev_warn(dev, "More touches reported then supported %d > %d\n",
-			 buf[0], SILEAD_MAX_FINGERS);
-		buf[0] = SILEAD_MAX_FINGERS;
+			 buf[0], data->max_fingers);
+		buf[0] = data->max_fingers;
 	}
 
 	touch_nr = 0;
@@ -199,6 +200,7 @@ static void silead_ts_read_data(struct i2c_client *client)
 
 static int silead_ts_init(struct i2c_client *client)
 {
+	struct silead_ts_data *data = i2c_get_clientdata(client);
 	int error;
 
 	error = i2c_smbus_write_byte_data(client, SILEAD_REG_RESET,
@@ -208,7 +210,7 @@ static int silead_ts_init(struct i2c_client *client)
 	usleep_range(SILEAD_CMD_SLEEP_MIN, SILEAD_CMD_SLEEP_MAX);
 
 	error = i2c_smbus_write_byte_data(client, SILEAD_REG_TOUCH_NR,
-					  SILEAD_MAX_FINGERS);
+					data->max_fingers);
 	if (error)
 		goto i2c_write_err;
 	usleep_range(SILEAD_CMD_SLEEP_MIN, SILEAD_CMD_SLEEP_MAX);
@@ -434,6 +436,13 @@ static void silead_ts_read_props(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	const char *str;
 	int error;
+
+	error = device_property_read_u32(dev, "silead,max-fingers",
+					 &data->max_fingers);
+	if (error) {
+		dev_dbg(dev, "Max fingers read error %d\n", error);
+		data->max_fingers = 5; /* Most devices handle up-to 5 fingers */
+	}
 
 	error = device_property_read_string(dev, "firmware-name", &str);
 	if (!error)

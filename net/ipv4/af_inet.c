@@ -373,29 +373,31 @@ lookup_protocol:
 		inet->inet_sport = htons(inet->inet_num);
 		/* Add to protocol hash chains. */
 		err = sk->sk_prot->hash(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 
 	if (sk->sk_prot->init) {
 		err = sk->sk_prot->init(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 
 	if (!kern) {
 		err = BPF_CGROUP_RUN_PROG_INET_SOCK(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 out:
 	return err;
 out_rcu_unlock:
 	rcu_read_unlock();
-	goto out;
-out_sk_release:
-	sk_common_release(sk);
-	sock->sk = NULL;
 	goto out;
 }
 
@@ -756,9 +758,7 @@ int inet_accept(struct socket *sock, struct socket *newsock, int flags,
 	sock_rps_record_flow(sk2);
 	WARN_ON(!((1 << sk2->sk_state) &
 		  (TCPF_ESTABLISHED | TCPF_SYN_RECV |
-		   TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 |
-		   TCPF_CLOSING | TCPF_CLOSE_WAIT |
-		   TCPF_CLOSE)));
+		  TCPF_CLOSE_WAIT | TCPF_CLOSE)));
 
 	sock_graft(sk2, newsock);
 
@@ -1469,18 +1469,19 @@ struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	proto = iph->protocol;
 
+	rcu_read_lock();
 	ops = rcu_dereference(inet_offloads[proto]);
 	if (!ops || !ops->callbacks.gro_receive)
-		goto out;
+		goto out_unlock;
 
 	if (*(u8 *)iph != 0x45)
-		goto out;
+		goto out_unlock;
 
 	if (ip_is_fragment(iph))
-		goto out;
+		goto out_unlock;
 
 	if (unlikely(ip_fast_csum((u8 *)iph, 5)))
-		goto out;
+		goto out_unlock;
 
 	id = ntohl(*(__be32 *)&iph->id);
 	flush = (u16)((ntohl(*(__be32 *)iph) ^ skb_gro_len(skb)) | (id & ~IP_DF));
@@ -1557,6 +1558,9 @@ struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb)
 	pp = indirect_call_gro_receive(tcp4_gro_receive, udp4_gro_receive,
 				       ops->callbacks.gro_receive, head, skb);
 
+out_unlock:
+	rcu_read_unlock();
+
 out:
 	skb_gro_flush_final(skb, pp, flush);
 
@@ -1632,9 +1636,10 @@ int inet_gro_complete(struct sk_buff *skb, int nhoff)
 	csum_replace2(&iph->check, iph->tot_len, newlen);
 	iph->tot_len = newlen;
 
+	rcu_read_lock();
 	ops = rcu_dereference(inet_offloads[proto]);
 	if (WARN_ON(!ops || !ops->callbacks.gro_complete))
-		goto out;
+		goto out_unlock;
 
 	/* Only need to add sizeof(*iph) to get to the next hdr below
 	 * because any hdr with option will have been flushed in
@@ -1644,7 +1649,9 @@ int inet_gro_complete(struct sk_buff *skb, int nhoff)
 			      tcp4_gro_complete, udp4_gro_complete,
 			      skb, nhoff + sizeof(*iph));
 
-out:
+out_unlock:
+	rcu_read_unlock();
+
 	return err;
 }
 EXPORT_SYMBOL(inet_gro_complete);

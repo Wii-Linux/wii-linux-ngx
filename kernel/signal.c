@@ -1817,11 +1817,10 @@ struct sigqueue *sigqueue_alloc(void)
 
 void sigqueue_free(struct sigqueue *q)
 {
-	spinlock_t *lock = &current->sighand->siglock;
 	unsigned long flags;
+	spinlock_t *lock = &current->sighand->siglock;
 
-	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
-		return;
+	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
 	/*
 	 * We must hold ->siglock while testing q->list
 	 * to serialize with collect_signal() or with
@@ -1849,10 +1848,7 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 	unsigned long flags;
 	int ret, result;
 
-	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
-		return 0;
-	if (WARN_ON_ONCE(q->info.si_code != SI_TIMER))
-		return 0;
+	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
 
 	ret = -1;
 	rcu_read_lock();
@@ -1871,6 +1867,7 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 		 * If an SI_TIMER entry is already queue just increment
 		 * the overrun count.
 		 */
+		BUG_ON(q->info.si_code != SI_TIMER);
 		q->info.si_overrun++;
 		result = TRACE_SIGNAL_ALREADY_PENDING;
 		goto out;
@@ -2467,14 +2464,6 @@ static void do_freezer_trap(void)
 	spin_unlock_irq(&current->sighand->siglock);
 	cgroup_enter_frozen();
 	freezable_schedule();
-
-	/*
-	 * We could've been woken by task_work, run it to clear
-	 * TIF_NOTIFY_SIGNAL. The caller will retry if necessary.
-	 */
-	clear_notify_signal();
-	if (unlikely(READ_ONCE(current->task_works)))
-		task_work_run();
 }
 
 static int ptrace_signal(int signr, kernel_siginfo_t *info)

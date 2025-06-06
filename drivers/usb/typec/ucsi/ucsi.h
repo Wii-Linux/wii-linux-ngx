@@ -365,7 +365,7 @@ ucsi_register_displayport(struct ucsi_connector *con,
 			  bool override, int offset,
 			  struct typec_altmode_desc *desc)
 {
-	return typec_port_register_altmode(con->port, desc);
+	return NULL;
 }
 
 static inline void

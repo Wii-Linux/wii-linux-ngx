@@ -932,8 +932,6 @@ static int rpcrdma_reqs_setup(struct rpcrdma_xprt *r_xprt)
 
 static void rpcrdma_req_reset(struct rpcrdma_req *req)
 {
-	struct rpcrdma_mr *mr;
-
 	/* Credits are valid for only one connection */
 	req->rl_slot.rq_cong = 0;
 
@@ -943,19 +941,7 @@ static void rpcrdma_req_reset(struct rpcrdma_req *req)
 	rpcrdma_regbuf_dma_unmap(req->rl_sendbuf);
 	rpcrdma_regbuf_dma_unmap(req->rl_recvbuf);
 
-	/* The verbs consumer can't know the state of an MR on the
-	 * req->rl_registered list unless a successful completion
-	 * has occurred, so they cannot be re-used.
-	 */
-	while ((mr = rpcrdma_mr_pop(&req->rl_registered))) {
-		struct rpcrdma_buffer *buf = &mr->mr_xprt->rx_buf;
-
-		spin_lock(&buf->rb_lock);
-		list_del(&mr->mr_all);
-		spin_unlock(&buf->rb_lock);
-
-		frwr_mr_release(mr);
-	}
+	frwr_reset(req);
 }
 
 /* ASSUMPTION: the rb_allreqs list is stable for the duration,
@@ -1114,7 +1100,7 @@ void rpcrdma_req_destroy(struct rpcrdma_req *req)
 		list_del(&mr->mr_all);
 		spin_unlock(&buf->rb_lock);
 
-		frwr_mr_release(mr);
+		frwr_release_mr(mr);
 	}
 
 	rpcrdma_regbuf_free(req->rl_recvbuf);
@@ -1145,7 +1131,7 @@ static void rpcrdma_mrs_destroy(struct rpcrdma_xprt *r_xprt)
 		list_del(&mr->mr_all);
 		spin_unlock(&buf->rb_lock);
 
-		frwr_mr_release(mr);
+		frwr_release_mr(mr);
 
 		spin_lock(&buf->rb_lock);
 	}

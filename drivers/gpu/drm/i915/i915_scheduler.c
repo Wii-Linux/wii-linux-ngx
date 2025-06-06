@@ -538,6 +538,6 @@ int __init i915_global_scheduler_init(void)
 	return 0;
 
 err_priorities:
-	kmem_cache_destroy(global.slab_dependencies);
+	kmem_cache_destroy(global.slab_priorities);
 	return -ENOMEM;
 }

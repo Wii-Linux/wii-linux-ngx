@@ -16,7 +16,6 @@
 #include <linux/numa.h>
 #include <linux/mmzone.h>
 
-#include <asm/efi.h>
 #include <asm/numa.h>
 #include <asm/mmu_context.h>
 #include <asm/setup.h>

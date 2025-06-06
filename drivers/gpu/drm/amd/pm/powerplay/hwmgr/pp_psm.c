@@ -30,8 +30,9 @@ int psm_init_power_state_table(struct pp_hwmgr *hwmgr)
 {
 	int result;
 	unsigned int i;
+	unsigned int table_entries;
 	struct pp_power_state *state;
-	int size, table_entries;
+	int size;
 
 	if (hwmgr->hwmgr_func->get_num_of_pp_table_entries == NULL)
 		return 0;
@@ -39,19 +40,15 @@ int psm_init_power_state_table(struct pp_hwmgr *hwmgr)
 	if (hwmgr->hwmgr_func->get_power_state_size == NULL)
 		return 0;
 
-	table_entries = hwmgr->hwmgr_func->get_num_of_pp_table_entries(hwmgr);
+	hwmgr->num_ps = table_entries = hwmgr->hwmgr_func->get_num_of_pp_table_entries(hwmgr);
 
-	size = hwmgr->hwmgr_func->get_power_state_size(hwmgr) +
+	hwmgr->ps_size = size = hwmgr->hwmgr_func->get_power_state_size(hwmgr) +
 					  sizeof(struct pp_power_state);
 
-	if (table_entries <= 0 || size == 0) {
+	if (table_entries == 0 || size == 0) {
 		pr_warn("Please check whether power state management is supported on this asic\n");
-		hwmgr->num_ps = 0;
-		hwmgr->ps_size = 0;
 		return 0;
 	}
-	hwmgr->num_ps = table_entries;
-	hwmgr->ps_size = size;
 
 	hwmgr->ps = kcalloc(table_entries, size, GFP_KERNEL);
 	if (hwmgr->ps == NULL)

@@ -3185,14 +3185,11 @@ iscsi_set_host_param(struct iscsi_transport *transport,
 	}
 
 	/* see similar check in iscsi_if_set_param() */
-	if (strlen(data) > ev->u.set_host_param.len) {
-		err = -EINVAL;
-		goto out;
-	}
+	if (strlen(data) > ev->u.set_host_param.len)
+		return -EINVAL;
 
 	err = transport->set_host_param(shost, ev->u.set_host_param.param,
 					data, ev->u.set_host_param.len);
-out:
 	scsi_host_put(shost);
 	return err;
 }
@@ -4079,7 +4076,7 @@ iscsi_if_rx(struct sk_buff *skb)
 		}
 		do {
 			/*
-			 * special case for GET_STATS, GET_CHAP and GET_HOST_STATS:
+			 * special case for GET_STATS:
 			 * on success - sending reply and stats from
 			 * inside of if_recv_msg(),
 			 * on error - fall through.
@@ -4087,8 +4084,6 @@ iscsi_if_rx(struct sk_buff *skb)
 			if (ev->type == ISCSI_UEVENT_GET_STATS && !err)
 				break;
 			if (ev->type == ISCSI_UEVENT_GET_CHAP && !err)
-				break;
-			if (ev->type == ISCSI_UEVENT_GET_HOST_STATS && !err)
 				break;
 			err = iscsi_if_send_reply(portid, nlh->nlmsg_type,
 						  ev, sizeof(*ev));

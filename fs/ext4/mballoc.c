@@ -1927,7 +1927,8 @@ int ext4_mb_find_by_goal(struct ext4_allocation_context *ac,
 	if (max >= ac->ac_g_ex.fe_len && ac->ac_g_ex.fe_len == sbi->s_stripe) {
 		ext4_fsblk_t start;
 
-		start = ext4_grp_offs_to_block(ac->ac_sb, &ex);
+		start = ext4_group_first_block_no(ac->ac_sb, e4b->bd_group) +
+			ex.fe_start;
 		/* use do_div to get remainder (would be 64-bit modulo) */
 		if (do_div(start, sbi->s_stripe) == 0) {
 			ac->ac_found++;
@@ -3176,8 +3177,11 @@ static void ext4_free_data_in_buddy(struct super_block *sb,
 	/*
 	 * Clear the trimmed flag for the group so that the next
 	 * ext4_trim_fs can trim it.
+	 * If the volume is mounted with -o discard, online discard
+	 * is supported and the free blocks will be trimmed online.
 	 */
-	EXT4_MB_GRP_CLEAR_TRIMMED(db);
+	if (!test_opt(sb, DISCARD))
+		EXT4_MB_GRP_CLEAR_TRIMMED(db);
 
 	if (!db->bb_free_root.rb_node) {
 		/* No more items in the per group rb tree
@@ -5586,9 +5590,8 @@ do_more:
 					 " group:%u block:%d count:%lu failed"
 					 " with %d", block_group, bit, count,
 					 err);
-		}
-
-		EXT4_MB_GRP_CLEAR_TRIMMED(e4b.bd_info);
+		} else
+			EXT4_MB_GRP_CLEAR_TRIMMED(e4b.bd_info);
 
 		ext4_lock_group(sb, block_group);
 		mb_clear_bits(bitmap_bh->b_data, bit, count_clusters);
@@ -5953,9 +5956,6 @@ static int ext4_try_to_trim_range(struct super_block *sb,
 	bool set_trimmed = false;
 	void *bitmap;
 
-	if (unlikely(EXT4_MB_GRP_BBITMAP_CORRUPT(e4b->bd_info)))
-		return 0;
-
 	last = ext4_last_grp_cluster(sb, e4b->bd_group);
 	bitmap = e4b->bd_bitmap;
 	if (start == 0 && max >= last)
@@ -6162,14 +6162,13 @@ int
 ext4_mballoc_query_range(
 	struct super_block		*sb,
 	ext4_group_t			group,
-	ext4_grpblk_t			first,
+	ext4_grpblk_t			start,
 	ext4_grpblk_t			end,
-	ext4_mballoc_query_range_fn	meta_formatter,
 	ext4_mballoc_query_range_fn	formatter,
 	void				*priv)
 {
 	void				*bitmap;
-	ext4_grpblk_t			start, next;
+	ext4_grpblk_t			next;
 	struct ext4_buddy		e4b;
 	int				error;
 
@@ -6180,19 +6179,10 @@ ext4_mballoc_query_range(
 
 	ext4_lock_group(sb, group);
 
-	start = max(e4b.bd_info->bb_first_free, first);
+	start = max(e4b.bd_info->bb_first_free, start);
 	if (end >= EXT4_CLUSTERS_PER_GROUP(sb))
 		end = EXT4_CLUSTERS_PER_GROUP(sb) - 1;
-	if (meta_formatter && start != first) {
-		if (start > end)
-			start = end;
-		ext4_unlock_group(sb, group);
-		error = meta_formatter(sb, group, first, start - first,
-				       priv);
-		if (error)
-			goto out_unload;
-		ext4_lock_group(sb, group);
-	}
+
 	while (start <= end) {
 		start = mb_find_next_zero_bit(bitmap, end + 1, start);
 		if (start > end)

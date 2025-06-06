@@ -460,8 +460,6 @@ svc_rdma_build_writes(struct svc_rdma_write_info *info,
 		offset += info->wi_seg_off;
 
 		write_len = min(remaining, length - info->wi_seg_off);
-		if (!write_len)
-			goto out_overflow;
 		ctxt = svc_rdma_get_rw_ctxt(rdma,
 					    (write_len >> PAGE_SHIFT) + 2);
 		if (!ctxt)

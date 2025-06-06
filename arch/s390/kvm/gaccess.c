@@ -794,102 +794,46 @@ static int low_address_protection_enabled(struct kvm_vcpu *vcpu,
 	return 1;
 }
 
-/**
- * guest_range_to_gpas() - Calculate guest physical addresses of page fragments
- * covering a logical range
- * @vcpu: virtual cpu
- * @ga: guest address, start of range
- * @ar: access register
- * @gpas: output argument, may be NULL
- * @len: length of range in bytes
- * @asce: address-space-control element to use for translation
- * @mode: access mode
- *
- * Translate a logical range to a series of guest absolute addresses,
- * such that the concatenation of page fragments starting at each gpa make up
- * the whole range.
- * The translation is performed as if done by the cpu for the given @asce, @ar,
- * @mode and state of the @vcpu.
- * If the translation causes an exception, its program interruption code is
- * returned and the &struct kvm_s390_pgm_info pgm member of @vcpu is modified
- * such that a subsequent call to kvm_s390_inject_prog_vcpu() will inject
- * a correct exception into the guest.
- * The resulting gpas are stored into @gpas, unless it is NULL.
- *
- * Note: All fragments except the first one start at the beginning of a page.
- *	 When deriving the boundaries of a fragment from a gpa, all but the last
- *	 fragment end at the end of the page.
- *
- * Return:
- * * 0		- success
- * * <0		- translation could not be performed, for example if  guest
- *		  memory could not be accessed
- * * >0		- an access exception occurred. In this case the returned value
- *		  is the program interruption code and the contents of pgm may
- *		  be used to inject an exception into the guest.
- */
-static int guest_range_to_gpas(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar,
-			       unsigned long *gpas, unsigned long len,
-			       const union asce asce, enum gacc_mode mode)
+static int guest_page_range(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar,
+			    unsigned long *pages, unsigned long nr_pages,
+			    const union asce asce, enum gacc_mode mode)
 {
 	psw_t *psw = &vcpu->arch.sie_block->gpsw;
-	unsigned int offset = offset_in_page(ga);
-	unsigned int fragment_len;
 	int lap_enabled, rc = 0;
 	enum prot_type prot;
-	unsigned long gpa;
 
 	lap_enabled = low_address_protection_enabled(vcpu, asce);
-	while (min(PAGE_SIZE - offset, len) > 0) {
-		fragment_len = min(PAGE_SIZE - offset, len);
+	while (nr_pages) {
 		ga = kvm_s390_logical_to_effective(vcpu, ga);
 		if (mode == GACC_STORE && lap_enabled && is_low_address(ga))
 			return trans_exc(vcpu, PGM_PROTECTION, ga, ar, mode,
 					 PROT_TYPE_LA);
+		ga &= PAGE_MASK;
 		if (psw_bits(*psw).dat) {
-			rc = guest_translate(vcpu, ga, &gpa, asce, mode, &prot);
+			rc = guest_translate(vcpu, ga, pages, asce, mode, &prot);
 			if (rc < 0)
 				return rc;
 		} else {
-			gpa = kvm_s390_real_to_abs(vcpu, ga);
-			if (kvm_is_error_gpa(vcpu->kvm, gpa))
+			*pages = kvm_s390_real_to_abs(vcpu, ga);
+			if (kvm_is_error_gpa(vcpu->kvm, *pages))
 				rc = PGM_ADDRESSING;
 		}
 		if (rc)
 			return trans_exc(vcpu, rc, ga, ar, mode, prot);
-		if (gpas)
-			*gpas++ = gpa;
-		offset = 0;
-		ga += fragment_len;
-		len -= fragment_len;
+		ga += PAGE_SIZE;
+		pages++;
+		nr_pages--;
 	}
 	return 0;
-}
-
-static int access_guest_page(struct kvm *kvm, enum gacc_mode mode, gpa_t gpa,
-			     void *data, unsigned int len)
-{
-	const unsigned int offset = offset_in_page(gpa);
-	const gfn_t gfn = gpa_to_gfn(gpa);
-	int rc;
-
-	if (!gfn_to_memslot(kvm, gfn))
-		return PGM_ADDRESSING;
-	if (mode == GACC_STORE)
-		rc = kvm_write_guest_page(kvm, gfn, data, offset, len);
-	else
-		rc = kvm_read_guest_page(kvm, gfn, data, offset, len);
-	return rc;
 }
 
 int access_guest(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar, void *data,
 		 unsigned long len, enum gacc_mode mode)
 {
 	psw_t *psw = &vcpu->arch.sie_block->gpsw;
-	unsigned long nr_pages, idx;
-	unsigned long gpa_array[2];
-	unsigned int fragment_len;
-	unsigned long *gpas;
+	unsigned long _len, nr_pages, gpa, idx;
+	unsigned long pages_array[2];
+	unsigned long *pages;
 	int need_ipte_lock;
 	union asce asce;
 	int rc;
@@ -901,45 +845,50 @@ int access_guest(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar, void *data,
 	if (rc)
 		return rc;
 	nr_pages = (((ga & ~PAGE_MASK) + len - 1) >> PAGE_SHIFT) + 1;
-	gpas = gpa_array;
-	if (nr_pages > ARRAY_SIZE(gpa_array))
-		gpas = vmalloc(array_size(nr_pages, sizeof(unsigned long)));
-	if (!gpas)
+	pages = pages_array;
+	if (nr_pages > ARRAY_SIZE(pages_array))
+		pages = vmalloc(array_size(nr_pages, sizeof(unsigned long)));
+	if (!pages)
 		return -ENOMEM;
 	need_ipte_lock = psw_bits(*psw).dat && !asce.r;
 	if (need_ipte_lock)
 		ipte_lock(vcpu);
-	rc = guest_range_to_gpas(vcpu, ga, ar, gpas, len, asce, mode);
+	rc = guest_page_range(vcpu, ga, ar, pages, nr_pages, asce, mode);
 	for (idx = 0; idx < nr_pages && !rc; idx++) {
-		fragment_len = min(PAGE_SIZE - offset_in_page(gpas[idx]), len);
-		rc = access_guest_page(vcpu->kvm, mode, gpas[idx], data, fragment_len);
-		len -= fragment_len;
-		data += fragment_len;
+		gpa = *(pages + idx) + (ga & ~PAGE_MASK);
+		_len = min(PAGE_SIZE - (gpa & ~PAGE_MASK), len);
+		if (mode == GACC_STORE)
+			rc = kvm_write_guest(vcpu->kvm, gpa, data, _len);
+		else
+			rc = kvm_read_guest(vcpu->kvm, gpa, data, _len);
+		len -= _len;
+		ga += _len;
+		data += _len;
 	}
 	if (need_ipte_lock)
 		ipte_unlock(vcpu);
-	if (nr_pages > ARRAY_SIZE(gpa_array))
-		vfree(gpas);
+	if (nr_pages > ARRAY_SIZE(pages_array))
+		vfree(pages);
 	return rc;
 }
 
 int access_guest_real(struct kvm_vcpu *vcpu, unsigned long gra,
 		      void *data, unsigned long len, enum gacc_mode mode)
 {
-	unsigned int fragment_len;
-	unsigned long gpa;
+	unsigned long _len, gpa;
 	int rc = 0;
 
 	while (len && !rc) {
 		gpa = kvm_s390_real_to_abs(vcpu, gra);
-		fragment_len = min(PAGE_SIZE - offset_in_page(gpa), len);
-		rc = access_guest_page(vcpu->kvm, mode, gpa, data, fragment_len);
-		len -= fragment_len;
-		gra += fragment_len;
-		data += fragment_len;
+		_len = min(PAGE_SIZE - (gpa & ~PAGE_MASK), len);
+		if (mode)
+			rc = write_guest_abs(vcpu, gpa, data, _len);
+		else
+			rc = read_guest_abs(vcpu, gpa, data, _len);
+		len -= _len;
+		gra += _len;
+		data += _len;
 	}
-	if (rc > 0)
-		vcpu->arch.pgm.code = rc;
 	return rc;
 }
 
@@ -955,6 +904,8 @@ int access_guest_real(struct kvm_vcpu *vcpu, unsigned long gra,
 int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 			    unsigned long *gpa, enum gacc_mode mode)
 {
+	psw_t *psw = &vcpu->arch.sie_block->gpsw;
+	enum prot_type prot;
 	union asce asce;
 	int rc;
 
@@ -962,7 +913,23 @@ int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 	rc = get_vcpu_asce(vcpu, &asce, gva, ar, mode);
 	if (rc)
 		return rc;
-	return guest_range_to_gpas(vcpu, gva, ar, gpa, 1, asce, mode);
+	if (is_low_address(gva) && low_address_protection_enabled(vcpu, asce)) {
+		if (mode == GACC_STORE)
+			return trans_exc(vcpu, PGM_PROTECTION, gva, 0,
+					 mode, PROT_TYPE_LA);
+	}
+
+	if (psw_bits(*psw).dat && !asce.r) {	/* Use DAT? */
+		rc = guest_translate(vcpu, gva, gpa, asce, mode, &prot);
+		if (rc > 0)
+			return trans_exc(vcpu, rc, gva, 0, mode, prot);
+	} else {
+		*gpa = kvm_s390_real_to_abs(vcpu, gva);
+		if (kvm_is_error_gpa(vcpu->kvm, *gpa))
+			return trans_exc(vcpu, rc, gva, PGM_ADDRESSING, mode, 0);
+	}
+
+	return rc;
 }
 
 /**
@@ -971,14 +938,17 @@ int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 int check_gva_range(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 		    unsigned long length, enum gacc_mode mode)
 {
-	union asce asce;
+	unsigned long gpa;
+	unsigned long currlen;
 	int rc = 0;
 
-	rc = get_vcpu_asce(vcpu, &asce, gva, ar, mode);
-	if (rc)
-		return rc;
 	ipte_lock(vcpu);
-	rc = guest_range_to_gpas(vcpu, gva, ar, NULL, length, asce, mode);
+	while (length > 0 && !rc) {
+		currlen = min(length, PAGE_SIZE - (gva % PAGE_SIZE));
+		rc = guest_translate_address(vcpu, gva, ar, &gpa, mode);
+		gva += currlen;
+		length -= currlen;
+	}
 	ipte_unlock(vcpu);
 
 	return rc;

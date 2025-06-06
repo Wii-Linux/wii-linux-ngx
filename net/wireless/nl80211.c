@@ -403,10 +403,6 @@ nl80211_unsol_bcast_probe_resp_policy[NL80211_UNSOL_BCAST_PROBE_RESP_ATTR_MAX + 
 						       .len = IEEE80211_MAX_DATA_LEN }
 };
 
-static struct netlink_range_validation q_range = {
-	.max = INT_MAX,
-};
-
 static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
 	[0] = { .strict_start_type = NL80211_ATTR_HE_OBSS_PD },
 	[NL80211_ATTR_WIPHY] = { .type = NLA_U32 },
@@ -689,7 +685,7 @@ static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
 
 	[NL80211_ATTR_TXQ_LIMIT] = { .type = NLA_U32 },
 	[NL80211_ATTR_TXQ_MEMORY_LIMIT] = { .type = NLA_U32 },
-	[NL80211_ATTR_TXQ_QUANTUM] = NLA_POLICY_FULL_RANGE(NLA_U32, &q_range),
+	[NL80211_ATTR_TXQ_QUANTUM] = { .type = NLA_U32 },
 	[NL80211_ATTR_HE_CAPABILITY] =
 		NLA_POLICY_RANGE(NLA_BINARY,
 				 NL80211_HE_MIN_CAPABILITY_LEN,
@@ -3658,11 +3654,6 @@ static int parse_monitor_flags(struct nlattr *nla, u32 *mntrflags)
 		if (flags[flag])
 			*mntrflags |= (1<<flag);
 
-	/* cooked monitor mode is incompatible with other modes */
-	if (*mntrflags & MONITOR_FLAG_COOK_FRAMES &&
-	    *mntrflags != MONITOR_FLAG_COOK_FRAMES)
-		return -EOPNOTSUPP;
-
 	*mntrflags |= MONITOR_FLAG_CHANGED;
 
 	return 0;
@@ -3977,7 +3968,10 @@ static void get_key_callback(void *c, struct key_params *params)
 	struct nlattr *key;
 	struct get_key_cookie *cookie = c;
 
-	if ((params->seq &&
+	if ((params->key &&
+	     nla_put(cookie->msg, NL80211_ATTR_KEY_DATA,
+		     params->key_len, params->key)) ||
+	    (params->seq &&
 	     nla_put(cookie->msg, NL80211_ATTR_KEY_SEQ,
 		     params->seq_len, params->seq)) ||
 	    (params->cipher &&
@@ -3989,7 +3983,10 @@ static void get_key_callback(void *c, struct key_params *params)
 	if (!key)
 		goto nla_put_failure;
 
-	if ((params->seq &&
+	if ((params->key &&
+	     nla_put(cookie->msg, NL80211_KEY_DATA,
+		     params->key_len, params->key)) ||
+	    (params->seq &&
 	     nla_put(cookie->msg, NL80211_KEY_SEQ,
 		     params->seq_len, params->seq)) ||
 	    (params->cipher &&
@@ -8585,8 +8582,7 @@ nl80211_parse_sched_scan(struct wiphy *wiphy, struct wireless_dev *wdev,
 		return ERR_PTR(-ENOMEM);
 
 	if (n_ssids)
-		request->ssids = (void *)request +
-			struct_size(request, channels, n_channels);
+		request->ssids = (void *)&request->channels[n_channels];
 	request->n_ssids = n_ssids;
 	if (ie_len) {
 		if (n_ssids)
@@ -15879,8 +15875,10 @@ void nl80211_common_reg_change_event(enum nl80211_commands cmd_id,
 
 	genlmsg_end(msg, hdr);
 
+	rcu_read_lock();
 	genlmsg_multicast_allns(&nl80211_fam, msg, 0,
-				NL80211_MCGRP_REGULATORY);
+				NL80211_MCGRP_REGULATORY, GFP_ATOMIC);
+	rcu_read_unlock();
 
 	return;
 
@@ -16388,8 +16386,10 @@ void nl80211_send_beacon_hint_event(struct wiphy *wiphy,
 
 	genlmsg_end(msg, hdr);
 
+	rcu_read_lock();
 	genlmsg_multicast_allns(&nl80211_fam, msg, 0,
-				NL80211_MCGRP_REGULATORY);
+				NL80211_MCGRP_REGULATORY, GFP_ATOMIC);
+	rcu_read_unlock();
 
 	return;
 

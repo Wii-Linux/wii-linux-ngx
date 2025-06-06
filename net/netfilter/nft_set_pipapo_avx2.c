@@ -985,9 +985,8 @@ static int nft_pipapo_avx2_lookup_8b_16(unsigned long *map, unsigned long *fill,
 		NFT_PIPAPO_AVX2_BUCKET_LOAD8(5, lt,  8,  pkt[8], bsize);
 
 		NFT_PIPAPO_AVX2_AND(6, 2, 3);
-		NFT_PIPAPO_AVX2_AND(3, 4, 7);
 		NFT_PIPAPO_AVX2_BUCKET_LOAD8(7, lt,  9,  pkt[9], bsize);
-		NFT_PIPAPO_AVX2_AND(0, 3, 5);
+		NFT_PIPAPO_AVX2_AND(0, 4, 5);
 		NFT_PIPAPO_AVX2_BUCKET_LOAD8(1, lt, 10, pkt[10], bsize);
 		NFT_PIPAPO_AVX2_AND(2, 6, 7);
 		NFT_PIPAPO_AVX2_BUCKET_LOAD8(3, lt, 11, pkt[11], bsize);
@@ -1130,14 +1129,8 @@ bool nft_pipapo_avx2_lookup(const struct net *net, const struct nft_set *set,
 	bool map_index;
 	int i, ret = 0;
 
-	local_bh_disable();
-
-	if (unlikely(!irq_fpu_usable())) {
-		bool fallback_res = nft_pipapo_lookup(net, set, key, ext);
-
-		local_bh_enable();
-		return fallback_res;
-	}
+	if (unlikely(!irq_fpu_usable()))
+		return nft_pipapo_lookup(net, set, key, ext);
 
 	m = rcu_dereference(priv->match);
 
@@ -1147,7 +1140,6 @@ bool nft_pipapo_avx2_lookup(const struct net *net, const struct nft_set *set,
 	scratch = *raw_cpu_ptr(m->scratch);
 	if (unlikely(!scratch)) {
 		kernel_fpu_end();
-		local_bh_enable();
 		return false;
 	}
 
@@ -1228,7 +1220,6 @@ out:
 	if (i % 2)
 		scratch->map_index = !map_index;
 	kernel_fpu_end();
-	local_bh_enable();
 
 	return ret >= 0;
 }

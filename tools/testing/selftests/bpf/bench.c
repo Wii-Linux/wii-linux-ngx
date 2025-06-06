@@ -11,7 +11,6 @@
 #include <sys/resource.h>
 #include <signal.h>
 #include "bench.h"
-#include "bpf_util.h"
 #include "testing_helpers.h"
 
 struct env env = {

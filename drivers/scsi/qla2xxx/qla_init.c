@@ -2280,7 +2280,7 @@ exit:
 	return rval;
 }
 
-void qla_enable_fce_trace(scsi_qla_host_t *vha)
+static void qla_enable_fce_trace(scsi_qla_host_t *vha)
 {
 	int rval;
 	struct qla_hw_data *ha = vha->hw;
@@ -3263,24 +3263,25 @@ qla24xx_chip_diag(scsi_qla_host_t *vha)
 	return rval;
 }
 
-int qla2x00_alloc_fce_trace(scsi_qla_host_t *vha)
+static void
+qla2x00_alloc_fce_trace(scsi_qla_host_t *vha)
 {
 	dma_addr_t tc_dma;
 	void *tc;
 	struct qla_hw_data *ha = vha->hw;
 
 	if (!IS_FWI2_CAPABLE(ha))
-		return -EINVAL;
+		return;
 
 	if (!IS_QLA25XX(ha) && !IS_QLA81XX(ha) && !IS_QLA83XX(ha) &&
 	    !IS_QLA27XX(ha) && !IS_QLA28XX(ha))
-		return -EINVAL;
+		return;
 
 	if (ha->fce) {
 		ql_dbg(ql_dbg_init, vha, 0x00bd,
 		       "%s: FCE Mem is already allocated.\n",
 		       __func__);
-		return -EIO;
+		return;
 	}
 
 	/* Allocate memory for Fibre Channel Event Buffer. */
@@ -3290,7 +3291,7 @@ int qla2x00_alloc_fce_trace(scsi_qla_host_t *vha)
 		ql_log(ql_log_warn, vha, 0x00be,
 		       "Unable to allocate (%d KB) for FCE.\n",
 		       FCE_SIZE / 1024);
-		return -ENOMEM;
+		return;
 	}
 
 	ql_dbg(ql_dbg_init, vha, 0x00c0,
@@ -3299,16 +3300,6 @@ int qla2x00_alloc_fce_trace(scsi_qla_host_t *vha)
 	ha->fce_dma = tc_dma;
 	ha->fce = tc;
 	ha->fce_bufs = FCE_NUM_BUFFERS;
-	return 0;
-}
-
-void qla2x00_free_fce_trace(struct qla_hw_data *ha)
-{
-	if (!ha->fce)
-		return;
-	dma_free_coherent(&ha->pdev->dev, FCE_SIZE, ha->fce, ha->fce_dma);
-	ha->fce = NULL;
-	ha->fce_dma = 0;
 }
 
 static void
@@ -3399,10 +3390,9 @@ qla2x00_alloc_fw_dump(scsi_qla_host_t *vha)
 		if (ha->tgt.atio_ring)
 			mq_size += ha->tgt.atio_q_length * sizeof(request_t);
 
-		if (ha->fce) {
+		qla2x00_alloc_fce_trace(vha);
+		if (ha->fce)
 			fce_size = sizeof(struct qla2xxx_fce_chain) + FCE_SIZE;
-			ha->flags.fce_dump_buf_alloced = 1;
-		}
 		qla2x00_alloc_eft_trace(vha);
 		if (ha->eft)
 			eft_size = EFT_SIZE;
@@ -7706,21 +7696,15 @@ qla28xx_get_aux_images(
 	struct qla27xx_image_status pri_aux_image_status, sec_aux_image_status;
 	bool valid_pri_image = false, valid_sec_image = false;
 	bool active_pri_image = false, active_sec_image = false;
-	int rc;
 
 	if (!ha->flt_region_aux_img_status_pri) {
 		ql_dbg(ql_dbg_init, vha, 0x018a, "Primary aux image not addressed\n");
 		goto check_sec_image;
 	}
 
-	rc = qla24xx_read_flash_data(vha, (uint32_t *)&pri_aux_image_status,
+	qla24xx_read_flash_data(vha, (uint32_t *)&pri_aux_image_status,
 	    ha->flt_region_aux_img_status_pri,
 	    sizeof(pri_aux_image_status) >> 2);
-	if (rc) {
-		ql_log(ql_log_info, vha, 0x01a1,
-		    "Unable to read Primary aux image(%x).\n", rc);
-		goto check_sec_image;
-	}
 	qla27xx_print_image(vha, "Primary aux image", &pri_aux_image_status);
 
 	if (qla28xx_check_aux_image_status_signature(&pri_aux_image_status)) {
@@ -7751,15 +7735,9 @@ check_sec_image:
 		goto check_valid_image;
 	}
 
-	rc = qla24xx_read_flash_data(vha, (uint32_t *)&sec_aux_image_status,
+	qla24xx_read_flash_data(vha, (uint32_t *)&sec_aux_image_status,
 	    ha->flt_region_aux_img_status_sec,
 	    sizeof(sec_aux_image_status) >> 2);
-	if (rc) {
-		ql_log(ql_log_info, vha, 0x01a2,
-		    "Unable to read Secondary aux image(%x).\n", rc);
-		goto check_valid_image;
-	}
-
 	qla27xx_print_image(vha, "Secondary aux image", &sec_aux_image_status);
 
 	if (qla28xx_check_aux_image_status_signature(&sec_aux_image_status)) {
@@ -7816,7 +7794,6 @@ qla27xx_get_active_image(struct scsi_qla_host *vha,
 	struct qla27xx_image_status pri_image_status, sec_image_status;
 	bool valid_pri_image = false, valid_sec_image = false;
 	bool active_pri_image = false, active_sec_image = false;
-	int rc;
 
 	if (!ha->flt_region_img_status_pri) {
 		ql_dbg(ql_dbg_init, vha, 0x018a, "Primary image not addressed\n");
@@ -7858,14 +7835,8 @@ check_sec_image:
 		goto check_valid_image;
 	}
 
-	rc = qla24xx_read_flash_data(vha, (uint32_t *)(&sec_image_status),
+	qla24xx_read_flash_data(vha, (uint32_t *)(&sec_image_status),
 	    ha->flt_region_img_status_sec, sizeof(sec_image_status) >> 2);
-	if (rc) {
-		ql_log(ql_log_info, vha, 0x01a3,
-		    "Unable to read Secondary image status(%x).\n", rc);
-		goto check_valid_image;
-	}
-
 	qla27xx_print_image(vha, "Secondary image", &sec_image_status);
 
 	if (qla27xx_check_image_status_signature(&sec_image_status)) {
@@ -7937,10 +7908,11 @@ qla24xx_load_risc_flash(scsi_qla_host_t *vha, uint32_t *srisc_addr,
 	    "FW: Loading firmware from flash (%x).\n", faddr);
 
 	dcode = (uint32_t *)req->ring;
-	rval = qla24xx_read_flash_data(vha, dcode, faddr, 8);
-	if (rval || qla24xx_risc_firmware_invalid(dcode)) {
+	qla24xx_read_flash_data(vha, dcode, faddr, 8);
+	if (qla24xx_risc_firmware_invalid(dcode)) {
 		ql_log(ql_log_fatal, vha, 0x008c,
-		    "Unable to verify the integrity of flash firmware image (rval %x).\n", rval);
+		    "Unable to verify the integrity of flash firmware "
+		    "image.\n");
 		ql_log(ql_log_fatal, vha, 0x008d,
 		    "Firmware data: %08x %08x %08x %08x.\n",
 		    dcode[0], dcode[1], dcode[2], dcode[3]);
@@ -7954,12 +7926,7 @@ qla24xx_load_risc_flash(scsi_qla_host_t *vha, uint32_t *srisc_addr,
 	for (j = 0; j < segments; j++) {
 		ql_dbg(ql_dbg_init, vha, 0x008d,
 		    "-> Loading segment %u...\n", j);
-		rval = qla24xx_read_flash_data(vha, dcode, faddr, 10);
-		if (rval) {
-			ql_log(ql_log_fatal, vha, 0x016a,
-			    "-> Unable to read segment addr + size .\n");
-			return QLA_FUNCTION_FAILED;
-		}
+		qla24xx_read_flash_data(vha, dcode, faddr, 10);
 		risc_addr = be32_to_cpu((__force __be32)dcode[2]);
 		risc_size = be32_to_cpu((__force __be32)dcode[3]);
 		if (!*srisc_addr) {
@@ -7975,13 +7942,7 @@ qla24xx_load_risc_flash(scsi_qla_host_t *vha, uint32_t *srisc_addr,
 			ql_dbg(ql_dbg_init, vha, 0x008e,
 			    "-> Loading fragment %u: %#x <- %#x (%#lx dwords)...\n",
 			    fragment, risc_addr, faddr, dlen);
-			rval = qla24xx_read_flash_data(vha, dcode, faddr, dlen);
-			if (rval) {
-				ql_log(ql_log_fatal, vha, 0x016b,
-				    "-> Unable to read fragment(faddr %#x dlen %#lx).\n",
-				    faddr, dlen);
-				return QLA_FUNCTION_FAILED;
-			}
+			qla24xx_read_flash_data(vha, dcode, faddr, dlen);
 			for (i = 0; i < dlen; i++)
 				dcode[i] = swab32(dcode[i]);
 
@@ -8011,14 +7972,7 @@ qla24xx_load_risc_flash(scsi_qla_host_t *vha, uint32_t *srisc_addr,
 		fwdt->length = 0;
 
 		dcode = (uint32_t *)req->ring;
-
-		rval = qla24xx_read_flash_data(vha, dcode, faddr, 7);
-		if (rval) {
-			ql_log(ql_log_fatal, vha, 0x016c,
-			    "-> Unable to read template size.\n");
-			goto failed;
-		}
-
+		qla24xx_read_flash_data(vha, dcode, faddr, 7);
 		risc_size = be32_to_cpu((__force __be32)dcode[2]);
 		ql_dbg(ql_dbg_init, vha, 0x0161,
 		    "-> fwdt%u template array at %#x (%#x dwords)\n",
@@ -8044,12 +7998,11 @@ qla24xx_load_risc_flash(scsi_qla_host_t *vha, uint32_t *srisc_addr,
 		}
 
 		dcode = fwdt->template;
-		rval = qla24xx_read_flash_data(vha, dcode, faddr, risc_size);
+		qla24xx_read_flash_data(vha, dcode, faddr, risc_size);
 
-		if (rval || !qla27xx_fwdt_template_valid(dcode)) {
+		if (!qla27xx_fwdt_template_valid(dcode)) {
 			ql_log(ql_log_warn, vha, 0x0165,
-			    "-> fwdt%u failed template validate (rval %x)\n",
-			    j, rval);
+			    "-> fwdt%u failed template validate\n", j);
 			goto failed;
 		}
 

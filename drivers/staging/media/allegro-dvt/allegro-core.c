@@ -1208,10 +1208,8 @@ static int allocate_buffers_internal(struct allegro_channel *channel,
 		INIT_LIST_HEAD(&buffer->head);
 
 		err = allegro_alloc_buffer(dev, buffer, size);
-		if (err) {
-			kfree(buffer);
+		if (err)
 			goto err;
-		}
 		list_add(&buffer->head, list);
 	}
 

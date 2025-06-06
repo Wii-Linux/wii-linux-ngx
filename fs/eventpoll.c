@@ -1276,10 +1276,7 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 				break;
 			}
 		}
-		if (sync)
-			wake_up_sync(&ep->wq);
-		else
-			wake_up(&ep->wq);
+		wake_up(&ep->wq);
 	}
 	if (waitqueue_active(&ep->poll_wait))
 		pwake++;

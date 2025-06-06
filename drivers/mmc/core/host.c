@@ -523,12 +523,12 @@ struct mmc_host *devm_mmc_alloc_host(struct device *dev, int extra)
 
 	dr = devres_alloc(devm_mmc_host_release, sizeof(*dr), GFP_KERNEL);
 	if (!dr)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	host = mmc_alloc_host(extra, dev);
-	if (!host) {
+	if (IS_ERR(host)) {
 		devres_free(dr);
-		return NULL;
+		return host;
 	}
 
 	*dr = host;

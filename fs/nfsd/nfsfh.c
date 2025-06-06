@@ -326,7 +326,6 @@ out:
 __be32
 fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type, int access)
 {
-	struct nfsd_net *nn = net_generic(SVC_NET(rqstp), nfsd_net_id);
 	struct svc_export *exp = NULL;
 	struct dentry	*dentry;
 	__be32		error;
@@ -400,7 +399,7 @@ skip_pseudoflavor_check:
 	}
 out:
 	if (error == nfserr_stale)
-		nfsd_stats_fh_stale_inc(nn, exp);
+		nfsd_stats_fh_stale_inc(exp);
 	return error;
 }
 

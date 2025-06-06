@@ -1627,11 +1627,9 @@ static int fuse_notify_store(struct fuse_conn *fc, unsigned int size,
 
 		this_num = min_t(unsigned, num, PAGE_SIZE - offset);
 		err = fuse_copy_page(cs, &page, offset, this_num, 0);
-		if (!PageUptodate(page) && !err && offset == 0 &&
-		    (this_num == PAGE_SIZE || file_size == end)) {
-			zero_user_segment(page, this_num, PAGE_SIZE);
+		if (!err && offset == 0 &&
+		    (this_num == PAGE_SIZE || file_size == end))
 			SetPageUptodate(page);
-		}
 		unlock_page(page);
 		put_page(page);
 
