@@ -19,6 +19,8 @@
  *
  */
 
+#define pr_fmt(fmt)		"gcnvi_udbg: " fmt
+
 #include <linux/io.h>
 #include <linux/string.h>
 #include <linux/console.h>
@@ -43,8 +45,13 @@
 #define FONT_XGAP   2
 #define FONT_YGAP   0
 
-#define COLOR_WHITE 0xFF80FF80
-#define COLOR_BLACK 0x00800080
+/* YUYV values according to BT.601-7 Table 3:
+ * 1-254 (0 and 255 are exclusive for synchronization)
+ * Y has black=16, white=235
+ * U/V/Cb/Cr has equal=128
+ */
+#define COLOR_WHITE 0xEB80EB80
+#define COLOR_BLACK 0x10801080
 
 static void _fill32(u32 color, void *start, int n)
 {
@@ -191,9 +198,6 @@ static void gcnvi_udbg_console_init(struct console_data *con, void *framebuffer,
 
 	con->scrolled_lines = 0;
 
-	/* clear screen */
-	_fill32(con->background, con->framebuffer, con->xres * con->yres / 2);
-
 	default_console = con;
 }
 
@@ -203,11 +207,18 @@ static void gcnvi_udbg_console_init(struct console_data *con, void *framebuffer,
  */
 
 /* Hardware registers */
+#define VI_VTR                  0x00 /* u16 */
+#define VI_VTR_ACV              (0x3ff<<4)
+#define VI_DCR                  0x02 /* u16 */
+#define VI_DCR_ENABLE           (0x1<<0)
 #define VI_TFBL                 0x1c
 #define VI_TFBR                 0x20
 #define VI_BFBL                 0x24
 #define VI_BFBR                 0x28
 #define VI_DPV                  0x2c
+
+#define _VI_LOWEST_BIT(bits)		((~((bits)-1))&(bits))
+#define _VI_VALUE(x,bits)		(((x)&(bits))/_VI_LOWEST_BIT(bits)) /* raw bits to value */
 
 /* NTSC settings (640x480) */
 static const u32 vi_Mode640X480NtscYUV16[32] = {
@@ -221,22 +232,43 @@ static const u32 vi_Mode640X480NtscYUV16[32] = {
 	0x02800000, 0x000000FF, 0x00FF00FF, 0x00FF00FF
 };
 
-static void vi_setup_video(void __iomem *io_base, unsigned long xfb_start)
+/* Returns true if VI is enabled. */
+static bool __init vi_is_enabled(void __iomem *io_base)
 {
-	const u32 *regs = vi_Mode640X480NtscYUV16;
+	bool enabled;
+
+	enabled = !!(in_be16(io_base + VI_DCR) & VI_DCR_ENABLE);
+	return enabled;
+}
+
+/* Returns the number of active lines that VI is expecting in xfb data. */
+static u32 __init vi_active_lines(void __iomem *io_base)
+{
+	u32 lines;
+
+	lines = (u32)_VI_VALUE(in_be16(io_base + VI_VTR), VI_VTR_ACV) << 1;
+	/* expecting something like 240 or 480 or 576 */
+	if (lines < 200 || lines > 600)
+		pr_warn("unexpected active lines %lu!\n", (unsigned long)lines);
+	return lines;
+}
+
+static void __init vi_setup_video(void __iomem *io_base, unsigned long xfb_start)
+{
+	const u32 *mode;
 	int i;
 
-	/* initialize video registers */
-	for (i = 0; i < 7; i++)
-		out_be32(io_base + i * sizeof(__u32), regs[i]);
+	if (!vi_is_enabled(io_base)) {
+		pr_info("setup NTSC 480i\n");
+		mode = vi_Mode640X480NtscYUV16;
+		for (i = 0; i < 32; i++)
+			out_be32(io_base + i * sizeof(u32), mode[i]);
+#ifdef CONFIG_WII
+		pr_warn("AVE-RVL is not being setup!\n");
+#endif
+	}
 
-	out_be32(io_base + VI_TFBR, regs[VI_TFBR / sizeof(__u32)]);
-	out_be32(io_base + VI_BFBR, regs[VI_BFBR / sizeof(__u32)]);
-	out_be32(io_base + VI_DPV, regs[VI_DPV / sizeof(__u32)]);
-	for (i = 16; i < 32; i++)
-		out_be32(io_base + i * sizeof(__u32), regs[i]);
-
-	/* set framebuffer address, interlaced mode */
+	/* replace framebuffer address, interlaced mode */
 	out_be32(io_base + VI_TFBL, 0x10000000 | (xfb_start >> 5));
 	xfb_start += 2 * SCREEN_WIDTH;	/* line length */
 	out_be32(io_base + VI_BFBL, 0x10000000 | (xfb_start >> 5));
@@ -298,6 +330,7 @@ void __init gcnvi_udbg_init(void)
 	const unsigned long *prop;
 	void *screen_base;
 	void *io_base;
+	u32 screen_height;
 
 	for_each_matching_node(np, gcnvi_udbg_ids) {
 		if (np)
@@ -320,17 +353,24 @@ void __init gcnvi_udbg_init(void)
 	if (!prop || !io_base)
 		return;
 
-	if (xfb_size < 2 * SCREEN_WIDTH * SCREEN_HEIGHT)
+	screen_height = vi_is_enabled(io_base) ? vi_active_lines(io_base) : SCREEN_HEIGHT;
+	if (xfb_size < 2 * SCREEN_WIDTH * screen_height)
 		return;
 
 	screen_base = ioremap_nocache(xfb_start, xfb_size);
 	if (!screen_base)
 		return;
 
+	if (!IS_ALIGNED(xfb_start, 32) || !IS_ALIGNED(xfb_size, 32))
+		pr_warn("xfb is not 32 byte aligned!\n");
+
+	/* clear xfb and setup VI */
+	_fill32(COLOR_BLACK, screen_base, xfb_size / sizeof(u32));
 	vi_setup_video(io_base, xfb_start);
+
 	gcnvi_udbg_console_init(&gcnvi_udbg_console, screen_base,
-		     SCREEN_WIDTH, SCREEN_HEIGHT, 2 * SCREEN_WIDTH);
+		     SCREEN_WIDTH, screen_height, 2 * SCREEN_WIDTH);
 
 	udbg_putc = gcnvi_udbg_putc;
-	printk(KERN_INFO "gcnvi_udbg: ready\n");
+	pr_info("ready\n");
 }
