@@ -105,6 +105,15 @@
 			};
 		};
 
+		dsp@c005000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "nintendo,hollywood-dsp",
+					"nintendo,flipper-dsp";
+			reg = <0x0c005000 0x200>;
+			interrupts = <6>;
+		};
+
 		gamepad-controller@d006400 {
 			compatible = "nintendo,hollywood-si",
 					"nintendo,flipper-si";
@@ -112,10 +121,11 @@
 			interrupts = <3>;
 		};
 
-		audio@c005000 {
-			compatible = "nintendo,hollywood-audio";
-			reg = <0x0c005000 0x200		/* DSP */
-			       0x0d006c00 0x20>;	/* AI */
+
+		audio@c006c00 {
+			compatible = "nintendo,hollywood-ai",
+					"nintendo,flipper-ai";
+			reg = <0x0d006c00 0x20>;
 			interrupts = <6>;
 		};
 
