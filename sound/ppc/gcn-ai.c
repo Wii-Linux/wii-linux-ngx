@@ -407,8 +407,6 @@ static int ai_init(struct snd_gcn *chip,
 	struct snd_card *card;
 	int retval;
 
-	printk("gcn-ai: in ai_init");
-
 	chip->dsp_base = ioremap(dsp->start, dsp->end - dsp->start + 1);
 	chip->ai_base = ioremap(ai->start, ai->end - ai->start + 1);
 	chip->irq = irq;
@@ -489,7 +487,6 @@ static int ai_do_probe(struct device *dev,
 	struct snd_gcn *chip;
 	int retval;
 
-	printk(KERN_INFO "gcn-ai: in ai_do_probe\n");
 	retval = snd_card_new(dev, index, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
 	if (retval < 0) {
 		drv_printk(KERN_ERR, "failed to allocate card\n");
@@ -532,7 +529,6 @@ static int ai_of_probe(struct platform_device *odev)
 	struct resource dsp, ai;
 	int retval;
 
-	printk(KERN_INFO "gcn-ai: in ai_of_probe\n");
 	retval = of_address_to_resource(odev->dev.of_node, 0, &dsp);
 	if (retval) {
 		drv_printk(KERN_ERR, "no dsp io memory range found\n");
