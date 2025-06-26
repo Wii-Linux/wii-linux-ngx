@@ -527,18 +527,31 @@ static int ai_do_remove(struct device *dev)
 static int ai_of_probe(struct platform_device *odev)
 {
 	struct resource dsp, ai;
+	struct device_node *dsp_np;
 	int retval;
 
-	retval = of_address_to_resource(odev->dev.of_node, 0, &dsp);
-	if (retval) {
-		drv_printk(KERN_ERR, "no dsp io memory range found\n");
-		return -ENODEV;
-	}
-	retval = of_address_to_resource(odev->dev.of_node, 1, &ai);
+	retval = of_address_to_resource(odev->dev.of_node, 0, &ai);
 	if (retval) {
 		drv_printk(KERN_ERR, "no ai io memory range found\n");
 		return -ENODEV;
 	}
+
+	dsp_np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-dsp");
+	if (!dsp_np) {
+		dsp_np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-dsp");
+		if (!dsp_np) {
+			drv_printk(KERN_ERR, "failed to find dsp node\n");
+			return -ENODEV;
+		}
+	}
+
+	retval = of_address_to_resource(dsp_np, 0, &dsp);
+	if (retval) {
+		drv_printk(KERN_ERR, "no dsp io memory range found\n");
+		return -ENODEV;
+	}
+
+	of_node_put(dsp_np);
 
 	return ai_do_probe(&odev->dev,
 			   &dsp, &ai, irq_of_parse_and_map(odev->dev.of_node, 0));
@@ -556,8 +569,8 @@ static void ai_of_shutdown(struct platform_device *odev)
 
 
 static struct of_device_id ai_of_match[] = {
-	{ .compatible = "nintendo,flipper-audio" },
-	{ .compatible = "nintendo,hollywood-audio" },
+	{ .compatible = "nintendo,flipper-ai" },
+	{ .compatible = "nintendo,hollywood-ai" },
 	{ },
 };
 
