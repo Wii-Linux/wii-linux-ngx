@@ -26,7 +26,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x00000000 0x01800000>;
+		reg = <0x00000000 0x01774000>;
 	};
 
 	cpus {
