@@ -7,6 +7,7 @@
  * Copyright (C) 2005 Todd Jeffreys
  * Copyright (C) 2005,2006,2007,2008,2009 Albert Herranz
  * Copyleft  (C) 2012, Gerrit Pannek
+ * Copyright (C) 2025, Michael "Techflash" Garofalo
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -50,9 +51,8 @@
  *
  */
 
-#define SD_DEBUG
-
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/crc-ccitt.h>
 #include <linux/delay.h>
 #include <linux/hdreg.h>
@@ -80,13 +80,15 @@
 #define DRV_AUTHOR	"Rob Reylink, " \
 			"Todd Jeffreys, " \
 			"Albert Herranz" \
-			"Gerrit Pannek"
+			"Gerrit Pannek" \
+			"Michael \"Techflash\" Garofalo"
 
-static char sd_driver_version[] = "4.2";
+static char sd_driver_version[] = "5.0";
 
 #define sd_printk(level, format, arg...) \
 	printk(level DRV_MODULE_NAME ": " format , ## arg)
 
+/*#define SD_DEBUG*/
 #ifdef SD_DEBUG
 #  define DBG(fmt, args...) \
 	   printk(KERN_ERR "%s: " fmt, __func__ , ## args)
@@ -118,8 +120,7 @@ static char sd_driver_version[] = "4.2";
 #define SD_IDLE_CYCLES		80
 #define SD_FINISH_CYCLES	8
 
-/* several times in 8 clock units */
-#define MMC_SPI_N_CR		8	/* card response time */
+#define MMC_SPI_N_CR		100	/* card response time */
 
 /* data start and stop tokens */
 #define MMC_SPI_TOKEN_START_SINGLE_BLOCK_READ		0xfe
@@ -165,8 +166,6 @@ static const unsigned int taac_mant[] = {
 	35, 40, 45, 50, 55, 60, 70, 80,
 };
 
-unsigned short is_sdhc = 0;
-
 /*
  * Driver settings.
  */
@@ -175,14 +174,59 @@ unsigned short is_sdhc = 0;
 #define SD_MAJOR		61
 #define SD_NAME			"gcnsd"
 
-#define KERNEL_SECTOR_SHIFT     9
-#define KERNEL_SECTOR_SIZE      (1 << KERNEL_SECTOR_SHIFT)	/*512 */
+#define READ_TIMEOUT		500     /* 500ms */
+#define WRITE_TIMEOUT		500     /* 500ms */
 
 enum {
 	__SD_MEDIA_CHANGED = 0,
 	__SD_BAD_CARD,
 };
 
+
+/*
+ * backported from 4.20+ for 4.19
+ */
+
+/*
+ * Helper for setting up a queue with mq ops, given queue depth, and
+ * the passed in mq ops flags.
+ */
+struct request_queue *blk_mq_init_sq_queue(struct blk_mq_tag_set *set,
+                                          const struct blk_mq_ops *ops,
+                                          unsigned int queue_depth,
+                                          unsigned int set_flags)
+{
+       struct request_queue *q;
+       int ret;
+
+       memset(set, 0, sizeof(*set));
+       set->ops = ops;
+       set->nr_hw_queues = 1;
+       set->queue_depth = queue_depth;
+       set->numa_node = NUMA_NO_NODE;
+       set->flags = set_flags;
+
+       ret = blk_mq_alloc_tag_set(set);
+       if (ret)
+               return ERR_PTR(ret);
+
+       q = blk_mq_init_queue(set);
+       if (IS_ERR(q)) {
+               blk_mq_free_tag_set(set);
+               return q;
+       }
+
+       return q;
+}
+EXPORT_SYMBOL(blk_mq_init_sq_queue);
+
+
+
+
+/*
+ * I/O Lock, since EXI multithreading is dire.
+ */
+/*DEFINE_MUTEX(io_lock);*/
 
 /*
  * Raw MMC/SD command.
@@ -200,8 +244,6 @@ struct sd_command {
  * single card each time.
  */
 struct sd_host {
-	spinlock_t		lock;
-
 	int refcnt;
 	unsigned long flags;
 #define SD_MEDIA_CHANGED	(1<<__SD_MEDIA_CHANGED)
@@ -209,10 +251,6 @@ struct sd_host {
 
 	/* card related info */
 	struct mmc_card card;
-
-	/* timeouts in 8 clock cycles */
-	unsigned long read_timeout;
-	unsigned long write_timeout;
 
 	/* operations condition register */
 	u32 ocr_avail;		/* just 3.3V for the GameCube */
@@ -228,33 +266,30 @@ struct sd_host {
 	/* command buffer */
 	struct sd_command cmd;
 
-	spinlock_t 		queue_lock;
 	struct request_queue	*queue;
+	struct blk_mq_tag_set	tag_set;
 
 	struct gendisk 		*disk;
 
-	struct task_struct	*io_thread;
-	struct mutex		io_mutex;
-
 	struct exi_device	*exi_device;
+
+	struct workqueue_struct	*wq;
+
+	int is_sdhc;
 };
 
-static void sd_kill(struct sd_host *host);
-
-
 /*
-* This takes care of setting the global variable to check if it's
-* a SDHC-Card or not
-*/
-static void sd_card_set_type(short value)
-{
-	is_sdhc = value;
-}
+ * For storing workqueue related stuff
+ */
+struct sd_request {
+	struct work_struct work;
+	struct request *rq;
+	struct sd_host *host;
+};
 
-static int sd_card_is_sdhc(void)
-{
-	return is_sdhc;
-}
+
+static void sd_kill(struct sd_host *host);
+static int sd_welcome_card(struct sd_host *host);
 
 
 static void sd_card_set_bad(struct sd_host *host)
@@ -378,8 +413,9 @@ static void mmc_decode_cid(struct mmc_card *card)
 /*
  * Given a 128-bit response, decode to our card CSD structure.
  */
-static void mmc_decode_csd(struct mmc_card *card)
+static void mmc_decode_csd(struct sd_host *host)
 {
+	struct mmc_card *card = &host->card;
 	struct mmc_csd *csd = &card->csd;
 	unsigned int e, m, csd_struct;
 	u32 *resp = card->raw_csd;
@@ -442,7 +478,7 @@ static void mmc_decode_csd(struct mmc_card *card)
 		csd->write_blkbits = 9;
 		csd->write_partial = 0;
 
-		sd_card_set_type(1);
+		host->is_sdhc = 1;
 		break;
 	default:
 		printk("%s: unrecognised CSD structure version %d\n",
@@ -501,17 +537,6 @@ static unsigned int sd_set_clock(struct sd_host *host, unsigned int clock)
 	return host->clock;
 }
 
-/* */
-static void sd_calc_timeouts(struct sd_host *host)
-{
-	/*
-	 * FIXME: calculate timeouts from card information
-	 * (use safe defaults for now)
-	 */
-	host->read_timeout = ms_to_cycles(100, host->clock);
-	host->write_timeout = ms_to_cycles(250, host->clock);
-}
-
 /*
  *
  * SPI I/O support routines, including some handy SPI to EXI language
@@ -521,21 +546,27 @@ static void sd_calc_timeouts(struct sd_host *host)
 /* */
 static inline void spi_cs_low(struct sd_host *host)
 {
+	/*mutex_lock(&io_lock);*/
 	exi_dev_take(host->exi_device);
 	exi_dev_select(host->exi_device);
+	/*mutex_unlock(&io_lock);*/
 }
 
 /* */
 static inline void spi_cs_high(struct sd_host *host)
 {
+	/*mutex_lock(&io_lock);*/
 	exi_dev_deselect(host->exi_device);
 	exi_dev_give(host->exi_device);
+	/*mutex_unlock(&io_lock);*/
 }
 
 /* */
 static inline void spi_write(struct sd_host *host, void *data, size_t len)
 {
+	/*mutex_lock(&io_lock);*/
 	exi_dev_write(host->exi_device, data, len);
+	/*mutex_unlock(&io_lock);*/
 }
 
 /* */
@@ -570,7 +601,9 @@ static inline void spi_read(struct sd_host *host, void *data, size_t len)
 	 * This will help reducing CPU monopolization on large reads.
 	 *
 	 */
+	/*mutex_lock(&io_lock);*/
 	exi_dev_transfer(host->exi_device, data, len, EXI_OP_READ, EXI_CMD_IDI);
+	/*mutex_unlock(&io_lock);*/
 }
 
 /* cycles are expressed in 8 clock cycles */
@@ -586,17 +619,21 @@ static void spi_burn_cycles(struct sd_host *host, int cycles)
 
 /* cycles are expressed in 8 clock cycles */
 static int spi_wait_for_resp(struct sd_host *host,
-			     u8 resp, u8 resp_mask, unsigned long cycles)
+			     u8 resp, u8 resp_mask, unsigned long timeout_ms)
 {
 	u8 data;
+	unsigned long timeout = jiffies + msecs_to_jiffies(timeout_ms);
 
-	while (cycles-- > 0) {
+	while (time_before(jiffies, timeout)) {
 		spi_read(host, &data, sizeof(data));
 		if ((data & resp_mask) == resp) {
+			/*DBG("got valid SPI response ((%u & %u) == %u)", (u32)data, (u32)resp_mask, (u32)resp);*/
 			host->resp = data;
 			return data;
 		}
+		/*DBG("invalid SPI response ((%u & %u) != %u), trying again %u more times", (u32)data, (u32)resp_mask, (u32)resp, cycles);*/
 	}
+	sd_printk(KERN_ERR, "got timeout from card - card broken?");
 	return -ENODATA;
 }
 
@@ -609,9 +646,11 @@ static int sd_read_data(struct sd_host *host, void *data, size_t len, int token)
 
 	if (token) {
 		retval = spi_wait_for_resp(host, token, 0xff,
-					   host->read_timeout);
-		if (retval < 0)
+					   READ_TIMEOUT);
+		if (retval < 0) {
+			DBG("spi_wait_for_resp FAILED with %d\n", retval);
 			goto out;
+		}
 	}
 	spi_read(host, data, len);
 	retval = 0;
@@ -652,19 +691,23 @@ static int sd_write_data(struct sd_host *host, void *data, size_t len,
 	spi_write(host, &crc, sizeof(crc));
 
 	/* get the card data response */
-	retval = spi_wait_for_resp(host, 0x01, 0x11, host->write_timeout);
-	if (retval < 0)
+	retval = spi_wait_for_resp(host, 0x01, 0x11, WRITE_TIMEOUT);
+	if (retval < 0) {
+		DBG("spi_wait_for_resp FAILED with %d\n", retval);
 		goto out;
+	}
 	if ((retval & DR_SPI_MASK) != DR_SPI_DATA_ACCEPTED) {
-		DBG("data response=%02x\n", retval);
+		DBG("failed - bad respone, data response=0x%02x, ((0x%02x & %u) != %u)\n", retval, retval, DR_SPI_MASK, DR_SPI_DATA_ACCEPTED);
 		retval = -EIO;
 		goto out;
 	}
 
 	/* wait for the busy signal to clear */
-	retval = spi_wait_for_resp(host, 0xff, 0xff, host->write_timeout);
-	if (retval < 0)
+	retval = spi_wait_for_resp(host, 0xff, 0xff, WRITE_TIMEOUT);
+	if (retval < 0) {
+		DBG("spi_wait_for_resp FAILED with %d\n", retval);
 		goto out;
+	}
 
 	retval = 0;
 
@@ -728,7 +771,7 @@ static int sd_start_command(struct sd_host *host, struct sd_command *cmd)
 	retval = spi_wait_for_resp(host, 0x00, 0x80, MMC_SPI_N_CR);
 
 	if (retval > 0 && !(retval & 0x01) && cmd->cmd != 0x40)
-		DBG("command = %d, response = 0x%02x\n", cmd->cmd & ~0x40,
+		DBG("failed - command = %d, response = 0x%02x\n", cmd->cmd & ~0x40,
 		    retval);
 
 	return retval;
@@ -773,22 +816,25 @@ static int sd_generic_read(struct sd_host *host,
 	size_t l;
 	int retval;
 
+	/*mutex_lock(&io_lock);*/
+
 	/* build raw command */
 	sd_cmd(cmd, opcode, arg);
 
 	/* select card, send command and wait for response */
 	retval = sd_start_command(host, cmd);
-	if (retval < 0)
-		goto out;
 	if (retval != 0x00) {
+		DBG("sd_start_command failed w/ %d\n", retval);
 		retval = -EIO;
 		goto out;
 	}
 
 	/* wait for read token, then read data */
 	retval = sd_read_data(host, data, len, token);
-	if (retval < 0)
+	if (retval < 0) {
+		DBG("sd_read_data failed with %d\n", retval);
 		goto out;
+	}
 
 	/* read trailing crc */
 	spi_read(host, &crc, sizeof(crc));
@@ -804,8 +850,10 @@ static int sd_generic_read(struct sd_host *host,
 		while (l-- > 0)
 			calc_crc = crc_xmodem_update(calc_crc, *d++);
 
-		if (calc_crc != crc)
+		if (calc_crc != crc) {
+			DBG("bad CRC on data (%04x (calculated) != %04x (read))\n", calc_crc, crc);
 			retval = -EIO;
+		}
 	}
 
 out:
@@ -818,6 +866,7 @@ out:
 		    (retval < 0) ? "failed" : "ok");
 	}
 
+	/*mutex_unlock(&io_lock);*/
 	return retval;
 }
 
@@ -836,9 +885,8 @@ static int sd_generic_write(struct sd_host *host,
 
 	/* select card, send command and wait for response */
 	retval = sd_start_command(host, cmd);
-	if (retval < 0)
-		goto out;
 	if (retval != 0x00) {
+		DBG("sd_start_command failed w/ %d\n", retval);
 		retval = -EIO;
 		goto out;
 	}
@@ -855,7 +903,7 @@ out:
 	sd_end_command(host);
 
 	if (retval < 0)
-		DBG("write, offset=%d, len=%d\n", arg, len);
+		DBG("write failed, offset=%d, len=%d, retval=%d\n", arg, len, retval);
 
 	return retval;
 }
@@ -928,11 +976,18 @@ static inline int sd_read_single_block(struct sd_host *host,
 		retval = sd_generic_read(host, MMC_READ_SINGLE_BLOCK, start,
 					 data, len,
 					 MMC_SPI_TOKEN_START_SINGLE_BLOCK_READ);
-		if (retval >= 0)
+		if (retval >= 0) {
+			/*DBG("sd_generic_read succeeded with %d\n", retval);*/
 			break;
+		}
 		attempts--;
-		DBG("start=%lu, data=%p, len=%d, retval = %d\n", start, data,
+		DBG("sd_generic_read failed, start=%lu, data=%p, len=%d, retval = %d\n", start, data,
 		    len, retval);
+
+		if (retval == -ENODATA) {
+			DBG("card got no data, trying to reset");
+			sd_welcome_card(host);
+		}
 	}
 	return retval;
 }
@@ -1128,10 +1183,7 @@ static int sd_welcome_card(struct sd_host *host)
 	retval = sd_read_csd(host);
 	if (retval < 0)
 		goto err_bad_card;
-	mmc_decode_csd(&host->card);
-
-	/* calculate some card access related timeouts */
-	sd_calc_timeouts(host);
+	mmc_decode_csd(host);
 
 	/* read and decode the Card Identification Data */
 	retval = sd_read_cid(host);
@@ -1163,73 +1215,31 @@ out:
 /*
  * Performs a read request for SD.
  */
-static int sd_read_request(struct sd_host *host, struct request *req)
+static int sd_read_request(struct sd_host *host, loff_t start, void *buf, unsigned long len, unsigned long nr_blocks)
 {
 	int i;
-	unsigned long nr_blocks; /* in card blocks */
 	size_t block_len; /* in bytes */
-	unsigned long start;
-	void *buf = bio_data(req->bio);
-	int retval;
+	int retval = 0;
 
-	/*
-	 * It seems that some cards do not accept single block reads for the
-	 * read block length reported by the card.
-	 * For now, we perform only 512 byte single block reads.
-	 */
+	block_len = 1 << SECTOR_SHIFT;
+	if (!host->is_sdhc)
+		start <<= SECTOR_SHIFT;
 
-	start = blk_rq_pos(req) << KERNEL_SECTOR_SHIFT;
-
-	nr_blocks = blk_rq_cur_sectors(req);
-	block_len = 1 << KERNEL_SECTOR_SHIFT;
 
 	for (i = 0; i < nr_blocks; i++) {
 		retval = sd_read_single_block(host, start, buf, block_len);
-		if (retval < 0)
+		if (retval < 0) {
+			DBG("sd_read_single_block returned %d (retval < 0)\n", retval);
 			break;
+		}
 
-		start += block_len;
+		if (host->is_sdhc)
+			start++;
+		else
+			start += block_len;
+
 		buf += block_len;
 	}
-
-	/* number of kernel sectors transferred */
-#if 0
-	retval = i << (host->card.csd.read_blkbits - KERNEL_SECTOR_SHIFT);
-#else
-	retval = i;
-#endif
-
-	return retval;
-}
-
-/*
- * Performs a read request for SDHC.
- */
-static int sdhc_read_request(struct sd_host *host, struct request *req)
-{
-	int i;
-	unsigned long nr_blocks; /* in card blocks */
-	size_t block_len; /* in bytes */
-	unsigned long start;
-	void *buf = bio_data(req->bio);
-	int retval;
-
-	start = blk_rq_pos(req);
-
-	nr_blocks = blk_rq_cur_sectors(req);
-	block_len = 1 << KERNEL_SECTOR_SHIFT;
-
-	for (i = 0; i < nr_blocks; i++) {
-		retval = sd_read_single_block(host, start, buf, block_len);
-		if (retval < 0)
-			break;
-
-		start ++;
-		buf += block_len;
-	}
-
-	/* number of kernel sectors transferred */
-	retval = i;
 
 	return retval;
 }
@@ -1237,67 +1247,29 @@ static int sdhc_read_request(struct sd_host *host, struct request *req)
 /*
  * Performs a write request for SD.
  */
-static int sd_write_request(struct sd_host *host, struct request *req)
+static int sd_write_request(struct sd_host *host, loff_t start, void *buf, unsigned long len, unsigned long nr_blocks)
 {
 	int i;
-	unsigned long nr_blocks; /* in card blocks */
-	size_t block_len; /* in bytes */
-	unsigned long start;
-	void *buf = bio_data(req->bio);
-	int retval;
+	size_t block_len;
+	int retval = 0;
 
-	/* FIXME?, maybe should use 2^WRITE_BL_LEN blocks */
+	block_len = 1 << SECTOR_SHIFT;
+	if (!host->is_sdhc)
+		start <<= SECTOR_SHIFT;
 
-	/* kernel sectors and card write blocks are both 512 bytes long */
-	start = blk_rq_pos(req) << KERNEL_SECTOR_SHIFT;
-	nr_blocks = blk_rq_cur_sectors(req);
-	block_len = 1 << KERNEL_SECTOR_SHIFT;
 
 	for (i = 0; i < nr_blocks; i++) {
 		retval = sd_write_single_block(host, start, buf, block_len);
 		if (retval < 0)
 			break;
 
-		start += block_len;
+		if (host->is_sdhc)
+			start++;
+		else
+			start += block_len;
+
 		buf += block_len;
 	}
-
-	/* number of kernel sectors transferred */
-	retval = i;
-
-	return retval;
-}
-
-/*
- * Performs a write request for SDHC.
- */
-static int sdhc_write_request(struct sd_host *host, struct request *req)
-{
-	int i;
-	unsigned long nr_blocks; /* in card blocks */
-	size_t block_len; /* in bytes */
-	unsigned long start;
-	void *buf = bio_data(req->bio);
-	int retval;
-
-	/* FIXME?, maybe should use 2^WRITE_BL_LEN blocks */
-
-	/* kernel sectors and card write blocks are both 512 bytes long */
-	start = blk_rq_pos(req);
-	nr_blocks = blk_rq_cur_sectors(req);
-	block_len = 1 << KERNEL_SECTOR_SHIFT;
-
-	for (i = 0; i < nr_blocks; i++) {
-		retval = sd_write_single_block(host, start, buf, block_len);
-		if (retval < 0)
-			break;
-
-		start ++;
-		buf += block_len;
-	}
-
-	/* number of kernel sectors transferred */
-	retval = i;
 
 	return retval;
 }
@@ -1311,6 +1283,7 @@ static int sdhc_write_request(struct sd_host *host, struct request *req)
  */
 static int sd_check_request(struct sd_host *host, struct request *req)
 {
+#if 0
 	unsigned long nr_sectors;
 
 	if (test_bit(__SD_MEDIA_CHANGED, &host->flags)) {
@@ -1320,7 +1293,7 @@ static int sd_check_request(struct sd_host *host, struct request *req)
 
 	/* unit is kernel sectors */
 	nr_sectors =
-	    host->card.csd.capacity << (host->card.csd.read_blkbits - KERNEL_SECTOR_SHIFT);
+	    host->card.csd.capacity << (host->card.csd.read_blkbits - SECTOR_SHIFT);
 
 	/* keep our reads within limits */
 
@@ -1330,106 +1303,124 @@ static int sd_check_request(struct sd_host *host, struct request *req)
 	}
 
 	return 0;
+#endif
+	sector_t start = blk_rq_pos(req);
+	sector_t n_sectors = blk_rq_sectors(req);
+
+	if (start >= host->card.csd.capacity)
+		return -EINVAL;
+	if (start + n_sectors > host->card.csd.capacity)
+		return -EINVAL;
+
+	return 0;
+
 }
 
 /*
  * Request dispatcher.
  */
-static int sd_do_request(struct sd_host *host, struct request *req)
+static int sd_do_request(struct request *req)
 {
-	int nr_sectors = 0;
-	int error;
+	int ret = 0;
+	struct bio_vec bvec;
+	struct req_iterator iter;
+	struct sd_host *host = req->q->queuedata;
+	loff_t pos = blk_rq_pos(req);
+	loff_t dev_size = (loff_t)(host->card.csd.capacity);
 
-	error = sd_check_request(host, req);
-	if (error) {
-		nr_sectors = error;
-		goto out;
+
+	/* Iterate over all requests segments */
+	rq_for_each_segment(bvec, req, iter)
+	{
+		unsigned long b_len = bvec.bv_len;
+		unsigned long nr_blocks = blk_rq_cur_sectors(req);
+
+		/* Get pointer to the data */
+		void* b_buf = page_address(bvec.bv_page) + bvec.bv_offset;
+
+		/* Simple check that we are not out of the memory bounds */
+		ret = sd_check_request(host, req);
+		if (ret) {
+			DBG("handed bogus request (%d)", ret);
+			break;
+		}
+
+		if (rq_data_dir(req) == WRITE) {
+#if 0
+			if (sd_card_is_sdhc() == 0)
+				ret = sd_write_request(host, pos, b_buf, len);
+			else
+				ret = sdhc_write_request(host, pos, b_buf, len);
+#endif
+			ret = sd_write_request(host, pos, b_buf, b_len, nr_blocks);
+			DBG("doing WRITE request with pos %lld, size %lld, len %lu, buf 0x%px, nr_blocks %lu - sd_write_request ret = %d\n", pos, dev_size, b_len, b_buf, nr_blocks, ret);
+			if (ret)
+				break;
+		} else {
+#if 0
+			if (sd_card_is_sdhc() == 0)
+				ret = sd_read_request(host, pos, b_buf, len);
+			else
+				ret = sdhc_read_request(host, pos, b_buf, len);
+#endif
+			ret = sd_read_request(host, pos, b_buf, b_len, nr_blocks);
+			DBG("doing READ request with pos %lld, size %lld, len %lu, buf 0x%px nr_blocks %lu - sd_read_request ret = %d\n", pos, dev_size, b_len, b_buf, nr_blocks, ret);
+			if (ret)
+				break;
+		}
+
+		/* Increment counters */
+		pos += b_len;
 	}
+	DBG("sd_do_request, now leaving with ret=%d\n", ret);
 
-
-	//I added the 2 different read/write functions, so we just need one if-else and should perform much better ^^
-	switch (rq_data_dir(req)) {
-	case WRITE:
-		if(sd_card_is_sdhc()==0)
-			nr_sectors = sd_write_request(host, req);
-		else
-			nr_sectors = sdhc_write_request(host, req);
-		break;
-	case READ:
-		if(sd_card_is_sdhc()==0)
-			nr_sectors = sd_read_request(host, req);
-		else
-			nr_sectors = sdhc_read_request(host, req);
-		break;
-	}
-
-out:
-	return nr_sectors;
+	return ret;
 }
 
 /*
- * Input/Output thread.
+ * Workqueue to replace the old I/O thread,
+ * since we must use wait_for_completion()
+ * in the EXI code, but blk-mq *REFUSES* this.
  */
-static int sd_io_thread(void *param)
+static void sd_request_worker(struct work_struct *work)
 {
-	struct sd_host *host = param;
-	struct request *req;
-	unsigned long flags;
-	int nr_sectors;
-	int error;
+    struct sd_request *sdreq = container_of(work, struct sd_request, work);
+    struct request *rq = sdreq->rq;
+    blk_status_t status = BLK_STS_OK;
 
-#if 0
-	/*
-	 * We are going to perfom badly due to the read problem explained
-	 * above. At least, be nice with other processes trying to use the
-	 * cpu.
-	 */
-	set_user_nice(current, 0);
-#endif
+    int ret = sd_do_request(rq);
+    if (ret != 0)
+        status = BLK_STS_IOERR;
 
-	current->flags |= PF_NOFREEZE|PF_MEMALLOC;
+    blk_mq_end_request(rq, status);
 
-	mutex_lock(&host->io_mutex);
-	for (;;) {
-		req = NULL;
-		set_current_state(TASK_INTERRUPTIBLE);
-
-		spin_lock_irqsave(&host->queue_lock, flags);
-		if (!blk_queue_stopped(host->queue))
-			req = blk_fetch_request(host->queue);
-		spin_unlock_irqrestore(&host->queue_lock, flags);
-
-		if (!req) {
-			if (kthread_should_stop()) {
-				set_current_state(TASK_RUNNING);
-				break;
-			}
-			mutex_unlock(&host->io_mutex);
-			schedule();
-			mutex_lock(&host->io_mutex);
-			continue;
-		}
-		set_current_state(TASK_INTERRUPTIBLE);
-		nr_sectors = sd_do_request(host, req);
-		error = (nr_sectors < 0) ? nr_sectors : 0;
-
-		spin_lock_irqsave(&host->queue_lock, flags);
-		__blk_end_request(req, error, nr_sectors << 9);
-		spin_unlock_irqrestore(&host->queue_lock, flags);
-	}
-	mutex_unlock(&host->io_mutex);
-
-	return 0;
+    kfree(sdreq);
 }
+
+ 
+
 
 /*
  * Block layer request function.
- * Wakes up the IO thread.
  */
-static void sd_request_func(struct request_queue *q)
+static blk_status_t sd_request_func(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data* bd)
 {
-	struct sd_host *host = q->queuedata;
-	wake_up_process(host->io_thread);
+	struct request *rq = bd->rq;
+	struct sd_request *sdreq;
+
+	sdreq = kmalloc(sizeof(*sdreq), GFP_ATOMIC);
+	if (!sdreq)
+		return BLK_STS_RESOURCE;
+
+	sdreq->rq = rq;
+	sdreq->host = rq->q->queuedata;
+	INIT_WORK(&sdreq->work, sd_request_worker);
+
+	blk_mq_start_request(rq);
+	queue_work(sdreq->host->wq, &sdreq->work);
+
+	return BLK_STS_OK;
+
 }
 
 /*
@@ -1527,7 +1518,7 @@ static unsigned int sd_check_events(struct gendisk *disk, unsigned int clearing)
 		if (retval < 0 || sd_card_is_bad(host))
 			return DISK_EVENT_MEDIA_CHANGE;
 
-		blk_queue_logical_block_size(host->queue, 1 << KERNEL_SECTOR_SHIFT);
+		blk_queue_logical_block_size(host->queue, 1 << SECTOR_SHIFT);
 		set_capacity(host->disk, host->card.csd.capacity);
 		clear_bit(__SD_MEDIA_CHANGED, &host->flags);
 	}
@@ -1552,6 +1543,11 @@ static const struct block_device_operations sd_fops = {
 	.getgeo = sd_getgeo,
 };
 
+static struct blk_mq_ops mq_ops = {
+    .queue_rq = sd_request_func,
+};
+
+
 /*
  * Initializes the block layer interfaces.
  */
@@ -1566,8 +1562,7 @@ static int sd_init_blk_dev(struct sd_host *host)
 
 	/* queue */
 	retval = -ENOMEM;
-	spin_lock_init(&host->queue_lock);
-	queue = blk_init_queue(sd_request_func, &host->queue_lock);
+	queue = blk_mq_init_sq_queue(&host->tag_set, &mq_ops, 128, BLK_MQ_F_SHOULD_MERGE);
 	if (!queue) {
 		sd_printk(KERN_ERR, "error initializing queue\n");
 		goto err_blk_init_queue;
@@ -1615,77 +1610,45 @@ static void sd_exit_blk_dev(struct sd_host *host)
 
 
 /*
- * Initializes and launches the IO thread.
- */
-static int sd_init_io_thread(struct sd_host *host)
-{
-	int channel;
-	int result = 0;
-
-	channel = to_channel(exi_get_exi_channel(host->exi_device));
-
-	mutex_init(&host->io_mutex);
-	host->io_thread = kthread_run(sd_io_thread, host,
-				      "ksdiod/%c", 'a' + channel);
-	if (IS_ERR(host->io_thread)) {
-		sd_printk(KERN_ERR, "error creating io thread\n");
-		result = PTR_ERR(host->io_thread);
-	}
-	return result;
-}
-
-/*
- * Terminates and waits for the IO thread to complete.
- */
-static void sd_exit_io_thread(struct sd_host *host)
-{
-	if (!IS_ERR(host->io_thread)) {
-		wake_up_process(host->io_thread);
-		kthread_stop(host->io_thread);
-		host->io_thread = ERR_PTR(-EINVAL);
-	}
-}
-
-/*
  * Initializes a host.
  */
 static int sd_init(struct sd_host *host)
 {
 	int retval;
 
-	spin_lock_init(&host->lock);
+	DBG("sd_init called");
 
 	host->refcnt = 0;
 
 	host->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	sd_set_clock(host, SD_SPI_CLK);
-	sd_calc_timeouts(host);
+	host->wq = alloc_workqueue("gcn-sd-port%c_workqueue", WQ_MEM_RECLAIM | WQ_UNBOUND, 0,
+			'a' + to_channel(exi_get_exi_channel(host->exi_device)));
 
 	retval = sd_init_blk_dev(host);
 	if (!retval) {
 		/* stolen from the now-removed sd_revalidate_disk */
 		retval = sd_welcome_card(host);
 		if (retval < 0 || sd_card_is_bad(host)) {
-		    retval = -ENODEV;
-		    goto err_blk_dev;
+			retval = -ENODEV;
+			DBG("card welcome failed");
+			goto err_blk_dev;
 		}
 
-		blk_queue_logical_block_size(host->queue, 1 << KERNEL_SECTOR_SHIFT);
+		blk_queue_logical_block_size(host->queue, 1 << SECTOR_SHIFT);
 		set_capacity(host->disk, host->card.csd.capacity);
-		/*clear_bit(__SD_MEDIA_CHANGED, &host->flags);*/
+		clear_bit(__SD_MEDIA_CHANGED, &host->flags);
 
 		if (!mmc_card_present(&host->card)) {
 			retval = -ENODEV;
+			DBG("card not present");
 			goto err_blk_dev;
 		}
 
-		/* can only be done here, after sd_init_blk_dev has set host->disk *
-		host->disk->events |= DISK_EVENT_MEDIA_CHANGE;*/
+		/* can only be done here, after sd_init_blk_dev has set host->disk */
+		host->disk->events |= DISK_EVENT_MEDIA_CHANGE;
 
-		retval = sd_init_io_thread(host);
-		if (retval)
-			goto err_blk_dev;
-
+		DBG("about to add disk");
 		add_disk(host->disk);
 	}
 
@@ -1702,7 +1665,6 @@ err_blk_dev:
 static void sd_exit(struct sd_host *host)
 {
 	del_gendisk(host->disk);
-	sd_exit_io_thread(host);
 	sd_exit_blk_dev(host);
 }
 
@@ -1822,6 +1784,8 @@ static int __init sd_init_module(void)
 		retval = -EIO;
 		goto out;
 	}
+
+	/*mutex_init(&io_lock);*/
 
 	retval = exi_driver_register(&sd_driver);
 
