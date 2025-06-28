@@ -88,7 +88,7 @@ static char sd_driver_version[] = "5.0";
 #define sd_printk(level, format, arg...) \
 	printk(level DRV_MODULE_NAME ": " format , ## arg)
 
-#define SD_DEBUG
+/*#define SD_DEBUG*/
 #ifdef SD_DEBUG
 #  define DBG(fmt, args...) \
 	   printk(KERN_ERR "%s: " fmt, __func__ , ## args)
@@ -592,7 +592,7 @@ static int spi_wait_for_resp(struct sd_host *host,
 		}
 		/*DBG("invalid SPI response ((%u & %u) != %u), trying again %u more times", (u32)data, (u32)resp_mask, (u32)resp, cycles);*/
 	}
-	DBG("got timeout from card - broken?");
+	sd_printk(KERN_ERR, "got timeout from card - card broken?");
 	return -ENODATA;
 }
 
@@ -1174,17 +1174,15 @@ out:
 /*
  * Performs a read request for SD.
  */
-static int sd_read_request(struct sd_host *host, loff_t start, void *buf, unsigned long len)
+static int sd_read_request(struct sd_host *host, loff_t start, void *buf, unsigned long len, unsigned long nr_blocks)
 {
 	int i;
-	unsigned long nr_blocks; /* in card blocks */
 	size_t block_len; /* in bytes */
 	int retval = 0;
 
-	nr_blocks = len >> SECTOR_SHIFT;
 	block_len = 1 << SECTOR_SHIFT;
-	if (host->is_sdhc)
-		start >>= SECTOR_SHIFT;
+	if (!host->is_sdhc)
+		start <<= SECTOR_SHIFT;
 
 
 	for (i = 0; i < nr_blocks; i++) {
@@ -1208,17 +1206,15 @@ static int sd_read_request(struct sd_host *host, loff_t start, void *buf, unsign
 /*
  * Performs a write request for SD.
  */
-static int sd_write_request(struct sd_host *host, loff_t start, void *buf, unsigned long len)
+static int sd_write_request(struct sd_host *host, loff_t start, void *buf, unsigned long len, unsigned long nr_blocks)
 {
 	int i;
-	unsigned long nr_blocks;
 	size_t block_len;
-	int retval;
+	int retval = 0;
 
-	nr_blocks = len >> SECTOR_SHIFT;
 	block_len = 1 << SECTOR_SHIFT;
-	if (host->is_sdhc)
-		start >>= SECTOR_SHIFT;
+	if (!host->is_sdhc)
+		start <<= SECTOR_SHIFT;
 
 
 	for (i = 0; i < nr_blocks; i++) {
@@ -1233,9 +1229,6 @@ static int sd_write_request(struct sd_host *host, loff_t start, void *buf, unsig
 
 		buf += block_len;
 	}
-
-	/* number of kernel sectors transferred */
-	retval = i;
 
 	return retval;
 }
@@ -1291,7 +1284,7 @@ static int sd_do_request(struct request *req)
 	struct bio_vec bvec;
 	struct req_iterator iter;
 	struct sd_host *host = req->q->queuedata;
-	loff_t pos = blk_rq_pos(req) << SECTOR_SHIFT;
+	loff_t pos = blk_rq_pos(req);
 	loff_t dev_size = (loff_t)(host->card.csd.capacity);
 
 
@@ -1299,6 +1292,7 @@ static int sd_do_request(struct request *req)
 	rq_for_each_segment(bvec, req, iter)
 	{
 		unsigned long b_len = bvec.bv_len;
+		unsigned long nr_blocks = blk_rq_cur_sectors(req);
 
 		/* Get pointer to the data */
 		void* b_buf = page_address(bvec.bv_page) + bvec.bv_offset;
@@ -1317,8 +1311,8 @@ static int sd_do_request(struct request *req)
 			else
 				ret = sdhc_write_request(host, pos, b_buf, len);
 #endif
-			ret = sd_write_request(host, pos, b_buf, b_len);
-			DBG("doing WRITE request with pos %lld, size %lld, len %lu, buf 0x%px - sd_write_request ret = %d\n", pos, dev_size, b_len, b_buf, ret);
+			ret = sd_write_request(host, pos, b_buf, b_len, nr_blocks);
+			DBG("doing WRITE request with pos %lld, size %lld, len %lu, buf 0x%px, nr_blocks %lu - sd_write_request ret = %d\n", pos, dev_size, b_len, b_buf, nr_blocks, ret);
 			if (ret)
 				break;
 		} else {
@@ -1328,8 +1322,8 @@ static int sd_do_request(struct request *req)
 			else
 				ret = sdhc_read_request(host, pos, b_buf, len);
 #endif
-			ret = sd_read_request(host, pos, b_buf, b_len);
-			DBG("doing READ request with pos %lld, size %lld, len %lu, buf 0x%px - sd_read_request ret = %d\n", pos, dev_size, b_len, b_buf, ret);
+			ret = sd_read_request(host, pos, b_buf, b_len, nr_blocks);
+			DBG("doing READ request with pos %lld, size %lld, len %lu, buf 0x%px nr_blocks %lu - sd_read_request ret = %d\n", pos, dev_size, b_len, b_buf, nr_blocks, ret);
 			if (ret)
 				break;
 		}
@@ -1466,8 +1460,6 @@ static unsigned int sd_check_events(struct gendisk *disk, unsigned int clearing)
 	struct sd_host *host = disk->private_data;
 	unsigned int last_serial;
 	int retval, changed = 0;
-
-	DBG("sd_check_events called");
 
 	/* report a media change for zombies */
 	if (!host)
