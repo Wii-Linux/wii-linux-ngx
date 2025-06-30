@@ -479,7 +479,7 @@ static int bba_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	 */
 	if (!priv->tx_skb) {
 		priv->tx_skb = skb;
-		dev->trans_start = jiffies;
+		//dev->trans_start = jiffies;
 		wake_up(&priv->io_waitq);
 	} else {
 		retval = NETDEV_TX_BUSY;
@@ -709,7 +709,7 @@ static int bba_rx(struct net_device *dev, int budget)
 
 		skb->protocol = eth_type_trans(skb, dev);
 
-		dev->last_rx = jiffies;
+		//dev->last_rx = jiffies;
 		priv->stats.rx_bytes += size;
 		priv->stats.rx_packets++;
 
