@@ -1660,9 +1660,11 @@ static int sd_probe(struct exi_device *exi_device)
 	struct sd_host *host;
 	int retval;
 
+#if 0
 	/* don't try to drive a device which already has a real identifier */
 	if (exi_device->eid.id != EXI_ID_NONE)
 		return -ENODEV;
+#endif
 
 	host = kzalloc(sizeof(*host), GFP_KERNEL);
 	if (!host)
