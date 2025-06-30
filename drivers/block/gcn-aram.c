@@ -269,6 +269,7 @@ static int aram_open(struct block_device *bdev, fmode_t mode)
 	}
 
 	/* honor exclusive open mode */
+#if 0
 	if (drvdata->ref_count == -1 ||
 	    (drvdata->ref_count && (mode & FMODE_EXCL))) {
 		retval = -EBUSY;
@@ -279,6 +280,7 @@ static int aram_open(struct block_device *bdev, fmode_t mode)
 		drvdata->ref_count = -1;
 	else
 		drvdata->ref_count++;
+#endif
 
 out:
 	spin_unlock_irqrestore(&drvdata->queue_lock, flags);
@@ -328,15 +330,19 @@ static int aram_init_blk_dev(struct aram_drvdata *drvdata)
 	drvdata->ref_count = 0;
 
 	retval = register_blkdev(ARAM_MAJOR, ARAM_NAME);
-	if (retval)
+	if (retval) {
+		printk(KERN_ERR "gcn-aram: error %d registering blkdev\n", retval);
 		goto err_register_blkdev;
+	}
 
 	retval = -ENOMEM;
 	spin_lock_init(&drvdata->queue_lock);
 	spin_lock_init(&drvdata->io_lock);
 	queue = blk_init_queue(aram_do_request, &drvdata->queue_lock);
-	if (!queue)
+	if (!queue) {
+		printk(KERN_ERR "gcn-aram: error initializing queue\n");
 		goto err_blk_init_queue;
+	}
 
 	blk_queue_logical_block_size(queue, ARAM_SECTOR_SIZE);
 	blk_queue_dma_alignment(queue, ARAM_DMA_ALIGN);
@@ -346,8 +352,10 @@ static int aram_init_blk_dev(struct aram_drvdata *drvdata)
 	drvdata->queue = queue;
 
 	disk = alloc_disk(1);
-	if (!disk)
+	if (!disk) {
+		printk(KERN_ERR "gcn-aram: error allocating disk\n");
 		goto err_alloc_disk;
+	}
 
 	disk->major = ARAM_MAJOR;
 	disk->first_minor = 0;
@@ -550,7 +558,7 @@ static void aram_of_shutdown(struct platform_device *odev)
 
 
 static struct of_device_id aram_of_match[] = {
-	{ .compatible = "nintendo,flipper-auxram" },
+	{ .compatible = "nintendo,flipper-dsp" },
 	{ },
 };
 
