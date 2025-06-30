@@ -25,6 +25,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/timer.h>
@@ -1643,9 +1645,9 @@ static void di_probe_firmware(struct di_device *ddev)
 /*
  * Stops the drive's motor, according to a previous schedule.
  */
-static void di_motor_off(unsigned long ddev0)
+static void di_motor_off(struct timer_list *t)
 {
-	struct di_device *ddev = (struct di_device *)ddev0;
+	struct di_device *ddev = from_timer(ddev, t, motor_off_timer);
 	struct di_command *cmd;
 	unsigned long flags;
 
@@ -1677,7 +1679,6 @@ static void di_schedule_motor_off(struct di_device *ddev, unsigned int secs)
 {
 	del_timer(&ddev->motor_off_timer);
 	ddev->motor_off_timer.expires = jiffies + secs*HZ;
-	ddev->motor_off_timer.data = (unsigned long)ddev;
 	add_timer(&ddev->motor_off_timer);
 }
 
@@ -1729,7 +1730,7 @@ static void di_spin_up_drive(struct di_device *ddev, u8 enable_extensions)
 				if (DI_ERROR(ddev->drive_status) !=
 				    DI_ERROR_MEDIUM_NOT_PRESENT)
 					di_reset(ddev);
-					continue;
+				continue;
 			}
 			break;
 		}
@@ -1858,9 +1859,6 @@ static void di_do_request(struct request_queue *q)
 		blk_start_request(req);
 		error = -EIO;
 
-		if (req->cmd_type != REQ_TYPE_FS)
-			goto done;
-
 		/* it doesn't make sense to write to this device */
 		if (rq_data_dir(req) == WRITE) {
 			drv_printk(KERN_ERR, "write attempted\n");
@@ -1888,7 +1886,7 @@ static void di_do_request(struct request_queue *q)
 		len = blk_rq_cur_bytes(req);
 
 		di_op_readsector(cmd, ddev, start >> 2,
-				 req->buffer, len);
+				 bio_data(req->bio), len);
 		cmd->done_data = cmd;
 		cmd->done = di_request_done;
 		di_run_command(cmd);
@@ -1996,10 +1994,10 @@ static int di_revalidate_disk(struct gendisk *disk)
 	return 0;
 }
 
-static int di_media_changed(struct gendisk *disk)
+static unsigned int di_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	struct di_device *ddev = disk->private_data;
-	return (ddev->flags & DI_MEDIA_CHANGED) ? 1 : 0;
+	return (ddev->flags & DI_MEDIA_CHANGED) ? DISK_EVENT_MEDIA_CHANGE : 0;
 }
 
 static int di_ioctl(struct block_device *bdev, fmode_t mode,
@@ -2052,7 +2050,7 @@ static struct block_device_operations di_fops = {
 	.open = di_open,
 	.release = di_release,
 	.revalidate_disk = di_revalidate_disk,
-	.media_changed = di_media_changed,
+	.check_events = di_check_events,
 	.ioctl = di_ioctl,
 };
 
@@ -2070,10 +2068,7 @@ static int di_init_irq(struct di_device *ddev)
 	unsigned long flags;
 	int retval;
 
-	init_timer(&ddev->motor_off_timer);
-	ddev->motor_off_timer.function =
-		(void (*)(unsigned long))di_motor_off;
-
+	timer_setup(&ddev->motor_off_timer, di_motor_off, 0);
 	ddev->flags = 0;
 	set_bit(__DI_MEDIA_CHANGED, &ddev->flags);
 
