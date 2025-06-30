@@ -21,7 +21,7 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "root=/dev/nfs nfsroot=192.168.001.253:/nfsroot/cube,nfsvers=3,udp ip=on video=gcn-vifb:tv=auto force_keyboard_port=4";
+		bootargs = "root=/dev/gcnsda2 video=gcn-vifb:tv=auto force_keyboard_port=4 nobats keep_bootcon";
 	};
 
 	memory {
