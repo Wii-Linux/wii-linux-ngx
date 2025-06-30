@@ -107,6 +107,17 @@ config GAMECUBE_SD
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called gcn-sd.
+	
+config GAMECUBE_ARAM
+	tristate "Nintendo GameCube Auxiliary RAM (ARAM)"
+	depends on GAMECUBE
+	help
+	  This enables support for using the 16MB of ARAM found in the
+	  Nintendo GameCube as a block device.
+	  Say Y if you want to include this driver in the kernel.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gcn-aram.
 
 config GDROM
 	tristate "SEGA Dreamcast GD-ROM drive"
