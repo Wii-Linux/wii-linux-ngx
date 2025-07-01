@@ -1401,11 +1401,13 @@ static int sd_open(struct block_device *bdev, fmode_t mode)
 		return -ENXIO;
 
 	/* honor exclusive open mode */
+#if 0
 	if (host->refcnt == -1 ||
 	    (host->refcnt && (mode & FMODE_EXCL))) {
 		retval = -EBUSY;
 		goto out;
 	}
+#endif
 
 	/* this takes care of revalidating the media if needed */
 	check_disk_change(bdev);
