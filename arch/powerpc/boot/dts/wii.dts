@@ -87,6 +87,13 @@
 		dma-ranges;
 		dma-noncoherent;
 
+		gx@c001000 {
+			compatible = "nintendo,hollywood-gx",
+					"nintendo,flipper-gx";
+			reg = <0x0c001000 0x100>;
+			interrupts = <9 10>;
+		};
+
 		video@c002000 {
 			compatible = "nintendo,hollywood-vi",
 					"nintendo,flipper-vi";
