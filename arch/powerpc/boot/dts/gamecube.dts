@@ -16,12 +16,12 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "root=/dev/nfs nfsroot=192.168.001.253:/nfsroot/cube,nfsvers=3,udp ip=on video=gcn-vifb:tv=auto force_keyboard_port=4";
+		bootargs = "root=/dev/gcnsda2 video=gcn-vifb:tv=auto force_keyboard_port=4 nobats";
 	};
 
 	memory {
 		device_type = "memory";
-		reg = <0x00000000 0x01800000>;
+		reg = <0x00000000 0x01774000>;
 	};
 
 	cpus {
@@ -52,6 +52,12 @@
 		ranges = <0x0c000000 0x0c000000 0x00010000>;
 		interrupt-parent = <&PIC>;
 
+		gx@c001000 {
+			compatible = "nintendo,flipper-gx";
+			reg = <0x0c001000 0x100>;
+			interrupts = <9 10>;
+		};
+
 		video@c002000 {
 			compatible = "nintendo,flipper-vi";
 			reg = <0x0c002000 0x100>;
@@ -63,6 +69,7 @@
 		processor-interface@c003000 {
 			compatible = "nintendo,flipper-pi";
 			reg = <0x0c003000 0x100>;
+			interrupts = <1>;
 
 			PIC: pic {
 				#interrupt-cells = <1>;
