@@ -805,6 +805,9 @@ static struct exi_device_id mic_eid_table[] = {
 
 static struct exi_driver mic_driver = {
 	.name = DRV_MODULE_NAME,
+	.driver        = {
+		.name = DRV_MODULE_NAME,
+	},
 	.eid_table = mic_eid_table,
 	.frequency = MIC_SPI_CLK_IDX,
 	.probe = mic_probe,
