@@ -105,8 +105,11 @@ static char sd_driver_version[] = "4.2";
 #define SD_SLOTB_CHANNEL	1	/* EXI1xxx */
 #define SD_SLOTB_DEVICE		0	/* chip select, EXI1CSB0 */
 
-#define SD_SPI_CLK		16000000
-#define SD_SPI_CLK_IDX		EXI_CLK_16MHZ
+#define SD_SP2_CHANNEL		2	/* EXI1xxx */
+#define SD_SP2_DEVICE		0	/* chip select, EXI2CSB0 */
+
+#define SD_SPI_CLK		32000000
+#define SD_SPI_CLK_IDX		EXI_CLK_32MHZ
 
 
 /*
@@ -1789,6 +1792,11 @@ static struct exi_device_id sd_eid_table[] = {
 	[1] = {
 	       .channel = SD_SLOTB_CHANNEL,
 	       .device = SD_SLOTB_DEVICE,
+	       .id = EXI_ID_NONE,
+	       },
+	[2] = {
+	       .channel = SD_SP2_CHANNEL,
+	       .device = SD_SP2_DEVICE,
 	       .id = EXI_ID_NONE,
 	       },
 	{.id = 0}
