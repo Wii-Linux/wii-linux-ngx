@@ -191,8 +191,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_NO_DPM)
 	blr
 
 /* 750CL
- * Set up Paired Singles support on 750CL-based
- * processors like Broadway and Espresso
+ * Set up Paired Singles support on supported processors
+ * processors like Gekko, 750CL, Broadway, and Espresso
  *
  * Credit to loganius for setup procedure.
  * Source: https://gitlab.com/TheMiningTeamYT/linux-wiiu-2-electric-boogaloo/-/blob/af77fe21ec3d250163395472a029f640975cf423/arch/powerpc/kernel/cpu_setup_6xx.S#L280
@@ -203,12 +203,20 @@ setup_750cl_paired_singles:
 	sync
 	isync
 
+#ifdef CONFIG_PPC_SBE
 	lis r8, 0xb3b8 // 64B fetch, depth 4, SBE, ST0, LPE, L2MUM, L2CFI, PS1_CTL & PS2_CTL
+#else
+	lis r8, 0xb1b8 // 64B fetch, depth 4, ST0, LPE, L2MUM, L2CFI, PS1_CTL & PS2_CTL
+#endif
 	mtspr SPRN_HID4_GEKKO, r8
 	sync
 
 #ifndef CONFIG_PPC_PEDANTIC_PSE
+#ifdef CONFIG_PPC_PS_LSQE
 	lis r8, 0xA000 // LSQE, PSE
+#else
+	lis r8, 0x2000 // PSE
+#endif
 	mtspr SPRN_HID2_GEKKO, r8
 	sync
 	isync
