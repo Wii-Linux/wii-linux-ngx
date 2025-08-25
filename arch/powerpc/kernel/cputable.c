@@ -745,8 +745,8 @@ static struct cpu_spec __initdata cpu_specs[] = {
 	{	/* 750CXe "Gekko" (83214) */
 		.pvr_mask		= 0xffffffff,
 		.pvr_value		= 0x00083214,
-		.cpu_name		= "750CXe",
-		.cpu_features		= CPU_FTRS_750,
+		.cpu_name		= "750CXe / Gekko",
+		.cpu_features		= CPU_FTRS_GEKKO,
 		.cpu_user_features	= COMMON_USER | PPC_FEATURE_PPC_LE,
 		.mmu_features		= MMU_FTR_HPTE_TABLE,
 		.icache_bsize		= 32,
