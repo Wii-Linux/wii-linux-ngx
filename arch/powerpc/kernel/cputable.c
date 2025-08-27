@@ -52,7 +52,9 @@ extern void __setup_cpu_apm821xx(unsigned long offset, struct cpu_spec *spec);
 extern void __setup_cpu_603(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_604(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750(unsigned long offset, struct cpu_spec* spec);
+extern void __setup_cpu_750cl(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750cx(unsigned long offset, struct cpu_spec* spec);
+extern void __setup_cpu_gekko(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_750fx(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_7400(unsigned long offset, struct cpu_spec* spec);
 extern void __setup_cpu_7410(unsigned long offset, struct cpu_spec* spec);
@@ -741,15 +743,15 @@ static struct cpu_spec __initdata cpu_specs[] = {
 	{	/* 750CXe "Gekko" (83214) */
 		.pvr_mask		= 0xffffffff,
 		.pvr_value		= 0x00083214,
-		.cpu_name		= "750CXe",
-		.cpu_features		= CPU_FTRS_750,
+		.cpu_name		= "750CXe / Gekko",
+		.cpu_features		= CPU_FTRS_GEKKO,
 		.cpu_user_features	= COMMON_USER | PPC_FEATURE_PPC_LE,
 		.mmu_features		= MMU_FTR_HPTE_TABLE,
 		.icache_bsize		= 32,
 		.dcache_bsize		= 32,
 		.num_pmcs		= 4,
 		.pmc_type		= PPC_PMC_IBM,
-		.cpu_setup		= __setup_cpu_750cx,
+		.cpu_setup		= __setup_cpu_gekko,
 		.machine_check		= machine_check_generic,
 		.platform		= "ppc750",
 	},
@@ -764,7 +766,7 @@ static struct cpu_spec __initdata cpu_specs[] = {
 		.dcache_bsize		= 32,
 		.num_pmcs		= 4,
 		.pmc_type		= PPC_PMC_IBM,
-		.cpu_setup		= __setup_cpu_750,
+		.cpu_setup		= __setup_cpu_750cl,
 		.machine_check		= machine_check_generic,
 		.platform		= "ppc750",
 		.oprofile_cpu_type      = "ppc/750",
