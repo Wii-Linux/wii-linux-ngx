@@ -856,7 +856,7 @@ static void bba_retrieve_ether_addr(struct net_device *dev)
 {
 	bba_ins(BBA_NAFR_PAR0, dev->dev_addr, ETH_ALEN);
 	if (!is_valid_ether_addr(dev->dev_addr))
-		random_ether_addr(dev->dev_addr);
+		eth_random_addr(dev->dev_addr);
 }
 
 /*
@@ -1095,7 +1095,6 @@ static const struct net_device_ops bba_netdev_ops = {
 	.ndo_stop		= bba_close,
 	.ndo_start_xmit		= bba_start_xmit,
 	.ndo_get_stats		= bba_get_stats,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
