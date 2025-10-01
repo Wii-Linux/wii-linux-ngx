@@ -57,6 +57,19 @@ config DUMMY_IRQ
 	  The sole purpose of this module is to help with debugging of systems on
 	  which spurious IRQs would happen on disabled IRQ vector.
 
+config GAMECUBE_MI
+	tristate "Nintendo GameCube Memory Interface (MI)"
+	depends on GAMECUBE
+	help
+	  If you say yes to this option, support will be included for the
+	  Memory Interface (MI) of the Nintendo GameCube.
+
+	  The MI allows one to setup up to four protected memory regions,
+	  catching invalid accesses to them. The MI catches out of bounds
+	  memory accesses too.
+
+	  If in doubt, say N here.
+
 config IBM_ASM
 	tristate "Device driver for IBM RSA service processor"
 	depends on X86 && PCI && INPUT

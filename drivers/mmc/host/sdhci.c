@@ -4806,9 +4806,11 @@ int sdhci_setup_host(struct sdhci_host *host)
 	 */
 	mmc->max_blk_count = (host->quirks & SDHCI_QUIRK_NO_MULTIBLOCK) ? 1 : 65535;
 
-	if (mmc->max_segs == 1)
-		/* This may alter mmc->*_blk_* parameters */
-		sdhci_allocate_bounce_buffer(host);
+	if (!(host->quirks2 & SDHCI_QUIRK2_NO_BOUNCE_BUFFER)) {
+		if (mmc->max_segs == 1)
+			/* This may alter mmc->*_blk_* parameters */
+			sdhci_allocate_bounce_buffer(host);
+	}
 
 	return 0;
 
