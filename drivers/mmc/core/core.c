@@ -57,7 +57,12 @@ static const unsigned freqs[] = { 400000, 300000, 200000, 100000 };
  * performance cost, and for other reasons may not always be desired.
  * So we allow it to be disabled.
  */
+#ifdef CONFIG_MMC_DISABLE_SPI_CRC
+bool use_spi_crc = 0;
+#else
 bool use_spi_crc = 1;
+#endif
+
 module_param(use_spi_crc, bool, 0);
 
 static int mmc_schedule_delayed_work(struct delayed_work *work,
