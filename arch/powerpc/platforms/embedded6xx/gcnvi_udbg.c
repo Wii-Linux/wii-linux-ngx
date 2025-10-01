@@ -21,6 +21,8 @@
 
 #define pr_fmt(fmt)		"gcnvi_udbg: " fmt
 
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/io.h>
 #include <linux/string.h>
 #include <linux/console.h>
@@ -187,7 +189,7 @@ static void gcnvi_udbg_console_init(struct console_data *con, void *framebuffer,
 
 	font = find_font(FONT_NAME);
 	if (!font)
-		font = get_default_font(xres, yres, U32_MAX, U32_MAX);
+		font = get_default_font(xres, yres, NULL, NULL);
 	con->font = font->data;
 	con->font_xsize = font->width;
 	con->font_ysize = font->height;
@@ -308,7 +310,7 @@ static struct console_data gcnvi_udbg_console;
 /*
  * Transmits a character.
  */
-void gcnvi_udbg_putc(char ch)
+static void gcnvi_udbg_putc(char ch)
 {
 	if (default_console)
 		console_putc(default_console, ch);
@@ -357,7 +359,7 @@ void __init gcnvi_udbg_init(void)
 	if (xfb_size < 2 * SCREEN_WIDTH * screen_height)
 		return;
 
-	screen_base = ioremap_nocache(xfb_start, xfb_size);
+	screen_base = ioremap(xfb_start, xfb_size);
 	if (!screen_base)
 		return;
 
