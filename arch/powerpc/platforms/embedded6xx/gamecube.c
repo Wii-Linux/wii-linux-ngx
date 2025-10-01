@@ -48,6 +48,16 @@ static void __noreturn gamecube_halt(void)
 	gamecube_restart(NULL);
 }
 
+static void gamecube_show_cpuinfo(struct seq_file *m)
+{
+	seq_printf(m, "vendor\t\t: IBM\n");
+	seq_printf(m, "machine\t\t: Nintendo GameCube\n");
+}
+
+static void gamecube_setup_arch(void)
+{
+}
+
 static int __init gamecube_probe(void)
 {
 	pm_power_off = gamecube_power_off;
@@ -62,16 +72,30 @@ static void gamecube_shutdown(void)
 	flipper_quiesce();
 }
 
+#ifdef CONFIG_KEXEC
+static int gamecube_kexec_prepare(struct kimage *image)
+{
+	return 0;
+}
+#endif /* CONFIG_KEXEC */
+
+
 define_machine(gamecube) {
 	.name			= "gamecube",
 	.compatible		= "nintendo,gamecube",
 	.probe			= gamecube_probe,
+	.setup_arch		= gamecube_setup_arch,
+	.show_cpuinfo		= gamecube_show_cpuinfo,
 	.restart		= gamecube_restart,
 	.halt			= gamecube_halt,
 	.init_IRQ		= flipper_pic_probe,
 	.get_irq		= flipper_pic_get_irq,
 	.progress		= udbg_progress,
 	.machine_shutdown	= gamecube_shutdown,
+#ifdef CONFIG_KEXEC
+	.machine_kexec_prepare	= gamecube_kexec_prepare,
+	.machine_kexec		= default_machine_kexec,
+#endif
 };
 
 

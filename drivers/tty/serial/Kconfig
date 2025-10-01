@@ -1619,6 +1619,19 @@ config SERIAL_ESP32_ACM
 	  snippet may be used:
 	    earlycon=esp32s3acm,mmio32,0x60038000
 
+config SERIAL_USBGECKO
+	tristate "USBGecko adapter on the Nintendo GameCube/Wii"
+	depends on GAMECUBE_EXI
+	select SERIAL_CORE
+	help
+	  This is a driver for the USB Gecko adapter for the Nintendo GameCube
+	  and Wii gaming consoles. It provides a console and a tty interface.
+
+	  If you have an adapter like this, say Y here, otherwise say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called usbgecko.
+
 endmenu
 
 config SERIAL_MCTRL_GPIO

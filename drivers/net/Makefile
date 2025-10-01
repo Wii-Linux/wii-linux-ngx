@@ -55,6 +55,7 @@ obj-y += dsa/
 endif
 obj-$(CONFIG_ETHERNET) += ethernet/
 obj-$(CONFIG_FDDI) += fddi/
+obj-$(CONFIG_GAMECUBE_BBA) += gcn-bba.o
 obj-$(CONFIG_HAMRADIO) += hamradio/
 obj-$(CONFIG_QCOM_IPA) += ipa/
 obj-$(CONFIG_PLIP) += plip/
