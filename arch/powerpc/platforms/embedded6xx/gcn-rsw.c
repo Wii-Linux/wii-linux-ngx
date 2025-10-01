@@ -263,7 +263,7 @@ static int __init rsw_of_probe(struct platform_device *odev)
 	}
 
 	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
-	if (irq == NO_IRQ) {
+	if (!irq) {
 		drv_printk(KERN_ERR, "no irq found\n");
 		return -ENODEV;
 	}

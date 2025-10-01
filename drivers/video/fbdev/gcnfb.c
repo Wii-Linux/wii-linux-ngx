@@ -1829,8 +1829,7 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 	spin_unlock(&ctl->lock);
 }
 
-static int vi_ave_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int vi_ave_probe(struct i2c_client *client)
 {
 	int error;
 	if (first_vi_ave) {
@@ -2133,7 +2132,6 @@ static int vifb_set_par(struct fb_info *info)
 	/* horizontal line in bytes, refers to virtual framebuffer */
 	info->fix.line_length = var->xres_virtual * (var->bits_per_pixel / 8);
 
-	info->flags = FBINFO_DEFAULT;
 	if (vifb_format_is_fourcc(var)) {
 		vfb_format = var->nonstd;
 		if (vfb_format != V4L2_PIX_FMT_YUYV) {
@@ -2226,7 +2224,7 @@ static int vfb_mmap(struct fb_info *info,
 			size = 0;
 	}
 
-	vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);	/* avoid to swap out this VMA */
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);	/* avoid to swap out this VMA */
 	return 0;
 
 }

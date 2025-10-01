@@ -417,7 +417,7 @@ static void ug_tty_close(struct tty_struct *tty, struct file *filp)
 }
 
 static int ug_tty_write(struct tty_struct *tty,
-			 const unsigned char *buf, int count)
+			 const unsigned char *buf, size_t count)
 {
 	struct ug_adapter *adapter = tty->driver_data;
 	char *b = (char *)buf;
