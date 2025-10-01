@@ -381,8 +381,7 @@ static int snd_gcn_new_pcm(struct snd_gcn *chip)
 
 	/* preallocate 64k buffer */
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS,
-					      snd_dma_continuous_data
-					      (GFP_KERNEL), 64 * 1024,
+					      NULL, 64 * 1024,
 					      64 * 1024);
 
 	pcm->info_flags = 0;
