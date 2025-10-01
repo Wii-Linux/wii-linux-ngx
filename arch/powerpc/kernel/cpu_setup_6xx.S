@@ -224,7 +224,7 @@ SYM_FUNC_END(setup_750_7400_hid0)
 /* Gekko, 750CL
  * Init the GQRs to 0 for Paired Singles operation
  */
-init_gqrs:
+SYM_FUNC_START_LOCAL(init_gqrs)
 	li r8, 0
 
 	// Initialize GQRs
@@ -238,6 +238,7 @@ init_gqrs:
 	mtspr 919, r8
 
 	blr
+SYM_FUNC_END(init_gqrs)
 
 
 /* 750CL
@@ -247,7 +248,7 @@ init_gqrs:
  * Credit to loganius for setup procedure.
  * Source: https://gitlab.com/TheMiningTeamYT/linux-wiiu-2-electric-boogaloo/-/blob/af77fe21ec3d250163395472a029f640975cf423/arch/powerpc/kernel/cpu_setup_6xx.S#L280
  */
-setup_750cl_paired_singles:
+SYM_FUNC_START_LOCAL(setup_750cl_paired_singles)
 	li r8, 0
 	mtspr SPRN_HID2_GEKKO, r8
 	sync
@@ -277,6 +278,7 @@ setup_750cl_paired_singles:
 	mtlr r16
 
 	blr
+SYM_FUNC_END(setup_750cl_paired_singles)
 
 /* Gekko
  * Set up Paired Singles support on Gekko
@@ -285,7 +287,7 @@ setup_750cl_paired_singles:
  * Gekko does not have HID4 like 750CL, Broadway, or Espresso.
  * So, this step must not be performed.
  */
-setup_gekko_paired_singles:
+SYM_FUNC_START_LOCAL(setup_gekko_paired_singles)
 	li r8, 0
 	mtspr SPRN_HID2_GEKKO, r8
 	sync
@@ -301,6 +303,7 @@ setup_gekko_paired_singles:
 	mtlr r16
 
 	blr
+SYM_FUNC_END(setup_gekko_paired_singles)
 
 
 /* 750cx specific
