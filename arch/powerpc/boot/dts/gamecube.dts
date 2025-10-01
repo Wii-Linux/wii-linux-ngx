@@ -45,7 +45,6 @@
 	flipper {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		#interrupt-cells = <1>;
 		model = "flipper";
 		compatible = "nintendo,flipper";
 		clock-frequency = <162000000>; /* 162MHz */
