@@ -72,14 +72,6 @@ static void gamecube_shutdown(void)
 	flipper_quiesce();
 }
 
-#ifdef CONFIG_KEXEC
-static int gamecube_kexec_prepare(struct kimage *image)
-{
-	return 0;
-}
-#endif /* CONFIG_KEXEC */
-
-
 define_machine(gamecube) {
 	.name			= "gamecube",
 	.compatible		= "nintendo,gamecube",
@@ -92,10 +84,6 @@ define_machine(gamecube) {
 	.get_irq		= flipper_pic_get_irq,
 	.progress		= udbg_progress,
 	.machine_shutdown	= gamecube_shutdown,
-#ifdef CONFIG_KEXEC
-	.machine_kexec_prepare	= gamecube_kexec_prepare,
-	.machine_kexec		= default_machine_kexec,
-#endif
 };
 
 
