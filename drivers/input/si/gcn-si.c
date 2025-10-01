@@ -252,7 +252,7 @@ static void si_setup_polling(struct si_drvdata *drvdata)
 
 static void si_timer(struct timer_list *t)
 {
-	struct si_port *port = from_timer(port, t, timer);
+	struct si_port *port = timer_container_of(port, t, timer);
 
 	unsigned int index = port->index;
 	void __iomem *io_base = port->drvdata->io_base;
@@ -382,7 +382,7 @@ static void si_close(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
-	del_timer(&port->timer);
+	timer_delete(&port->timer);
 }
 
 static int si_event(struct input_dev *idev, unsigned int type,
@@ -677,7 +677,7 @@ static int si_do_shutdown(struct device *dev)
 	if (drvdata) {
 		drvdata->flags |= SI_QUIESCE;
 		for (i = 0; i < SI_MAX_PORTS; ++i)
-			del_timer_sync(&drvdata->ports[i].timer);
+			timer_delete_sync(&drvdata->ports[i].timer);
 		si_reset_all(drvdata->io_base);
 	}
 	return 0;
