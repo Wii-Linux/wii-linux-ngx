@@ -136,7 +136,7 @@ static irqreturn_t rsw_handler(int irq, void *data)
 		if (time_before(jiffies,
 				drvdata->jiffies + drvdata->timeout * HZ)) {
 			/* the reset button was hit again before deadline */
-			del_timer(&drvdata->timer);
+			timer_delete(&drvdata->timer);
 			drvdata->state = IDLE;
 			printk(KERN_EMERG "Reboot cancelled!\n");
 		} else {
