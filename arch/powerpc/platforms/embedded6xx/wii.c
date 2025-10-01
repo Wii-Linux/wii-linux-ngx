@@ -16,6 +16,7 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 
+#include <linux/exi.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
 #include <asm/time.h>
@@ -23,6 +24,7 @@
 
 #include "flipper-pic.h"
 #include "hlwd-pic.h"
+#include "gcnvi_udbg.h"
 #include "usbgecko_udbg.h"
 
 /* control block */
@@ -93,6 +95,9 @@ static void __init wii_setup_arch(void)
 		clrbits32(hw_gpio + HW_GPIO_OUT(0),
 			  HW_GPIO_SLOT_LED | HW_GPIO_SENSOR_BAR);
 	}
+
+	ug_udbg_init();
+	gcnvi_udbg_init();
 }
 
 static void __noreturn wii_restart(char *cmd)
@@ -148,9 +153,16 @@ static int __init wii_probe(void)
 	return 1;
 }
 
+static void wii_show_cpuinfo(struct seq_file *m)
+{
+	seq_printf(m, "vendor\t\t: IBM\n");
+	seq_printf(m, "machine\t\t: Nintendo Wii\n");
+}
+
 static void wii_shutdown(void)
 {
 	hlwd_quiesce();
+	exi_quiesce();
 	flipper_quiesce();
 }
 
@@ -172,6 +184,7 @@ define_machine(wii) {
 	.probe			= wii_probe,
 	.setup_arch		= wii_setup_arch,
 	.restart		= wii_restart,
+	.show_cpuinfo		= wii_show_cpuinfo,
 	.halt			= wii_halt,
 	.init_IRQ		= wii_pic_probe,
 	.get_irq		= flipper_pic_get_irq,
