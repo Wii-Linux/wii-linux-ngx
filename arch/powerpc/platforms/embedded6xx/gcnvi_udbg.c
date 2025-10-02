@@ -359,7 +359,7 @@ void __init gcnvi_udbg_init(void)
 	if (xfb_size < 2 * SCREEN_WIDTH * screen_height)
 		return;
 
-	screen_base = ioremap(xfb_start, xfb_size);
+	screen_base = memremap(xfb_start, xfb_size, MEMREMAP_WC);
 	if (!screen_base)
 		return;
 
