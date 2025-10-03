@@ -2312,7 +2312,7 @@ static int vifb_do_probe(struct device *dev,
 	 * always as big as the largest mode supported
 	 * TODO: reallocate framebuffer as needed
 	 */
-	vfb_len = xfb_size * 2;
+	vfb_len = xfb_size;
 	info->fix.smem_len = vfb_len;
 	size = PAGE_ALIGN(info->fix.smem_len);
 	vfb_mem = vmalloc_32(size);
