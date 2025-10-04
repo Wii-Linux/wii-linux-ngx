@@ -82,6 +82,7 @@ choice
 
 config USBGECKO_UDBG
 	bool "USB Gecko udbg console for the Nintendo GameCube/Wii"
+	depends on GAMECUBE_COMMON
 	help
 	  If you say yes to this option, support will be included for the
 	  USB Gecko adapter as an udbg console.
@@ -114,10 +115,6 @@ config GAMECUBE_RSW
 
 	  If in doubt, say Y here.
 
-choice
-	prompt "Nintendo Console Support"
-	depends on EMBEDDED6xx
-
 config GAMECUBE
 	bool "Nintendo-GameCube"
 	depends on EMBEDDED6xx
@@ -134,4 +131,3 @@ config WII
 	help
 	  Select WII if configuring for the Nintendo Wii.
 	  More information at: <http://gc-linux.sourceforge.net/>
-endchoice
