@@ -193,20 +193,11 @@
 			interrupt-parent = <&PIC1>;
 		};
 
-		/*
-		 * Hardware accessible through Team Twiizers 'mini' firmware
-		 * replacement for Starlet.
-		 */
-		mini@d000000 {
-			#address-cells = <1>;
-			#size-cells = <1>;
-			compatible = "twiizers,starlet-mini-ipc";
-			reg = <0x0d000000 0x40	/* IPC */
-			       0x13fffffc 0x4>;	/* mini header pointer */
-
-			ranges = <0x0d040000 0x0d040000 0x00050000
-			          0x0d800000 0x0d800000 0x00007000
-			          0x133e0000 0x133e0000 0x00c20000>;
+		ipc@d000000 {
+			compatible = "nintendo,hollywood-ipc";
+			reg = <0x0d000000 0x10>;
+			interrupts = <30>;
+			interrupt-parent = <&PIC1>;
 		};
 
 		PIC1: pic1@d800030 {
