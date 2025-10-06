@@ -23,10 +23,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/delay.h>
 #include <linux/reboot.h>
-#include <linux/kexec.h>
 
 /* for flipper hardware registers */
 #include "flipper-pic.h"
@@ -39,27 +36,12 @@
 #define DRV_AUTHOR			"Stefan Esser <se@nopiracy.de>, " \
 							"Albert Herranz"
 
-static char rsw_driver_version[] = "1.0i";
+static char rsw_driver_version[] = "1.1t";
 
 #define drv_printk(level, format, arg...) \
 	printk(level DRV_MODULE_NAME ": " format , ## arg)
 
-
-#define RSW_NORMAL_TIMEOUT      3	/* seconds */
-#define RSW_EMERGENCY_PUSHES   10
-
-enum rsw_state {
-	IDLE = 0,		/* nothing to do */
-	NORMAL_RESET,		/* reboot requested */
-	EMERGENCY_RESET,	/* try emergency reboot */
-};
-
 struct rsw_drvdata {
-	enum rsw_state state;
-	struct timer_list timer;
-	unsigned long jiffies;
-	int pushes;
-	int timeout;
 	spinlock_t lock;
 
 	void __iomem *io_base;
@@ -81,93 +63,19 @@ static int rsw_is_button_pressed(void __iomem *io_base)
 }
 
 /*
- * Invokes a normal system restart.
- */
-static void rsw_normal_restart(struct timer_list *dummy)
-{
-	ctrl_alt_del();
-}
-
-/*
- * Performs a low level system restart.
- */
-static void rsw_emergency_restart(void)
-{
-#ifdef CONFIG_KEXEC
-	struct kimage *image;
-	image = xchg(&kexec_image, 0);
-	if (image)
-		machine_kexec(image);
-#endif
-	machine_restart(NULL);
-}
-
-/*
  * Handles the interrupt associated to the reset button.
  */
 static irqreturn_t rsw_handler(int irq, void *data)
 {
 	struct rsw_drvdata *drvdata = (struct rsw_drvdata *)data;
-	unsigned long flags;
 
 	if (!rsw_is_button_pressed(drvdata->io_base)) {
 		/* nothing to do */
 		return IRQ_HANDLED;
 	}
 
-	spin_lock_irqsave(&drvdata->lock, flags);
-
-	/* someone pushed the reset button */
-	switch (drvdata->state) {
-	case IDLE:
-		drvdata->state = NORMAL_RESET;
-		printk(KERN_EMERG "Rebooting in %d seconds...\n",
-		       drvdata->timeout);
-		printk(KERN_WARNING
-		       "Push the Reset button again to cancel reboot!\n");
-
-		/* schedule a reboot in a few seconds */
-		timer_setup(&drvdata->timer, rsw_normal_restart, 0);
-		drvdata->timer.expires = jiffies + drvdata->timeout * HZ;
-		add_timer(&drvdata->timer);
-		drvdata->jiffies = jiffies;
-		break;
-	case NORMAL_RESET:
-		if (time_before(jiffies,
-				drvdata->jiffies + drvdata->timeout * HZ)) {
-			/* the reset button was hit again before deadline */
-			timer_delete(&drvdata->timer);
-			drvdata->state = IDLE;
-			printk(KERN_EMERG "Reboot cancelled!\n");
-		} else {
-			/*
-			 * Time expired. System should be now restarting.
-			 * Go to emergency mode in case something goes bad.
-			 */
-			drvdata->state = EMERGENCY_RESET;
-			drvdata->pushes = 0;
-			printk(KERN_WARNING
-			       "SWITCHED TO EMERGENCY RESET MODE!\n"
-			       "Push %d times the Reset button to force"
-			       " a hard reset!\n"
-			       "NOTE THAT THIS COULD CAUSE DATA LOSS!\n",
-			       RSW_EMERGENCY_PUSHES);
-		}
-		break;
-	case EMERGENCY_RESET:
-		/* force a hard reset if the user insists ... */
-		if (++drvdata->pushes >= RSW_EMERGENCY_PUSHES) {
-			spin_unlock_irqrestore(&drvdata->lock, flags);
-			rsw_emergency_restart();
-			return IRQ_HANDLED;
-		} else {
-			printk(KERN_INFO "%d/%d\n", drvdata->pushes,
-			       RSW_EMERGENCY_PUSHES);
-		}
-		break;
-	}
-
-	spin_unlock_irqrestore(&drvdata->lock, flags);
+	/* reboot the system */
+	ctrl_alt_del();
 
 	return IRQ_HANDLED;
 }
@@ -183,10 +91,6 @@ static int rsw_init(struct rsw_drvdata *drvdata, struct resource *mem, int irq)
 
 	drvdata->io_base = ioremap(mem->start, mem->end - mem->start + 1);
 	drvdata->irq = irq;
-
-	spin_lock_init(&drvdata->lock);
-	drvdata->state = IDLE;
-	drvdata->timeout = RSW_NORMAL_TIMEOUT;
 
 	retval = request_irq(drvdata->irq, rsw_handler, 0,
 			     DRV_MODULE_NAME, drvdata);
