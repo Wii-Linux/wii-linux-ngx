@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/input/gcn-si.c
  *
@@ -5,12 +6,6 @@
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Steven Looman
  * Copyright (C) 2005,2008,2009 Albert Herranz
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
  */
 
 /* #define SI_DEBUG */
