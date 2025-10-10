@@ -15,8 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
-#include "hlwd-ipc.h"
-#include "hlwd-ipc-mini.h"
+#include <asm/hlwd-ipc.h>
+#include <asm/hlwd-ipc-mini.h>
 
 #define DRV_MODULE_NAME "hlwd-ipc"
 #define DRV_AUTHOR "Michael \"Techflash\" Garofalo <officialTechflashYT@gmail.com>"
