@@ -198,6 +198,16 @@
 			reg = <0x0d000000 0x10>;
 			interrupts = <30>;
 			interrupt-parent = <&PIC1>;
+
+			mini {
+				compatible = "fail0verflow,mini-ipc";
+				infohdr = <0x13fffffc>; /* IPC infohdr */
+			};
+
+			ios {
+				compatible = "nintendo,ios-ipc";
+				/* TODO: how should this be defined? <0x133e0000 0x20000>; */ /* MEM2 reserved region */
+			};
 		};
 
 		PIC1: pic1@d800030 {
