@@ -115,6 +115,22 @@ config GAMECUBE_RSW
 
 	  If in doubt, say Y here.
 
+config HLWD_IPC
+	bool "Nintendo Wii Inter-Processor Communication (IPC)"
+	depends on WII
+	default y
+	help
+	  If you say yes to this option, support will be included for the
+	  IPC mechanism found in the Nintendo Wii's "Hollywood" chipset.
+	  This allows communication with the "Starlet" ARM processor,
+	  running either IOS (the official Nintendo/BroadOn Starlet firmware),
+	  or MINI (the fail0verflow Starlet firmware, made for BootMii).
+
+	  Communication with this processor allows useful tasks for this
+	  platform, such as CPU clock speed switching.
+
+	  If in doubt, say Y here.
+
 config GAMECUBE
 	bool "Nintendo-GameCube"
 	depends on EMBEDDED6xx
