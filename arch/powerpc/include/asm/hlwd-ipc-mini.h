@@ -15,7 +15,8 @@
 
 #ifndef __HLWD_IPC_MINI_H
 #define __HLWD_IPC_MINI_H
-
+#include <linux/types.h>
+#include <linux/stdarg.h>
 
 /*
  * IPC codes
@@ -28,6 +29,7 @@
 #define IPC_MINI_CODE_PPC_BOOT_FILE 0x00060001
 
 /* only supported in downstream versions of MINI */
+#define IPC_MINI_CODE_PPC_CLK_SUPP  0x00068000
 #define IPC_MINI_CODE_PPC_CLK_LO    0x00068001
 #define IPC_MINI_CODE_PPC_CLK_HI    0x00068002
 
