@@ -38,6 +38,15 @@ struct hlwd_ipc *ipc_get_state(void)
 }
 
 /*
+ * Get the IPC flavor
+ */
+enum ipc_flavor ipc_get_flavor(void)
+{
+	return ipc->flavor;
+}
+
+
+/*
  * Hollywood IPC Initialization and Cleanup
  */
 static int ipc_probe(struct platform_device *odev)
