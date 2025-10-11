@@ -35,4 +35,9 @@ struct hlwd_ipc {
  */
 struct hlwd_ipc *ipc_get_state(void);
 
+/*
+ * Get the current IPC flavor
+ */
+enum ipc_flavor ipc_get_flavor(void);
+
 #endif
