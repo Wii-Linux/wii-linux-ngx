@@ -573,7 +573,7 @@ static inline void spi_read(struct sd_host *host, void *data, size_t len)
 	 * This will help reducing CPU monopolization on large reads.
 	 *
 	 */
-	exi_dev_transfer(host->exi_device, data, len, EXI_OP_READ, EXI_CMD_IDI);
+	exi_dev_transfer(host->exi_device, data, len, EXI_OP_READ, 0);
 }
 
 /* cycles are expressed in 8 clock cycles */
