@@ -114,10 +114,6 @@ struct exi_channel {
 	unsigned long		csr;
 	struct tasklet_struct	tasklet;
 
-	unsigned long		stats_idi_xfers;
-	unsigned long		stats_dma_xfers;
-	unsigned long		stats_xfers;
-
 	struct exi_event	events[EXI_MAX_EVENTS];
 };
 
