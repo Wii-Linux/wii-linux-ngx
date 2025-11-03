@@ -238,7 +238,6 @@ void exi_transfer_raw(struct exi_channel *exi_channel,
 {
 	while (len >= 4) {
 		__exi_transfer_raw_u32(exi_channel, data, mode);
-		exi_channel->stats_xfers++;
 		data += 4;
 		len -= 4;
 	}
@@ -246,18 +245,14 @@ void exi_transfer_raw(struct exi_channel *exi_channel,
 	switch (len) {
 	case 1:
 		__exi_transfer_raw_u8(exi_channel, data, mode);
-		exi_channel->stats_xfers++;
 		break;
 	case 2:
 		__exi_transfer_raw_u16(exi_channel, data, mode);
-		exi_channel->stats_xfers++;
 		break;
 	case 3:
 		/* XXX optimize this case */
 		__exi_transfer_raw_u16(exi_channel, data, mode);
-		exi_channel->stats_xfers++;
 		__exi_transfer_raw_u8(exi_channel, data+2, mode);
-		exi_channel->stats_xfers++;
 		break;
 	default:
 		break;
@@ -277,9 +272,6 @@ static void exi_start_idi_transfer_raw(struct exi_channel *exi_channel,
 	unsigned long flags;
 
 	BUG_ON(len < 1 || len > 4);
-
-	exi_channel->stats_idi_xfers++;
-	exi_channel->stats_xfers++;
 
 	if ((mode & EXI_OP_WRITE)) {
 		switch (len) {
@@ -358,9 +350,6 @@ static void exi_start_dma_transfer_raw(struct exi_channel *exi_channel,
 
 	BUG_ON((data & EXI_DMA_ALIGN) != 0 ||
 	       (len & EXI_DMA_ALIGN) != 0);
-
-	exi_channel->stats_dma_xfers++;
-	exi_channel->stats_xfers++;
 
 	/*
 	 * We clear the DATA register here to avoid confusing some
