@@ -176,12 +176,29 @@ static void exi_select(struct exi_channel *channel,
 	    WARN_ON(!channel))
 		return;
 
-	dev_info(exi->dev, "Channel %d, selecting CS %d at clock %dMHz, CSR @ 0x%08x\n", channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)), (u32)&channel->regs->csr);
+	dev_dbg(exi->dev, "Channel %d, selecting CS %d at clock %dMHz, CSR @ 0x%08x\n", channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)), (u32)&channel->regs->csr);
 
-	csr &= (EXI_CSR_EXT | EXI_CSR_ROMDIS); /* start from nothing except the read-only status bits and stuff we really shouldn't change */
+	csr = 0;
 	csr |= (1 << (EXI_CSR_CS_SHIFT + cs)); /* set the appropriate CS bit */
 	csr |= clk;                            /* set the appropriate CLK bits */
-	dev_info(exi->dev, "Writing CSR=0x%08x\n", csr);
+	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
+	out_be32(&channel->regs->csr, csr);    /* write CSR back */
+}
+
+/*
+ * Deselects any selected device (CS line) on the given
+ * EXI channel.
+ */
+static void exi_deselect(struct exi_channel *channel)
+{
+	u32 csr;
+	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+
+	if (WARN_ON(!channel))
+		return;
+
+	csr = 0;
+	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
 }
 
@@ -230,7 +247,7 @@ static int exi_xfer_imm(struct exi_channel *channel,
 		while (in_be32(&channel->regs->cr) & EXI_CR_TSTART);
 
 
-	dev_info(exi->dev, "Channel %d, doing xfer with len=%d mode=%c%c\n",
+	dev_dbg(exi->dev, "Channel %d, doing xfer with len=%d mode=%c%c\n",
 			channel->num, len, (mode & MODE_READ) ? 'R' : '-',
 			(mode & MODE_WRITE) ? 'W' : '-');
 
@@ -238,13 +255,13 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	if (mode & MODE_WRITE) {
 		switch (len) {
 		case 1:
-			data = (*(u8 *)in & 0xff000000) << 24;
+			data = *(u8 *)in << 24;
 			break;
 		case 2:
-			data = (*(u16 *)in & 0xffff0000) << 16;
+			data = *(u16 *)in << 16;
 			break;
 		case 3:
-			data = (*(u32 *)in & 0xffffff00) << 8;
+			data = (*(u32 *)in & 0x00ffffff) << 8;
 			break;
 		case 4:
 			data = *(u32 *)in;
@@ -252,11 +269,11 @@ static int exi_xfer_imm(struct exi_channel *channel,
 		default:
 			return -EINVAL;
 		}
-		dev_info(exi->dev, "Outgoing data from buffer, data=0x%08x\n", data);
+		dev_dbg(exi->dev, "Outgoing data from buffer, data=0x%08x\n", data);
 	}
 	else {
 		data = 0;
-		dev_info(exi->dev, "Outgoing data static, data=0x%08x\n", data);
+		dev_dbg(exi->dev, "Outgoing data static, data=0x%08x\n", data);
 	}
 
 	/* give the EXI hardware our data */
@@ -272,9 +289,10 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	else
 		return -EINVAL;
 
+	cr = 0;
 	cr |= ((len - 1) << EXI_CR_TLEN_SHIFT); /* length */
 	cr |= EXI_CR_TSTART;              /* start the transfer */
-	dev_info(exi->dev, "Writing CR=0x%08x\n", cr);
+	dev_dbg(exi->dev, "Writing CR=0x%08x\n", cr);
 	out_be32(&channel->regs->cr, cr); /* do it */
 
 	/* spin until transfer done */
@@ -283,7 +301,7 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	/* transfer done, read our data, if any */
 	if (mode & MODE_READ) {
 		data = in_be32(&channel->regs->data);
-		dev_info(exi->dev, "Incoming data=0x%08x\n", data);
+		dev_dbg(exi->dev, "Incoming data=0x%08x\n", data);
 
 		/* write it back */
 		switch (len) {
@@ -326,6 +344,7 @@ static u32 exi_read_id(struct exi_spi *exi,
 	exi_select(ch, cs, EXI_CSR_CLK_8MHZ); /* select this device */
 	exi_write_imm(ch, 2, &cmd);           /* tell device to provide ID */
 	exi_read_imm(ch, 4, &id);             /* read the ID reported by the device (if any) */
+	exi_deselect(ch);                     /* deselect this device */
 	exi_unlock(ch);                       /* release lock on the channel */
 
 	return id;
