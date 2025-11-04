@@ -155,6 +155,27 @@ static void exi_unlock(struct exi_channel *channel)
 	mutex_unlock(&channel->lock);
 }
 
+/*
+ * Convert SPI Hz speed to EXI speed index
+ */
+static unsigned int exi_speed_spi_to_exi(unsigned int hz)
+{
+	unsigned int mhz = hz / 1000000;
+	if (mhz > 32)
+		return EXI_CSR_CLK_64MHZ;
+	else if (mhz > 16)
+		return EXI_CSR_CLK_32MHZ;
+	else if (mhz > 8)
+		return EXI_CSR_CLK_16MHZ;
+	else if (mhz > 4)
+		return EXI_CSR_CLK_8MHZ;
+	else if (mhz > 2)
+		return EXI_CSR_CLK_4MHZ;
+	else if (mhz > 1)
+		return EXI_CSR_CLK_2MHZ;
+
+	return EXI_CSR_CLK_1MHZ;
+}
 
 /*
  * EXI hardware functions
@@ -351,17 +372,102 @@ static u32 exi_read_id(struct exi_spi *exi,
 }
 
 /*
+ * EXI Device ID mappings
+ */
+struct exi_id_entry {
+	u32 id;
+	char *name;
+	char *modalias;
+};
+
+static struct exi_id_entry exi_id_table[] = {
+	{ 0x00000000, "No ID", "" },
+	{ 0xffffffff, "No ID", "" },
+	/* TODO: When do we see one or the other? */
+	{ 0xffff1698, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
+	{ 0xffff2843, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
+	{ 0xfffff308, "Wii Mask ROM/RTC/SRAM/UART", "wii-rtc" },
+	{ 0x00000004, "Memory Card 59", "gamecube-memory-card" },
+	{ 0x00000008, "Memory Card 123", "gamecube-memory-card" },
+	{ 0x00000010, "Memory Card 251", "gamecube-memory-card" },
+	{ 0x00000020, "Memory Card 507", "gamecube-memory-card" },
+	{ 0x00000040, "Memory Card 1019", "gamecube-memory-card" },
+	{ 0x00000080, "Memory Card 2043", "gamecube-memory-card" },
+	{ 0x01010000, "USB Adapter", "" },
+	{ 0x01020000, "NPDP GDEV", "" },
+	{ 0x02020000, "Modem", "" },
+	{ 0x03010000, "Marlin?", "" },
+	{ 0x04020200, "BroadBand Adapter (DOL-015)", "gamecube-bba" },
+	{ 0x04120000, "AD16", "" },
+	{ 0x05070000, "IS Viewer", "" },
+	{ 0x0a000000, "Microphone (DOL-022)", "gamecube-microphone" },
+	{ 0, NULL, NULL }
+};
+
+
+/*
+ * Convert an EXI device ID to a name
+ */
+static char *exi_id_to_name(u32 id)
+{
+	struct exi_id_entry *ent = exi_id_table;
+	while (ent->name) {
+		if (ent->id == id)
+			return ent->name;
+		ent++;
+	}
+	return "Unknown";
+}
+
+/*
+ * Convert an EXI device ID to a modalias
+ */
+static char *exi_id_to_modalias(u32 id)
+{
+	struct exi_id_entry *ent = exi_id_table;
+	while (ent->modalias) {
+		if (ent->id == id)
+			return ent->modalias;
+		ent++;
+	}
+	return "";
+}
+
+/*
  * Probe what device is on a given channel + CS, and
  * create a new SPI device for it.
  */
-static void exi_probe(struct exi_spi *exi,
+static int exi_probe(struct exi_spi *exi,
 		      unsigned int channel,
 		      unsigned int cs)
 {
 	u32 id = exi_read_id(exi, channel, cs);
+	char *name = exi_id_to_name(id);
+	char *modalias = exi_id_to_modalias(id);
+	struct spi_device *spi;
+	int ret;
 	
-	dev_info(exi->dev, "[%d:%d], Got ID: 0x%08x\n", channel, cs, id);
-	
+	dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
+
+	spi = spi_alloc_device(exi->channels[channel].ctlr);
+	if (!spi) {
+		dev_err(exi->dev, "[%d:%d]: spi_alloc_device failed\n", channel, cs);
+		return -ENOMEM;
+	}
+
+	strscpy(spi->modalias, modalias, SPI_NAME_SIZE);
+
+	spi->chip_select[0] = cs;
+	spi->cs_index_mask = BIT(0);
+	ret = spi_add_device(spi);
+	if (ret) {
+		dev_err(exi->dev, "[%d:%d]: spi_add_device failed: %d\n", channel, cs, ret);
+		spi_dev_put(spi);
+	}
+	else
+		dev_info(exi->dev, "[%d:%d]: successfully added device\n", channel, cs);
+
+	return ret;
 }
 
 
@@ -413,6 +519,20 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 }
 
 /*
+ * Set CS for a channel
+ */
+static void exi_spi_set_cs(struct spi_device *spi, bool enable)
+{
+	struct exi_channel *channel = spi_controller_get_devdata(spi->controller);
+	if (enable)
+		exi_select(channel, spi_get_chipselect(spi, 0), exi_speed_spi_to_exi(spi->max_speed_hz));
+	else
+		exi_deselect(channel);
+
+	return;
+}
+
+/*
  * Probe
  */
 static int exi_spi_probe(struct platform_device *pdev)
@@ -453,6 +573,7 @@ static int exi_spi_probe(struct platform_device *pdev)
 		ctlr->mode_bits = SPI_MODE_0 | SPI_MODE_1;
 		ctlr->bits_per_word_mask = SPI_BPW_MASK(8);
 		ctlr->max_speed_hz = 32000000; /* EXI maxes out at 32MHz */
+		ctlr->set_cs = exi_spi_set_cs;
 		ctlr->transfer_one = exi_spi_transfer_one;
 		ctlr->dev.of_node = pdev->dev.of_node;
 
