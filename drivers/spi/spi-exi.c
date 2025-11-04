@@ -111,6 +111,7 @@ struct exi_channel {
 	struct mutex lock;
 	struct spi_controller *ctlr;
 	struct exi_channel_regs *regs;
+	int num;
 };
 
 struct exi_spi {
@@ -168,15 +169,19 @@ static void exi_select(struct exi_channel *channel,
 		       unsigned int clk)
 {
 	u32 csr;
+	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+
 	if (WARN_ON(cs > 2) ||
 	    WARN_ON(clk > EXI_CSR_CLK_32MHZ) ||
 	    WARN_ON(!channel))
 		return;
 
-	csr = in_be32(&channel->regs->csr);    /* read CSR register */
-	csr &= ~(EXI_CSR_CS | EXI_CSR_CLK);    /* clear all CS and CLK bits */
+	dev_info(exi->dev, "Channel %d, selecting CS %d at clock %dMHz, CSR @ 0x%08x\n", channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)), (u32)&channel->regs->csr);
+
+	csr &= (EXI_CSR_EXT | EXI_CSR_ROMDIS); /* start from nothing except the read-only status bits and stuff we really shouldn't change */
 	csr |= (1 << (EXI_CSR_CS_SHIFT + cs)); /* set the appropriate CS bit */
-	csr |= clk << EXI_CSR_CLK_SHIFT;       /* set the appropriate CLK bits */
+	csr |= clk;                            /* set the appropriate CLK bits */
+	dev_info(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
 }
 
@@ -197,6 +202,8 @@ static int exi_xfer_imm(struct exi_channel *channel,
 			const void *in, void *out)
 {
 	u32 cr, data;
+	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+
 	if (WARN_ON(len > 4) ||
 	    WARN_ON(!len)    ||
 	    WARN_ON(!channel))
@@ -222,6 +229,11 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	if (WARN_ON(cr & EXI_CR_TSTART))
 		while (in_be32(&channel->regs->cr) & EXI_CR_TSTART);
 
+
+	dev_info(exi->dev, "Channel %d, doing xfer with len=%d mode=%c%c\n",
+			channel->num, len, (mode & MODE_READ) ? 'R' : '-',
+			(mode & MODE_WRITE) ? 'W' : '-');
+
 	/* get the desired data */
 	if (mode & MODE_WRITE) {
 		switch (len) {
@@ -240,14 +252,16 @@ static int exi_xfer_imm(struct exi_channel *channel,
 		default:
 			return -EINVAL;
 		}
+		dev_info(exi->dev, "Outgoing data from buffer, data=0x%08x\n", data);
 	}
-	else
+	else {
 		data = 0;
+		dev_info(exi->dev, "Outgoing data static, data=0x%08x\n", data);
+	}
 
 	/* give the EXI hardware our data */
 	out_be32(&channel->regs->data, data);
 
-	cr = 0;                           /* start from nothing */
 	/* mode */
 	if (mode == (MODE_READ | MODE_WRITE))
 		cr |= EXI_CR_RW_RDWR;
@@ -258,8 +272,9 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	else
 		return -EINVAL;
 
-	cr |= (len << EXI_CR_TLEN_SHIFT);  /* length */
+	cr |= ((len - 1) << EXI_CR_TLEN_SHIFT); /* length */
 	cr |= EXI_CR_TSTART;              /* start the transfer */
+	dev_info(exi->dev, "Writing CR=0x%08x\n", cr);
 	out_be32(&channel->regs->cr, cr); /* do it */
 
 	/* spin until transfer done */
@@ -268,6 +283,7 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	/* transfer done, read our data, if any */
 	if (mode & MODE_READ) {
 		data = in_be32(&channel->regs->data);
+		dev_info(exi->dev, "Incoming data=0x%08x\n", data);
 
 		/* write it back */
 		switch (len) {
@@ -307,7 +323,7 @@ static u32 exi_read_id(struct exi_spi *exi,
 	struct exi_channel *ch = exi_get_channel(exi, channel);
 
 	exi_lock(ch);                         /* grab (or wait for) lock on channel */
-	exi_select(ch, cs, EXI_CSR_CLK_1MHZ); /* select this device */
+	exi_select(ch, cs, EXI_CSR_CLK_8MHZ); /* select this device */
 	exi_write_imm(ch, 2, &cmd);           /* tell device to provide ID */
 	exi_read_imm(ch, 4, &id);             /* read the ID reported by the device (if any) */
 	exi_unlock(ch);                       /* release lock on the channel */
@@ -409,6 +425,7 @@ static int exi_spi_probe(struct platform_device *pdev)
 		/* per-channel data */
 		exi->channels[i].ctlr = ctlr;
 		exi->channels[i].regs = (struct exi_channel_regs *)((void *)exi->regs + (sizeof(struct exi_channel_regs) * i));
+		exi->channels[i].num = i;
 		mutex_init(&exi->channels[i].lock);
 
 		/* controller info */
@@ -419,6 +436,13 @@ static int exi_spi_probe(struct platform_device *pdev)
 		ctlr->max_speed_hz = 32000000; /* EXI maxes out at 32MHz */
 		ctlr->transfer_one = exi_spi_transfer_one;
 		ctlr->dev.of_node = pdev->dev.of_node;
+
+		/* reset the hardware */
+		out_be32(&exi->channels[i].regs->csr, 0);
+		out_be32(&exi->channels[i].regs->mar, 0);
+		out_be32(&exi->channels[i].regs->length, 0);
+		out_be32(&exi->channels[i].regs->cr, 0);
+		out_be32(&exi->channels[i].regs->data, 0);
 
 		/* set our per-controller devdata to the per-channel EXI state */
 		spi_controller_set_devdata(ctlr, &exi->channels[i]);
