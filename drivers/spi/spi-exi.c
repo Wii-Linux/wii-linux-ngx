@@ -111,6 +111,7 @@ struct exi_channel {
 	struct mutex lock;
 	struct spi_controller *ctlr;
 	struct exi_channel_regs *regs;
+	struct spi_device *devices[3];
 	int num;
 };
 
@@ -175,6 +176,14 @@ static unsigned int exi_speed_spi_to_exi(unsigned int hz)
 		return EXI_CSR_CLK_2MHZ;
 
 	return EXI_CSR_CLK_1MHZ;
+}
+
+/*
+ * Convert EXI speed index to SPI Hz speed
+ */
+static unsigned int exi_speed_exi_to_spi(unsigned int idx)
+{
+	return (1 << (idx >> EXI_CSR_CLK_SHIFT));
 }
 
 /*
@@ -378,15 +387,14 @@ struct exi_id_entry {
 	u32 id;
 	char *name;
 	char *modalias;
+	u32 speed;
 };
 
 static struct exi_id_entry exi_id_table[] = {
-	{ 0x00000000, "No ID", "" },
-	{ 0xffffffff, "No ID", "" },
 	/* TODO: When do we see one or the other? */
 	{ 0xffff1698, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
 	{ 0xffff2843, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
-	{ 0xfffff308, "Wii Mask ROM/RTC/SRAM/UART", "wii-rtc" },
+	{ 0xfffff308, "Wii Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
 	{ 0x00000004, "Memory Card 59", "gamecube-memory-card" },
 	{ 0x00000008, "Memory Card 123", "gamecube-memory-card" },
 	{ 0x00000010, "Memory Card 251", "gamecube-memory-card" },
@@ -406,31 +414,17 @@ static struct exi_id_entry exi_id_table[] = {
 
 
 /*
- * Convert an EXI device ID to a name
+ * Get an ID entry from an ID
  */
-static char *exi_id_to_name(u32 id)
+static struct exi_id_entry *exi_id_to_entry(u32 id)
 {
 	struct exi_id_entry *ent = exi_id_table;
 	while (ent->name) {
 		if (ent->id == id)
-			return ent->name;
+			return ent;
 		ent++;
 	}
-	return "Unknown";
-}
-
-/*
- * Convert an EXI device ID to a modalias
- */
-static char *exi_id_to_modalias(u32 id)
-{
-	struct exi_id_entry *ent = exi_id_table;
-	while (ent->modalias) {
-		if (ent->id == id)
-			return ent->modalias;
-		ent++;
-	}
-	return "";
+	return NULL;
 }
 
 /*
@@ -441,31 +435,68 @@ static int exi_probe(struct exi_spi *exi,
 		      unsigned int channel,
 		      unsigned int cs)
 {
-	u32 id = exi_read_id(exi, channel, cs);
-	char *name = exi_id_to_name(id);
-	char *modalias = exi_id_to_modalias(id);
-	struct spi_device *spi;
+	char *name, *modalias;
+	struct spi_device *device;
+	struct spi_board_info info;
+	u32 speed, id = exi_read_id(exi, channel, cs);
+	struct exi_id_entry *ent = exi_id_to_entry(id);
+	struct spi_controller *ctlr = exi->channels[channel].ctlr;
 	int ret;
 	
+	if (ent) {
+		name = ent->name;
+		modalias = ent->modalias;
+		speed = ent->speed;
+	}
+	else {
+		name = "Unknown";
+		modalias = "none";
+		speed = EXI_CSR_CLK_8MHZ;
+	}
+
 	dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
 
-	spi = spi_alloc_device(exi->channels[channel].ctlr);
-	if (!spi) {
-		dev_err(exi->dev, "[%d:%d]: spi_alloc_device failed\n", channel, cs);
+	/* clear our spi_board_info */
+	memset(&info, 0, sizeof(struct spi_board_info));
+
+	/* try to hardcode info where it makes sense, to avoid failures where it's possible to continue */
+	if (channel == 0 && cs == 1) {
+		/* must be RTC/ROM/SRAM/UART */
+		modalias = "gamecube-rtc";
+		speed = EXI_CSR_CLK_8MHZ;
+	}
+
+	/* FIXME: Really should autodetect, this is just blatant guessing */
+	if (!ent && channel == 0 && cs == 0) {
+		/* assume SDGecko in Slot-A */
+		modalias = "mmc-spi-slot";
+		speed = EXI_CSR_CLK_32MHZ;
+	}
+
+	if (!ent && channel == 1 && cs == 0) {
+		/* assume USB Gecko in Slot-B */
+		modalias = "exi-usb-gecko";
+		speed = EXI_CSR_CLK_32MHZ;
+	}
+	
+	dev_info(exi->dev, "[%d:%d]: new modalias: %s\n", channel, cs, modalias);
+
+	/* set info */
+	strscpy(info.modalias, modalias, SPI_NAME_SIZE);
+	info.mode = SPI_MODE_0;
+	info.chip_select = cs;
+	info.max_speed_hz = exi_speed_exi_to_spi(speed);
+	info.controller_data = ctlr;
+
+	/* create it */
+	device = spi_new_device(ctlr, &info);
+	if (!device) {
+		dev_err(exi->dev, "[%d:%d]: spi_new_device failed\n", channel, cs);
 		return -ENOMEM;
 	}
 
-	strscpy(spi->modalias, modalias, SPI_NAME_SIZE);
-
-	spi->chip_select[0] = cs;
-	spi->cs_index_mask = BIT(0);
-	ret = spi_add_device(spi);
-	if (ret) {
-		dev_err(exi->dev, "[%d:%d]: spi_add_device failed: %d\n", channel, cs, ret);
-		spi_dev_put(spi);
-	}
-	else
-		dev_info(exi->dev, "[%d:%d]: successfully added device\n", channel, cs);
+	exi->channels[channel].devices[cs] = device;
+	dev_info(exi->dev, "[%d:%d]: successfully added device\n", channel, cs);
 
 	return ret;
 }
@@ -483,6 +514,7 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 				struct spi_transfer *xfer)
 {
 	struct exi_channel *channel = spi_controller_get_devdata(ctlr);
+	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
 	const u8 *tx = xfer->tx_buf;
 	u8 *rx = xfer->rx_buf;
 	size_t len = xfer->len;
@@ -501,12 +533,19 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 			len = 0;
 		}
 
+		dev_dbg(exi->dev, "[%d:%d]: spi xfer, have_rx=%d have_tx=%d\n", channel->num, spi_get_chipselect(spi, 0), !!rx, !!tx);
+
+		exi_lock(channel);
+		exi_select(channel, spi_get_chipselect(spi, 0), exi_speed_spi_to_exi(spi->max_speed_hz));
 		if (rx && tx)
 			ret = exi_rdwr_imm(channel, xferLen, tx, rx);
 		else if (rx)
 			ret = exi_read_imm(channel, xferLen, rx);
 		else if (tx)
 			ret = exi_read_imm(channel, xferLen, rx);
+
+		exi_deselect(channel);
+		exi_unlock(channel);
 
 		if (ret)
 			break;
