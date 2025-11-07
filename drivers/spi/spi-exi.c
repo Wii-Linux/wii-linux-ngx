@@ -112,6 +112,7 @@ struct exi_channel {
 	struct spi_controller *ctlr;
 	struct exi_channel_regs *regs;
 	struct spi_device *devices[3];
+	bool device_cs[3];
 	int num;
 };
 
@@ -183,7 +184,7 @@ static unsigned int exi_speed_spi_to_exi(unsigned int hz)
  */
 static unsigned int exi_speed_exi_to_spi(unsigned int idx)
 {
-	return (1 << (idx >> EXI_CSR_CLK_SHIFT));
+	return (1 << (idx >> EXI_CSR_CLK_SHIFT)) * 1000000;
 }
 
 /*
@@ -518,7 +519,11 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 	const u8 *tx = xfer->tx_buf;
 	u8 *rx = xfer->rx_buf;
 	size_t len = xfer->len;
-	int ret;
+	int ret, cs, speed = spi->max_speed_hz;
+
+	cs = spi_get_chipselect(spi, 0);
+	dev_dbg(exi->dev, "[%d:%d]: spi xfer, have_rx=%d have_tx=%d\n", channel->num, cs, !!rx, !!tx);
+	exi_lock(channel);
 
 	while (len) {
 		unsigned int xferLen;
@@ -533,19 +538,23 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 			len = 0;
 		}
 
-		dev_dbg(exi->dev, "[%d:%d]: spi xfer, have_rx=%d have_tx=%d\n", channel->num, spi_get_chipselect(spi, 0), !!rx, !!tx);
+		if (channel->device_cs[cs])
+			exi_select(channel, cs, exi_speed_spi_to_exi(speed));
+		else
+			exi_deselect(channel);
 
-		exi_lock(channel);
-		exi_select(channel, spi_get_chipselect(spi, 0), exi_speed_spi_to_exi(spi->max_speed_hz));
 		if (rx && tx)
 			ret = exi_rdwr_imm(channel, xferLen, tx, rx);
 		else if (rx)
 			ret = exi_read_imm(channel, xferLen, rx);
 		else if (tx)
-			ret = exi_read_imm(channel, xferLen, rx);
+			ret = exi_write_imm(channel, xferLen, tx);
 
-		exi_deselect(channel);
-		exi_unlock(channel);
+		if (channel->device_cs[cs])
+			exi_deselect(channel);
+		else
+			exi_select(channel, cs, exi_speed_spi_to_exi(speed));
+
 
 		if (ret)
 			break;
@@ -553,6 +562,7 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 
 	if (!ret)
 		spi_finalize_current_transfer(ctlr);
+	exi_unlock(channel);
 
 	return ret;
 }
@@ -563,13 +573,27 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 static void exi_spi_set_cs(struct spi_device *spi, bool enable)
 {
 	struct exi_channel *channel = spi_controller_get_devdata(spi->controller);
+	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	int cs = spi_get_chipselect(spi, 0);
+	int speed = spi->max_speed_hz;
+
+	dev_dbg(exi->dev, "[%d:%d]: spi set_cs, set CS %d = %d with speed %d\n", channel->num, cs, cs, enable, speed);
+
+	channel->device_cs[cs] = enable;
+#if 0
+	exi_lock(channel);
 	if (enable)
-		exi_select(channel, spi_get_chipselect(spi, 0), exi_speed_spi_to_exi(spi->max_speed_hz));
+		exi_select(channel, cs, exi_speed_spi_to_exi(speed));
 	else
 		exi_deselect(channel);
+	channel->device_cs[cs] = enable;
+	exi_unlock(channel);
+#endif
 
 	return;
 }
+
+
 
 /*
  * Probe
