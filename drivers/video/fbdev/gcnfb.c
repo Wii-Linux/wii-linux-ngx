@@ -12,6 +12,16 @@
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
  */
 
+#define DRV_MODULE_NAME   "gcn-vifb"
+#define DRV_DESCRIPTION   "Nintendo GameCube/Wii Video Interface (VI) driver"
+#define DRV_AUTHOR        "Michael Steil <mist@c64.org>, " \
+			  "Todd Jeffreys <todd@voidpointer.org>, " \
+			  "Albert Herranz, " \
+			  "neagix, " \
+			  "Techflash <officialTechflashYT@gmail.com>"
+
+#define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
+
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
@@ -34,14 +44,6 @@
 #include <linux/i2c.h>
 #endif
 #include <linux/videodev2.h>
-
-#define DRV_MODULE_NAME   "gcn-vifb"
-#define DRV_DESCRIPTION   "Nintendo GameCube/Wii Video Interface (VI) driver"
-#define DRV_AUTHOR        "Michael Steil <mist@c64.org>, " \
-			  "Todd Jeffreys <todd@voidpointer.org>, " \
-			  "Albert Herranz, " \
-			  "neagix, " \
-			  "Techflash <officialTechflashYT@gmail.com>"
 
 /*
  * Driver changelog, since the git history has been screwed up over the years.
@@ -68,10 +70,6 @@
  * 2.4t - Techflash (11/16/2025) - Massive cleanups, make nostalgic mode the only option, fixup resolutions
  */
 static char vifb_driver_version[] = "2.4t";
-
-#define drv_printk(level, format, arg...) \
-	 printk(level DRV_MODULE_NAME ": " format , ## arg)
-
 
 struct double_uint32_t {
 	uint32_t left, right;
@@ -483,6 +481,7 @@ struct vi_ctl {
 #ifdef CONFIG_WII_AVE_RVL
 	struct i2c_client *i2c_client;
 #endif
+	struct device *dev;
 };
 
 
@@ -1181,7 +1180,7 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 		 */
 		error = vi_ave_get_video_format(ctl, &fmt);
 		if (error) {
-			drv_printk(KERN_DEBUG, "could not get video format from AVE: %d\n", error);
+			dev_warn(ctl->dev, "could not get video format from AVE: %d\n", error);
 			/* initial guess before AVE is setup */
 			error = 0;
 			fmt = vi_get_video_format(ctl);
@@ -1211,8 +1210,8 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 		return -EINVAL;
 	}
 
-	drv_printk(KERN_INFO, "format picked is: %d (source: %s)\n", fmt, source);
-	drv_printk(KERN_INFO, "%s%s\n", ctl->mode->name, source);
+	dev_info(ctl->dev, "format picked is: %d (source: %s)\n", fmt, source);
+	dev_info(ctl->dev, "%s%s\n", ctl->mode->name, source);
 
 	return 0;
 }
@@ -1625,8 +1624,7 @@ static int vi_ave_outs(struct i2c_client *client, u8 reg,
 
 err_out:
 	if (error)
-		drv_printk(KERN_ERR, "RVL-AVE: "
-			   "error (%d) writing to register %02Xh\n",
+		dev_err(&client->dev, "AVE-RVL: error (%d) writing to register %02Xh\n",
 			   error, reg);
 	return error;
 }
@@ -1675,8 +1673,7 @@ static int vi_ave_ins(struct i2c_client *client, u8 reg,
 		error = -EIO;
 
 	if (error)
-		drv_printk(KERN_ERR, "RVL-AVE: "
-			   "error (%d) reading from register %02Xh\n",
+		dev_err(&client->dev, "AVE-RVL: error (%d) reading from register %02Xh\n",
 			   error, reg);
 
 	return error;
@@ -1795,7 +1792,7 @@ static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
 		ctl->i2c_client = i2c_use_client(client);
 #endif
 		spin_unlock(&ctl->lock);
-		drv_printk(KERN_INFO, "AVE-RVL support loaded\n");
+		dev_info(ctl->dev, "AVE-RVL support loaded\n");
 		return 0;
 	}
 	spin_unlock(&ctl->lock);
@@ -1818,7 +1815,7 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 #if 0
 		i2c_release_client(client);
 #endif
-		drv_printk(KERN_INFO, "AVE-RVL support unloaded\n");
+		dev_info(ctl->dev, "AVE-RVL support unloaded\n");
 		return;
 	}
 	spin_unlock(&ctl->lock);
@@ -1828,19 +1825,19 @@ static int vi_ave_probe(struct i2c_client *client)
 {
 	int error;
 	if (first_vi_ave) {
-		drv_printk(KERN_DEBUG, "vi_ave_probe(): skipping further probes\n");
+		dev_dbg(&client->dev, "vi_ave_probe(): skipping further probes\n");
 		return 0;
 	}
 
 	/* attach first a/v encoder to first framebuffer */
 	error = vi_attach_ave(first_vi_ctl, client);
 	if (error) {
-		drv_printk(KERN_ERR, "vi_ave_probe(): unable to attach AVE: error %d\n", error);
+		dev_err(&client->dev, "vi_ave_probe(): unable to attach AVE: error %d\n", error);
 		return error;
 	}
 
 	first_vi_ave = client;
-	drv_printk(KERN_INFO, "vi_ave_probe(): AVE attached successfully\n");
+	dev_info(&client->dev, "vi_ave_probe(): AVE attached successfully\n");
 #ifdef CONFIG_WII_AVE_RVL
 	vi_ave_setup(first_vi_ctl);
 #endif
@@ -1971,7 +1968,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	/* no custom viewports, sorry */
 	if ((var->xoffset != 0) ||
 		(var->yoffset != 0)) {
-		drv_printk(KERN_ERR, "Non-zero x/y offsets are not supported\n");
+		dev_err(info->device, "Non-zero x/y offsets are not supported\n");
 		return -EINVAL;
 	}
 	
@@ -2009,7 +2006,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 			var->transp.offset = 24;
 			var->transp.length = 8;
 		} else {
-			drv_printk(KERN_ERR, "unsupported depth %u\n",
+			dev_err(info->device, "unsupported depth %u\n",
 					var->bits_per_pixel);
 			return -EINVAL;
 		}
@@ -2021,11 +2018,11 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (yres & VI_VERT_ALIGN)
 		yres = ALIGN(yres, VI_VERT_ALIGN+1);
 	if (yres > mode->height) {
-		drv_printk(KERN_ERR, "yres %u out of bounds\n", yres);
+		dev_err(info->device, "yres %u out of bounds\n", yres);
 		return -EINVAL;
 	}
 	if (yres < 16) {
-		drv_printk(KERN_ERR, "yres %u < 16 is too small\n", yres);
+		dev_err(info->device, "yres %u < 16 is too small\n", yres);
 		return -EINVAL;
 	}
 	if (!yres)
@@ -2039,7 +2036,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (xres & VI_HORZ_ALIGN)
 		xres = ALIGN(xres, VI_HORZ_ALIGN+1);
 	if (xres > mode->width) {
-		drv_printk(KERN_ERR, "xres %u (%u) out of bounds (max %u)\n", var->xres, xres, mode->width);
+		dev_err(info->device, "xres %u (%u) out of bounds (max %u)\n", var->xres, xres, mode->width);
 		return -EINVAL;
 	}
 	if (!xres)
@@ -2054,10 +2051,8 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	bytes_per_pixel = var->bits_per_pixel / 8;
 	if (xres_virtual * yres_virtual * bytes_per_pixel >
 		info->fix.smem_len) {
-		drv_printk(KERN_ERR, "not enough memory for virtual resolution"
-			   " (%ux%ux%u)\n",
-			   xres_virtual, yres_virtual,
-			   var->bits_per_pixel);
+		dev_err(info->device, "not enough memory for virtual resolution (%ux%ux%u)\n",
+			   xres_virtual, yres_virtual, var->bits_per_pixel);
 		return -EINVAL;
 	}
 
@@ -2260,27 +2255,21 @@ static int vifb_do_probe(struct device *dev,
 	ctl = info->par;
 	ctl->info = info;
 	ctl->irq = irq;
+	ctl->dev = dev;
 
 	/* first things first: remap some video card control ports */
 	ctl->io_base = devm_ioremap_wc(dev, mem->start, mem->end - mem->start + 1);
 	if (!ctl->io_base) {
-		drv_printk(KERN_ERR,
-			   "failed to ioremap video card ports at %p (%dk)\n",
-			   (void *)mem->start, (int)(mem->end - mem->start + 1));
+		dev_err(dev, "failed to ioremap video card ports at %p (%dk)\n",
+			(void *)mem->start, (int)(mem->end - mem->start + 1));
 		error = -EIO;
 		goto err_nofbmem;
 	}
 
-	/* NOTE: request_mem_region is not called because it fails,
-	 * probably this range is already claimed by some other device...
-	 * See also: http://www.makelinux.net/ldd3/chp-9-sect-4
-	 */
-	fb_mem = devm_memremap(dev, xfb_start, xfb_size, MEMREMAP_WC);
+	fb_mem = devm_ioremap(dev, xfb_start, xfb_size);
 	if (!fb_mem) {
-		drv_printk(KERN_ERR,
-			   "failed to ioremap video memory at %p (%ldk)\n",
-			   (void *)xfb_start,
-			   xfb_size / 1024);
+		dev_err(dev,"failed to ioremap video memory at %p (%ldk)\n",
+			(void *)xfb_start, xfb_size / 1024);
 		error = -EIO;
 		goto err_ioremap;
 	}
@@ -2289,10 +2278,8 @@ static int vifb_do_probe(struct device *dev,
 	gx_fb_start = xfb_start;
 	gx_fb_size = xfb_size;
 
-	drv_printk(KERN_INFO,
-		   "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
-		   (void *)xfb_start, fb_mem,
-		   xfb_size / 1024);
+	dev_info(dev, "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
+		 (void *)xfb_start, fb_mem, xfb_size / 1024);
 
 
 	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions 
@@ -2305,7 +2292,7 @@ static int vifb_do_probe(struct device *dev,
 	vfb_mem = vmalloc_32(size);
 	if (!vfb_mem) {
 		info->fix.smem_len = 0; /* just in case */
-		drv_printk(KERN_ERR, "failed to allocate virtual framebuffer\n");
+		dev_err(dev, "failed to allocate virtual framebuffer\n");
 		return -ENOMEM;
 	}
 	info->fix.smem_start = (unsigned long)vfb_mem;
@@ -2323,8 +2310,7 @@ static int vifb_do_probe(struct device *dev,
 		adr += PAGE_SIZE;
 		size -= PAGE_SIZE;
 	}
-	drv_printk(KERN_INFO,
-		   "virtual framebuffer at 0x%px, size %ldk\n",
+	dev_info(dev, "virtual framebuffer at 0x%px, size %ldk\n",
 		   (void *)vfb_mem, PAGE_ALIGN(vfb_len) / 1024);
 
 	spin_lock_init(&ctl->lock);
@@ -2340,11 +2326,9 @@ static int vifb_do_probe(struct device *dev,
 	/* try to attach the a/v encoder now */
 	error = vi_attach_ave(ctl, first_vi_ave);
 	if (error)
-	{
-		drv_printk(KERN_ERR, "vifb_do_probe(): unable to attach AVE: error %d\n", error);
-	} else {
-		drv_printk(KERN_INFO, "vifb_do_probe(): AVE attached successfully\n");
-	}
+		dev_err(dev, "unable to attach AVE: error %d\n", error);
+	else
+		dev_info(dev, "AVE attached successfully\n");
 #endif
 
 	info->var.xres = ctl->mode->width;
@@ -2364,7 +2348,7 @@ static int vifb_do_probe(struct device *dev,
 	if (error)
 		goto err_check_var;
 
-	drv_printk(KERN_INFO, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
+	dev_info(dev, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
 		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
 
 	/* Clear virtual framebuffer */
@@ -2382,7 +2366,7 @@ static int vifb_do_probe(struct device *dev,
 
 	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
 	if (error) {
-		drv_printk(KERN_ERR, "unable to register IRQ %u\n", ctl->irq);
+		dev_err(dev, "unable to register IRQ %u\n", ctl->irq);
 		goto err_request_irq;
 	}
 
@@ -2485,7 +2469,7 @@ static int vifb_setup(char *options)
 	if (!options || !*options)
 		return 0;
 
-	drv_printk(KERN_INFO, "options: %s\n", options);
+	pr_info("options: %s\n", options);
 
 	while ((this_opt = strsep(&options, ",")) != NULL) {
 		if (!*this_opt)
@@ -2511,7 +2495,7 @@ static int vifb_setup(char *options)
 
 	if (force_scan == VI_SCAN_PROGRESSIVE || force_tv == VI_TV_NTSC) {
 		if (force_rate == VI_RATE_50Hz) {
-			drv_printk(KERN_INFO, "ignoring forced 50Hz setting\n");
+			pr_info("ignoring forced 50Hz setting\n");
 			force_rate = VI_RATE_DONTCARE;
 		}
 	}
@@ -2535,20 +2519,20 @@ static int vifb_of_probe(struct platform_device *odev)
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &res);
 	if (retval) {
-		drv_printk(KERN_ERR, "no io memory range found\n");
+		dev_err(&odev->dev, "no io memory range found\n");
 		return -ENODEV;
 	}
 
 	prop = of_get_property(odev->dev.of_node, "xfb-start", NULL);
 	if (!prop) {
-		drv_printk(KERN_ERR, "no xfb start found\n");
+		dev_err(&odev->dev, "no xfb start found\n");
 		return -ENODEV;
 	}
 	xfb_start = *prop;
 
 	prop = of_get_property(odev->dev.of_node, "xfb-size", NULL);
 	if (!prop) {
-		drv_printk(KERN_ERR, "no xfb size found\n");
+		dev_err(&odev->dev, "no xfb size found\n");
 		return -ENODEV;
 	}
 	xfb_size = *prop;
@@ -2598,7 +2582,7 @@ static int __init vifb_init_module(void)
 	int error;
 	char *option = NULL;
 
-	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
+	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   vifb_driver_version);
 
 #ifndef MODULE
@@ -2617,7 +2601,7 @@ static int __init vifb_init_module(void)
 #ifdef CONFIG_WII_AVE_RVL
 	error = i2c_add_driver(&vi_ave_driver);
 	if (error)
-		drv_printk(KERN_ERR, "failed to register AVE (%d)\n", error);
+		pr_err("failed to register AVE (%d)\n", error);
 #endif
 
 	return platform_driver_register(&vifb_of_driver);
