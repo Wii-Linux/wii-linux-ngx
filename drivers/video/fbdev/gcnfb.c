@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/video/gcn-vifb.c
  *
@@ -6,14 +7,9 @@
  * Copyright (C) 2004 Michael Steil <mist@c64.org>
  * Copyright (C) 2004,2005 Todd Jeffreys <todd@voidpointer.org>
  * Copyright (C) 2006,2007,2008,2009 Albert Herranz
+ * Copyright (C) 2024,2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
  */
 
 #include <linux/delay.h>
@@ -68,8 +64,10 @@
  *          - tons of general cleanup and modernization
  *
  * 2.3t - Techflash (6/3/2024) - Corrected nostalgic mode height from 480 to 448, added this changelog
+ *
+ * 2.4t - Techflash (11/16/2025) - Massive cleanups, make nostalgic mode the only option, fixup resolutions
  */
-static char vifb_driver_version[] = "2.3t";
+static char vifb_driver_version[] = "2.4t";
 
 #define drv_printk(level, format, arg...) \
 	 printk(level DRV_MODULE_NAME ": " format , ## arg)
@@ -495,37 +493,36 @@ static struct vi_tv_mode vi_tv_modes[] = {
 	[VI_VM_NTSC_480i] = {
 		.name = "NTSC 480i",
 
-		// XXX: HACK HACK HACK - must be aligned to 32, the real xres will never be this high!
-		.width = 672,
+		.width = 640,
 		.height = 448,
 		.lines = 525,
 	},
 	[VI_VM_NTSC_480p] = {
 		.name = "NTSC 480p",
 		.flags = VI_VMF_PROGRESSIVE,
-		.width = 672,
+		.width = 640,
 		.height = 448,
 		.lines = 525,
 	},
 	[VI_VM_PAL_576i50] = {
 		.name = "PAL 576i",
 		.flags = VI_VMF_PAL_COLOR,
-		.width = 672,
+		.width = 640,
 		.height = 574,
 		.lines = 625,
 	},
 	[VI_VM_PAL_480i60] = {
 		.name = "PAL 480i 60Hz",
 		.flags = VI_VMF_PAL_COLOR,
-		.width = 672,
-		.height = 480,
+		.width = 640,
+		.height = 448,
 		.lines = 525,
 	},
 	[VI_VM_PAL_480p] = {
 		.name = "PAL 480p",
 		.flags = VI_VMF_PROGRESSIVE|VI_VMF_PAL_COLOR,
 		.width = 672,
-		.height = 480,
+		.height = 448,
 		.lines = 525,
 	},
 };
@@ -552,8 +549,8 @@ static struct fb_fix_screeninfo vifb_fix = {
 
 static struct fb_var_screeninfo vifb_var = {
 	.activate = FB_ACTIVATE_NOW,
-	.width = 660,
-	.height = 444,
+	.width = 640,
+	.height = 448,
 	/* change to 32 to start with RGB888 mode by default */
 	.bits_per_pixel = 16,
 	.vmode = FB_VMODE_INTERLACED,
@@ -564,9 +561,6 @@ static struct fb_var_screeninfo vifb_var = {
  * Setup parameters.
  */
 static int want_ypan = 1;		/* 0..nothing, 1..ypan */
-
-/* use old behaviour for video mode settings */
-static int nostalgic;
 
 static int force_scan;
 static int force_rate;
@@ -1929,9 +1923,6 @@ static int vifb_check_var_timings(struct fb_var_screeninfo *var,
 	u32 yres = var->yres;
 	int error = -EINVAL;
 
-	if (nostalgic && yres == 576)
-		yres = 574;
-
 	if (vi_vmode_is_progressive(var->vmode)) {
 		/* 480p */
 		error = vi_ntsc_525_prog_calc_timings(&timings, var,
@@ -2030,12 +2021,8 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (yres & VI_VERT_ALIGN)
 		yres = ALIGN(yres, VI_VERT_ALIGN+1);
 	if (yres > mode->height) {
-		if (!nostalgic) {
-			drv_printk(KERN_ERR, "yres %u out of bounds\n", yres);
-			return -EINVAL;
-		}
-		if (!(mode->height == 574 && yres == 576))
-			yres = mode->height;
+		drv_printk(KERN_ERR, "yres %u out of bounds\n", yres);
+		return -EINVAL;
 	}
 	if (yres < 16) {
 		drv_printk(KERN_ERR, "yres %u < 16 is too small\n", yres);
@@ -2360,17 +2347,8 @@ static int vifb_do_probe(struct device *dev,
 	}
 #endif
 
-	if (!nostalgic) {
-		/* by default, start with overscan compensation */
-		info->var.xres = 576;
-		if (ctl->mode->height == 574)
-			info->var.yres = 516;
-		else
-			info->var.yres = 432;
-	} else {
-		info->var.xres = ctl->mode->width;
-		info->var.yres = ctl->mode->height;
-	}
+	info->var.xres = ctl->mode->width;
+	info->var.yres = ctl->mode->height;
 
 	ctl->visible_page = 0;
 	ctl->flip_pending = 0;
@@ -2528,8 +2506,7 @@ static int vifb_setup(char *options)
 				force_tv = VI_TV_PAL;
 			else if (!strncmp(this_opt + 3, "NTSC", 4))
 				force_tv = VI_TV_NTSC;
-		} else if (!strcmp(this_opt, "nostalgic"))
-			nostalgic = 1;
+		}
 	}
 
 	if (force_scan == VI_SCAN_PROGRESSIVE || force_tv == VI_TV_NTSC) {
