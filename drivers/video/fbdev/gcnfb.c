@@ -1624,8 +1624,8 @@ static int vi_ave_outs(struct i2c_client *client, u8 reg,
 
 err_out:
 	if (error)
-		dev_err(&client->dev, "AVE-RVL: error (%d) writing to register %02Xh\n",
-			   error, reg);
+		dev_err(&client->dev, "AVE-RVL: error (%d) writing to register %02Xh at client %02x\n",
+			   error, reg, client->addr);
 	return error;
 }
 
@@ -1718,6 +1718,9 @@ static u8 vi_ave_gamma[] = {
 	0x00
 };
 
+static struct vi_ctl *first_vi_ctl;
+static struct i2c_client *first_vi_ave = NULL;
+
 /*
  * Initialize the audio/video encoder.
  */
@@ -1728,6 +1731,14 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	u8 component, format, pal60;
 
 	client = ctl->i2c_client;
+	if (!client && first_vi_ave)
+		client = first_vi_ave;
+
+	if (!client) {
+		dev_err(ctl->dev, "trying to set up AVE with no client?");
+		return;
+	}
+
 	memset(macrovision, 0, sizeof(macrovision));
 
 	/*
@@ -1775,9 +1786,6 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	vi_ave_out8(client, 0x6e, pal60);
 }
 
-static struct vi_ctl *first_vi_ctl;
-static struct i2c_client *first_vi_ave = NULL;
-
 static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
 {
 	if (!ctl)
@@ -1787,10 +1795,7 @@ static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
 
 	spin_lock(&ctl->lock);
 	if (!ctl->i2c_client) {
-		/* these functions were removed, but i2c GPIO support  is borked anyways */
-#if 0
-		ctl->i2c_client = i2c_use_client(client);
-#endif
+		ctl->i2c_client = client;
 		spin_unlock(&ctl->lock);
 		dev_info(ctl->dev, "AVE-RVL support loaded\n");
 		return 0;
@@ -1811,10 +1816,6 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 		client = ctl->i2c_client;
 		ctl->i2c_client = NULL;
 		spin_unlock(&ctl->lock);
-		/* these functions were removed, but i2c GPIO support  is borked anyways */
-#if 0
-		i2c_release_client(client);
-#endif
 		dev_info(ctl->dev, "AVE-RVL support unloaded\n");
 		return;
 	}
@@ -1853,18 +1854,20 @@ static void vi_ave_remove(struct i2c_client *client)
 	return;
 }
 
-static const struct i2c_device_id vi_ave_id[] = {
-	{ "nintendo,wii-ave-rvl", 0 },
-	{ }
+
+static const struct of_device_id ave_of_match[] = {
+	{ .compatible = "nintendo,wii-audio-video-encoder" },
+	{ .compatible = "wii-audio-video-encoder" },
+	{  },
 };
 
 static struct i2c_driver vi_ave_driver = {
 	.driver = {
 		.name	= DRV_MODULE_NAME,
+		.of_match_table = ave_of_match,
 	},
 	.probe		= vi_ave_probe,
 	.remove		= vi_ave_remove,
-	.id_table	= vi_ave_id,
 };
 
 #endif /* CONFIG_WII_AVE_RVL */
@@ -2170,8 +2173,7 @@ static int vifb_set_par(struct fb_info *info)
 
 	vi_setup_tv_mode(ctl, false);
 #ifdef CONFIG_WII_AVE_RVL
-	if (ctl->i2c_client)
-		vi_ave_setup(ctl);
+	vi_ave_setup(ctl);
 #endif
 
 	/* enable the video retrace handling */
