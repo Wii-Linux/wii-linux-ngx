@@ -21,7 +21,7 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto rootwait panic=0             loglevel=4 consoleblank=0                          mark.end=1";
+		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto rootwait panic=0             loglevel=8 consoleblank=0                          mark.end=1";
 
 	};
 
@@ -232,29 +232,6 @@
 			#interrupt-cells = <2>;
 			interrupts = <10>;
 			interrupt-parent = <&PIC1>;
-
-			/*
-			 * This is commented out while a standard binding
-			 * for i2c over gpio is defined.
-			 */
-			i2c-video {
-				#address-cells = <1>;
-				#size-cells = <0>;
-			        compatible = "i2c-gpio";
-
-			        gpios = <&GPIO 15 0
-			                 &GPIO 14 0>;
-			        clock-frequency = <250000>;
-				no-clock-stretching;
-			        scl-is-open-drain;
-			        sda-is-open-drain;
-			        sda-enforce-dir;
-
-			        AVE: audio-video-encoder@70 {
-			                compatible = "nintendo,wii-audio-video-encoder";
-			                reg = <0x70>;
-			        };
-			};
 		};
 
 		control@d800100 {
@@ -306,4 +283,24 @@
 			linux,code = <KEY_EJECTCD>;
 		};
 	};
+
+	i2c-gpio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "i2c-gpio";
+
+		clock-frequency = <250000>;
+		i2c-gpio,scl-delay-us = <2>;
+		i2c-gpio,sda-open-drain;
+		i2c-gpio,scl-open-drain;
+		sda-enforce-dir;
+		sda-gpios = <&GPIO 15 GPIO_ACTIVE_HIGH>;
+		scl-gpios = <&GPIO 14 GPIO_ACTIVE_HIGH>;
+
+		AVE: audio-video-encoder@70 {
+			compatible = "nintendo,wii-audio-video-encoder";
+			reg = <0x70>;
+		};
+	};
+
 };
