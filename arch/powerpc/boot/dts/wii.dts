@@ -291,8 +291,15 @@
 
 		clock-frequency = <250000>;
 		i2c-gpio,scl-delay-us = <2>;
+
+		/*
+		 * Hollywood's GPIO controller doesn't allow changing the
+		 * properties to open drain via the GPIO flags, so we
+		 * unfortunately need to use these deprecated properties.
+		 */
 		i2c-gpio,sda-open-drain;
 		i2c-gpio,scl-open-drain;
+
 		sda-enforce-dir;
 		sda-gpios = <&GPIO 15 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&GPIO 14 GPIO_ACTIVE_HIGH>;
