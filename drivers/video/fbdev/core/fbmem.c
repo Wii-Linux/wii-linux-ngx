@@ -439,75 +439,129 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 	int i, err = 0;
 	struct fb_videomode mode;
 
-	if (fb_check_foreignness(fb_info))
+	pr_info("hello from do_register_framebuffer\n");
+
+	pr_info("do_register_framebuffer: a\n");
+	if (fb_check_foreignness(fb_info)) {
+		pr_info("do_register_framebuffer: a1\n");
 		return -ENOSYS;
+	}
+	pr_info("do_register_framebuffer: b\n");
 
-	if (num_registered_fb == FB_MAX)
+	if (num_registered_fb == FB_MAX) {
+		pr_info("do_register_framebuffer: b1\n");
 		return -ENXIO;
+	}
+	pr_info("do_register_framebuffer: c\n");
 
-	for (i = 0 ; i < FB_MAX; i++)
-		if (!registered_fb[i])
+	for (i = 0 ; i < FB_MAX; i++) {
+		pr_info("do_register_framebuffer: c1\n");
+		if (!registered_fb[i]) {
+			pr_info("do_register_framebuffer: c2\n");
 			break;
+		}
+	}
+	pr_info("do_register_framebuffer: d\n");
 
-	if (i >= FB_MAX)
+	if (i >= FB_MAX) {
+		pr_info("do_register_framebuffer: d1\n");
 		return -ENXIO;
+	}
+	pr_info("do_register_framebuffer: e\n");
 
-	if (!fb_info->modelist.prev || !fb_info->modelist.next)
+	if (!fb_info->modelist.prev || !fb_info->modelist.next) {
+		pr_info("do_register_framebuffer: e1\n");
 		INIT_LIST_HEAD(&fb_info->modelist);
+	}
 
+	pr_info("do_register_framebuffer: f\n");
 	fb_var_to_videomode(&mode, &fb_info->var);
+	pr_info("do_register_framebuffer: g\n");
 	err = fb_add_videomode(&mode, &fb_info->modelist);
-	if (err < 0)
+	pr_info("do_register_framebuffer: h\n");
+	if (err < 0) {
+		pr_info("do_register_framebuffer: h1\n");
 		return err;
+	}
+	pr_info("do_register_framebuffer: i\n");
 
 	fb_info->node = i;
+	pr_info("do_register_framebuffer: j\n");
 	refcount_set(&fb_info->count, 1);
+	pr_info("do_register_framebuffer: k\n");
 	mutex_init(&fb_info->lock);
+	pr_info("do_register_framebuffer: l\n");
 	mutex_init(&fb_info->mm_lock);
+	pr_info("do_register_framebuffer: m\n");
 
 	/*
 	 * With an fb_blank callback present, we assume that the
 	 * display is blank, so that fb_blank() enables it on the
 	 * first modeset.
 	 */
-	if (fb_info->fbops->fb_blank)
+	if (fb_info->fbops->fb_blank) {
+		pr_info("do_register_framebuffer: m1\n");
 		fb_info->blank = FB_BLANK_POWERDOWN;
+	}
+	pr_info("do_register_framebuffer: n\n");
 
 	fb_device_create(fb_info);
+	pr_info("do_register_framebuffer: o\n");
 
 	if (fb_info->pixmap.addr == NULL) {
+		pr_info("do_register_framebuffer: o1\n");
 		fb_info->pixmap.addr = kmalloc(FBPIXMAPSIZE, GFP_KERNEL);
+		pr_info("do_register_framebuffer: o2\n");
 		if (fb_info->pixmap.addr) {
+			pr_info("do_register_framebuffer: o2a\n");
 			fb_info->pixmap.size = FBPIXMAPSIZE;
 			fb_info->pixmap.buf_align = 1;
 			fb_info->pixmap.scan_align = 1;
 			fb_info->pixmap.access_align = 32;
 			fb_info->pixmap.flags = FB_PIXMAP_DEFAULT;
+			pr_info("do_register_framebuffer: o2b\n");
 		}
+		pr_info("do_register_framebuffer: o3\n");
 	}
+	pr_info("do_register_framebuffer: p\n");
 	fb_info->pixmap.offset = 0;
+	pr_info("do_register_framebuffer: q\n");
 
-	if (bitmap_empty(fb_info->pixmap.blit_x, FB_MAX_BLIT_WIDTH))
+	if (bitmap_empty(fb_info->pixmap.blit_x, FB_MAX_BLIT_WIDTH)) {
+		pr_info("do_register_framebuffer: q1\n");
 		bitmap_fill(fb_info->pixmap.blit_x, FB_MAX_BLIT_WIDTH);
+	}
 
-	if (bitmap_empty(fb_info->pixmap.blit_y, FB_MAX_BLIT_HEIGHT))
+	pr_info("do_register_framebuffer: r\n");
+	if (bitmap_empty(fb_info->pixmap.blit_y, FB_MAX_BLIT_HEIGHT)) {
+		pr_info("do_register_framebuffer: r1\n");
 		bitmap_fill(fb_info->pixmap.blit_y, FB_MAX_BLIT_HEIGHT);
+	}
+	pr_info("do_register_framebuffer: s\n");
 
-	if (fb_info->skip_vt_switch)
+	if (fb_info->skip_vt_switch) {
+		pr_info("do_register_framebuffer: s1\n");
 		pm_vt_switch_required(fb_info->device, false);
-	else
+	}
+	else {
+		pr_info("do_register_framebuffer: s2\n");
 		pm_vt_switch_required(fb_info->device, true);
+	}
+	pr_info("do_register_framebuffer: t\n");
 
 	num_registered_fb++;
+	pr_info("do_register_framebuffer: u\n");
 	registered_fb[i] = fb_info;
 
 #ifdef CONFIG_GUMSTIX_AM200EPD
 	{
 		struct fb_event event;
+		pr_info("do_register_framebuffer: u1\n");
 		event.info = fb_info;
 		fb_notifier_call_chain(FB_EVENT_FB_REGISTERED, &event);
 	}
 #endif
+	pr_info("do_register_framebuffer: v\n");
 
 	return fbcon_fb_registered(fb_info);
 }

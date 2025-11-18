@@ -613,6 +613,7 @@
 #endif
 #define SPRN_HID2_750FX	0x3F8		/* IBM 750FX HID2 Register */
 #define SPRN_HID2_GEKKO	0x398		/* Gekko HID2 Register */
+#define  HID2_GEKKO_WPE	 (1<<30)        /* Write Gather Pipe enable */
 #define SPRN_HID2_G2_LE	0x3F3		/* G2_LE HID2 Register */
 #define  HID2_G2_LE_HBE	(1<<18)		/* High BAT Enable (G2_LE) */
 #define HID2_LSQE	(1<<31)		/* Gekko HID2 Load/Store Quantized Enable (unconfirmed name) */

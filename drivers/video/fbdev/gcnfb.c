@@ -10,6 +10,13 @@
  * Copyright (C) 2024,2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
+ *
+ * GX EFB-based RGB->YUYV conversion code partially based on NetBSD WiiFB:
+ * Copyright (c) 2025 Jared McNeill <jmcneill@invisible.ca>
+ * All rights reserved.
+ *
+ * GX EFB-based RGB->YUYV conversion code also partially based on GXFB:
+ * Copyright (C) 2025 Techflash
  */
 
 #define DRV_MODULE_NAME   "gcn-vifb"
@@ -68,8 +75,10 @@
  * 2.3t - Techflash (6/3/2024) - Corrected nostalgic mode height from 480 to 448, added this changelog
  *
  * 2.4t - Techflash (11/16/2025) - Massive cleanups, make nostalgic mode the only option, fixup resolutions
+ *
+ * 3.0t - Techflash (11/17/2025) - Use GX and the EFB to do accelerated RGB -> YUYV conversion
  */
-static char vifb_driver_version[] = "2.4t";
+static char vifb_driver_version[] = "3.0t";
 
 struct double_uint32_t {
 	uint32_t left, right;
@@ -464,6 +473,9 @@ struct vi_ctl {
 	spinlock_t lock;
 
 	void __iomem *io_base;
+	void __iomem *fifo_base; /* physical address! */
+	void __iomem *wgPipe;
+	u16 gx_token;
 	unsigned int irq;
 
 	int in_vtrace;
@@ -551,7 +563,7 @@ static struct fb_var_screeninfo vifb_var = {
 	.width = 640,
 	.height = 448,
 	/* change to 32 to start with RGB888 mode by default */
-	.bits_per_pixel = 16,
+	.bits_per_pixel = 32,
 	.vmode = FB_VMODE_INTERLACED,
 };
 
@@ -571,24 +583,21 @@ static u32 pseudo_palette[17];
  * Explanation of all the buffering going on here:
  * 
  * 0 - this is the hardware, Hollywood/Flipper GPU, it shares memory with CPU as instructed via ioctls and renders what finds there
- * 1 - gx_fb_start: this is the physical memory address (a.k.a. xfb-start) for the video card
- * 2 - fb_mem: this is the iomapped virtual address for the physical address, same size as physical memory used by video card
+ * 1 - gx_xfb_start: this is the physical memory address (a.k.a. xfb-start) for the eXternal FrameBuffer (YUYV framebuffer that VI consumes)
  *     a.k.a. "physical framebuffer", concealed from use except in native YUYV mode
- * 3 - info->fix.smem_start: this is the virtual framebuffer, VM'allocated, with format specified by 'vfb_format'
- * 4 - userland has its own memory buffers and can mmap into previous virtual framebuffer,
+ * 2 - xfb_mem: this is the iomapped virtual address for the physical address of XFB, same size as XFB
+ * 3 - gx_efb_start: this is the physical memory address (a.k.a. efb-start) for the Embedded FrameBuffer (EDRAM on the Flipper/Hollywood chipset
+ *     that GX would render into, and that we draw into).
+ * 4 - efb_mem: this is the iomapped virtual address for the physical address of EFB, same size as EFB
+ * 5 - info->fix.smem_start: same as efb_mem, exposed to userland
+ * 6 - userland has its own memory buffers and can mmap into previous virtual framebuffer,
  *     or otherwise write there via file/memory operations.
- * 
- * gx_fb_size: size of the physical framebuffer
- * vfb_mem: pointer to the virtual framebuffer, used only in RGB88 or RGB565 modes
- * vfb_len: size of the virtual framebuffer, used only in RGB88 or RGB565 modes
- * vfb_format: either RGB888, YUYV or RGB565
  */
-static unsigned long gx_fb_start;
-static void *fb_mem, *vfb_mem;
-static unsigned long vfb_len;
-static unsigned int gx_fb_size;
+static unsigned long gx_xfb_start, gx_efb_start;
+static void *xfb_mem, *efb_mem;
+static unsigned long efb_len;
+static unsigned int gx_xfb_size, gx_efb_size;
 static int vfb_format;
-#define	vfb_diff	0
 
 /*
  *
@@ -1317,12 +1326,6 @@ static int vi_setup_tv_mode(struct vi_ctl *ctl, bool force_detect)
 	return 0;
 }
 
-static int vifb_adjust_ll(int ll) {
-	if (vfb_format == PIX_FMT_RGB888)
-		return ll/2;
-	return ll;
-}
-
 /*
  * Set the address from where the video encoder will display data on screen.
  */
@@ -1332,7 +1335,7 @@ static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 	void __iomem *io_base = ctl->io_base;
 	u32 top, bot;
 	u8 xof;
-	int gx_ll = vifb_adjust_ll(info->fix.line_length);
+	int gx_ll = 640 * 2;
 
 	top = bot = addr;
 	if (!vi_vmode_is_progressive(info->var.vmode)) {
@@ -1388,122 +1391,105 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 	out_be32(io_base + VI_DI3, 0);
 }
 
-static void vi_transcode_RGB565(struct vi_ctl *ctl)
+/*
+ * GX related functions
+ */
+static void gx_ppcsync(void)
 {
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	uint32_t *src = (uint32_t *)info->screen_base;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
-	width = info->fix.line_length >> 2;
+	u32 hid0;
 
-	while (height--) {
-		int j = width;
-		while (j--) {
-			uint32_t k = *(src + j);
-			*(dst + j) = rgbrgb16toycbycr(k);
-		}
-		dst += width;
-		src += width;
-	}
+	hid0 = mfspr(SPRN_HID0);
+	mtspr(SPRN_HID0, hid0 | HID0_ABE);
+	asm volatile("isync" ::: "memory");
+	asm volatile("sync" ::: "memory");
+	mtspr(SPRN_HID0, hid0);
 }
 
-static void vi_transcode_RGB565_diff(struct vi_ctl *ctl)
-{
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	uint32_t *src = (uint32_t *)info->screen_base;
-	/* address of backup copy of the virtual framebuffer */
-	uint32_t *src_diff;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
-	width = info->fix.line_length >> 2;
-	src_diff = src + width * height;
 
-	while (height--) {
-		int j = width;
-		while (j--) {
-			uint32_t k = *(src + j);
-			if ( k != *(src_diff + j)) {
-				*(src_diff + j) = k;
-				*(dst + j) = rgbrgb16toycbycr(k);
-			}
-		}
-		dst += width;
-		src += width;
-		src_diff += width;
-	}
+static void gx_set_wgpipe(void *base)
+{
+	u32 value;
+
+	if (base)
+		mtspr(SPRN_WPAR_GEKKO, (u32)base);
+
+	value = mfspr(SPRN_HID2_GEKKO);
+	if (base)
+		value |= HID2_GEKKO_WPE;
+	else
+		value &= ~HID2_GEKKO_WPE;
+
+	mtspr(SPRN_HID2_GEKKO, value);
+}
+
+/* helper macros */
+#define BP_REG(x)              (x << 24)
+#define GX_COORDS(x, y)        (((y) << 10) | (x))
+
+#define BP_REG_PE_DONE         BP_REG(0x45)
+#define BP_REG_PE_TOKEN        BP_REG(0x47)
+#define BP_REG_PE_TOKEN_INT    BP_REG(0x48)
+#define BP_REG_EFB_COORDS_MIN  BP_REG(0x49)
+#define BP_REG_EFB_COORDS_MAX  BP_REG(0x4a)
+#define BP_REG_XFB_ADDR        BP_REG(0x4b)
+#define BP_REG_PE_COPY_EXECUTE BP_REG(0x52)
+#define  PE_COPY_EXECUTE_TO_XFB BIT(14)
+#define  PE_COPY_EXECUTE_CLEAR  BIT(11)
+#define  PE_COPY_EXECUTE_CLAMP  (2 << 0)
+
+static void gx_bp_set_reg(struct vi_ctl *ctl, u32 data)
+{
+	out_8(ctl->wgPipe, 0x61);
+	out_be32(ctl->wgPipe, data);
+}
+
+
+static void gx_flush(struct vi_ctl *ctl)
+{
+	int i;
+	for (i = 0; i < 8; i++)
+		out_be32(ctl->wgPipe, 0);
+	gx_ppcsync();
+}
+
+static void gx_draw_done(struct vi_ctl *ctl, u16 token)
+{
+	/* Draw done */
+	gx_bp_set_reg(ctl, BP_REG_PE_DONE | 0x000002);
+
+	/* Write tokens */
+        gx_bp_set_reg(ctl, BP_REG_PE_TOKEN_INT | token);
+        gx_bp_set_reg(ctl, BP_REG_PE_TOKEN | token);
+
+	/* Flush WG pipe */
+	gx_flush(ctl);
+}
+
+static void gx_init(struct vi_ctl *ctl)
+{
+	gx_set_wgpipe(ctl->fifo_base);
+
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MIN | GX_COORDS(0, 0));
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MAX | GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
+	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR | (gx_xfb_start >> 5));
 }
 
 static void vi_transcode_RGB888(struct vi_ctl *ctl)
 {
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
-	width = info->fix.line_length >> 3;
+	dev_info(ctl->dev, "Transcoding RGB8888...\n");
+	const u32 copy_mask = ctl->mode->height == 574 ? 0x400 : 0x0;
 
-	while (height--) {
-		int j = width;
-		while (j--) {
-			union double_rgba_pixel_t k = *(src + j);
-			*(dst + j) = rgb32rgb32toycbycr(k);
-		}
-		dst += width;
-		src += width;
-	}
-}
+	/* Execute copy to XFB */
+	dev_info(ctl->dev, "transcode: bp_set_reg()...\n");
+	gx_bp_set_reg(ctl, BP_REG_PE_COPY_EXECUTE |
+			   PE_COPY_EXECUTE_TO_XFB |
+			   PE_COPY_EXECUTE_CLEAR  |
+			   PE_COPY_EXECUTE_CLAMP  |
+			   copy_mask);
 
-static void vi_transcode_RGB888_diff(struct vi_ctl *ctl)
-{
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
-	/* address of backup copy of the virtual framebuffer */
-	union double_rgba_pixel_t *src_diff;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
-	width = info->fix.line_length >> 3;
-	src_diff = src + width * height;
-
-	while (height--) {
-		int j = width;
-		while (j--) {
-			union double_rgba_pixel_t k = *(src + j);
-			if (k.k64 != (*(src_diff + j)).k64) {
-				*(src_diff + j) = k;
-				*(dst + j) = rgb32rgb32toycbycr(k);
-			}
-		}
-		dst += width;
-		src += width;
-		src_diff += width;
-	}
+	dev_info(ctl->dev, "transcode: gx_draw_done()...\n");
+	gx_draw_done(ctl, ctl->gx_token++);
+	dev_info(ctl->dev, "transcode: done!\n");
 }
 
 static void vi_dispatch_vtrace(struct vi_ctl *ctl)
@@ -1525,6 +1511,8 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	void __iomem *io_base = ctl->io_base;
 	u32 val;
 
+	dev_info((struct device *)dev, "Got VI IRQ!!\n");
+
 	/* DI0 and DI1 are used to account for the vertical retrace */
 	val = in_be32(io_base + VI_DI0);
 	if (vi_dix_get_irq(val)) {
@@ -1541,19 +1529,9 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 			case V4L2_PIX_FMT_YUYV:
 				/* do nothing */
 			break;
-			case V4L2_PIX_FMT_RGB565:
-				/* RGB565 -> YUYV */
-				if (vfb_diff)
-					vi_transcode_RGB565_diff(ctl);
-				else
-					vi_transcode_RGB565(ctl);
-				break;
 			case PIX_FMT_RGB888:
 				/* (RGB32, RGB32) to YUYV */
-				if (vfb_diff)
-					vi_transcode_RGB888_diff(ctl);
-				else
-					vi_transcode_RGB888(ctl);
+				vi_transcode_RGB888(ctl);
 				break;
 			default:
 				BUG();
@@ -1718,7 +1696,7 @@ static u8 vi_ave_gamma[] = {
 	0x00
 };
 
-static struct vi_ctl *first_vi_ctl;
+static struct vi_ctl *first_vi_ctl = NULL;
 static struct i2c_client *first_vi_ave = NULL;
 
 /*
@@ -1829,6 +1807,9 @@ static int vi_ave_probe(struct i2c_client *client)
 		dev_dbg(&client->dev, "vi_ave_probe(): skipping further probes\n");
 		return 0;
 	}
+
+	if (!first_vi_ctl)
+		return -EPROBE_DEFER;
 
 	/* attach first a/v encoder to first framebuffer */
 	error = vi_attach_ave(first_vi_ctl, client);
@@ -2091,18 +2072,21 @@ static void vifb_clear_all(void)
 			break;
 		case V4L2_PIX_FMT_RGB565:
 		case PIX_FMT_RGB888:
-			memset(vfb_mem, 0, vfb_len);
+			i = gx_efb_size >> 2;
+			j = (uint32_t *)efb_mem;
+			while (i--)
+				*(j++) = 0x00000000;
 			break;
 		default:
 			BUG();
 			return;
 	}
+
 	/* clear screen */
-	i = gx_fb_size >> 2;
-	j = (uint32_t *)fb_mem;
-	while (i--) {
+	i = gx_xfb_size >> 2;
+	j = (uint32_t *)xfb_mem;
+	while (i--)
 		*(j++) = 0x10801080;
-	}
 }
 
 /*
@@ -2115,8 +2099,8 @@ static int vifb_set_par(struct fb_info *info)
 	unsigned long flags;
 	int gx_ll;
 
-	/* horizontal line in bytes, refers to virtual framebuffer */
-	info->fix.line_length = var->xres_virtual * (var->bits_per_pixel / 8);
+	/* horizontal line in bytes, refers to EFB, which always has a stride of 4096B */
+	info->fix.line_length = 4096;
 
 	if (vifb_format_is_fourcc(var)) {
 		vfb_format = var->nonstd;
@@ -2126,32 +2110,25 @@ static int vifb_set_par(struct fb_info *info)
 		}
 		info->fix.visual = FB_VISUAL_FOURCC;
 	} else {
-		/* Set internal vfb format and define desired framebuffer size;
-		 * it can either be same size of video card physical framebuffer,
-		 * or double size for RGB888 */
-		if (info->var.bits_per_pixel == 16) {
-			vfb_format = V4L2_PIX_FMT_RGB565;
-		} else if (info->var.bits_per_pixel == 32) {
-			vfb_format = PIX_FMT_RGB888;
-		} else {
+		if (info->var.bits_per_pixel != 32) {
 			BUG();
 			return -EINVAL;
 		}
-		/* buffer-backed framebuffers always read fast */
-		info->flags |= FBINFO_READS_FAST | FBINFO_VIRTFB;
+
+		vfb_format = PIX_FMT_RGB888;
 	}
 
 	/* info->fix.smem_* refer to the virtual framebuffer, here however
 	 * we want to store physical fb info, namely the
 	 * addresses of the two pages used for flipping
 	 */
-	gx_ll = vifb_adjust_ll(info->fix.line_length);
-	ctl->page_address[0] = gx_fb_start;
-	if (var->yres * gx_ll <= gx_fb_size / 2)
+	gx_ll = 640 * 2;
+	ctl->page_address[0] = gx_xfb_start;
+	if (var->yres * gx_ll <= gx_xfb_size / 2)
 		ctl->page_address[1] =
-		    gx_fb_start + var->yres * gx_ll;
+		    gx_xfb_start + var->yres * gx_ll;
 	else /* this is weird but I don't understand it, so I don't touch it */
-		ctl->page_address[1] = gx_fb_start;
+		ctl->page_address[1] = gx_xfb_start;
 
 	/* set page 1 as the visible page and cancel pending flips */
 	spin_lock_irqsave(&ctl->lock, flags);
@@ -2225,6 +2202,8 @@ struct fb_ops vifb_ops = {
 	.fb_fillrect = cfb_fillrect,
 	.fb_copyarea = cfb_copyarea,
 	.fb_imageblit = cfb_imageblit,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 };
 
 /*
@@ -2232,23 +2211,25 @@ struct fb_ops vifb_ops = {
  *
  */
 
-static void vifb_release_virtual_fb(void);
+static void vifb_release_efb(void);
 
 static int vifb_do_probe(struct device *dev,
-			 struct resource *mem, unsigned int irq,
-			 unsigned long xfb_start, unsigned long xfb_size)
+			 struct resource *res_vi, unsigned int irq,
+			 unsigned long xfb_start, unsigned long xfb_size,
+			 unsigned long efb_start, unsigned long efb_size,
+			 struct resource *res_fifo)
 {
 	struct fb_info *info;
 	struct vi_ctl *ctl;
 	int video_cmap_len;
 	int error = -EINVAL;
 	int i;
-	unsigned long adr, size;
+	unsigned long size;
 	uint32_t *j;
 
 	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
 	if (!info)
-		return -EINVAL;;
+		return -EINVAL;
 
 	info->fbops = &vifb_ops;
 	info->var = vifb_var;
@@ -2259,67 +2240,84 @@ static int vifb_do_probe(struct device *dev,
 	ctl->irq = irq;
 	ctl->dev = dev;
 
-	/* first things first: remap some video card control ports */
-	ctl->io_base = devm_ioremap_wc(dev, mem->start, mem->end - mem->start + 1);
+	/* first things first: remap VI I/O */
+	ctl->io_base = devm_ioremap_wc(dev, res_vi->start, res_vi->end - res_vi->start + 1);
 	if (!ctl->io_base) {
-		dev_err(dev, "failed to ioremap video card ports at %p (%dk)\n",
-			(void *)mem->start, (int)(mem->end - mem->start + 1));
+		dev_err(dev, "failed to ioremap VI MMIO at %p (%dk)\n",
+			(void *)res_vi->start, (int)(res_vi->end - res_vi->start + 1));
 		error = -EIO;
-		goto err_nofbmem;
+		goto err_ioremap_ctrl;
 	}
 
-	fb_mem = devm_ioremap(dev, xfb_start, xfb_size);
-	if (!fb_mem) {
-		dev_err(dev,"failed to ioremap video memory at %p (%ldk)\n",
+	/* remap the XFB */
+	xfb_mem = devm_ioremap(dev, xfb_start, xfb_size);
+	if (!xfb_mem) {
+		dev_err(dev, "failed to ioremap XFB at %p (%ldk)\n",
 			(void *)xfb_start, xfb_size / 1024);
 		error = -EIO;
-		goto err_ioremap;
+		goto err_ioremap_xfb;
 	}
 
-	/* store global variables for the physical framebuffer */
-	gx_fb_start = xfb_start;
-	gx_fb_size = xfb_size;
+	/* store global variables for the XFB */
+	gx_xfb_start = xfb_start;
+	gx_xfb_size = xfb_size;
 
-	dev_info(dev, "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
-		 (void *)xfb_start, fb_mem, xfb_size / 1024);
+	dev_info(dev, "XFB at 0x%p mapped to 0x%p, size %ldk\n",
+		 (void *)xfb_start, xfb_mem, xfb_size / 1024);
 
-
-	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions 
-	 * always as big as the largest mode supported
-	 * TODO: reallocate framebuffer as needed
-	 */
-	vfb_len = xfb_size;
-	info->fix.smem_len = vfb_len;
-	size = PAGE_ALIGN(info->fix.smem_len);
-	vfb_mem = vmalloc_32(size);
-	if (!vfb_mem) {
-		info->fix.smem_len = 0; /* just in case */
-		dev_err(dev, "failed to allocate virtual framebuffer\n");
-		return -ENOMEM;
+	/* remap the EFB */
+	efb_mem = devm_ioremap(dev, efb_start, efb_size);
+	if (!efb_mem) {
+		dev_err(dev, "failed to ioremap EFB at %p (%ldk)\n",
+			(void *)efb_start, efb_size / 1024);
+		error = -EIO;
+		goto err_ioremap_efb;
 	}
-	info->fix.smem_start = (unsigned long)vfb_mem;
+
+	/* store global variables for the EFB */
+	gx_efb_start = efb_start;
+	gx_efb_size = efb_size;
+
+	dev_info(dev, "EFB at 0x%p mapped to 0x%p, size %ldk\n",
+		 (void *)efb_start, efb_mem, efb_size / 1024);
+
 	/*
-	 * Now that the virtual framebuffer has been setup,
-	 * store its location and size.
-	 * All software rendering will be redirected to this virtual framebuffer.
-	 * Normally screen_base would be the physical framebuffer, but here we play on-the-fly colorconversion.
+	 * The WGPipe will handle writing to the FIFO, so we need to stash the physical
+	 * pointer.  We also need to the remapped pointer to actually write to.
 	 */
-	info->screen_base = (char __iomem *)info->fix.smem_start;
-
-	adr = info->fix.smem_start;
-	while (size > 0) {
-		SetPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
+	ctl->fifo_base = (void *)res_fifo->start;
+	ctl->wgPipe = devm_ioremap(dev, res_fifo->start, res_fifo->end - res_fifo->start + 1);
+	if (!ctl->wgPipe) {
+		dev_err(dev, "failed to ioremap GX FIFO at %p (%dk)\n",
+			(void *)res_fifo->start, (int)(res_fifo->end - res_fifo->start + 1));
+		error = -EIO;
+		goto err_ioremap_fifo;
 	}
-	dev_info(dev, "virtual framebuffer at 0x%px, size %ldk\n",
-		   (void *)vfb_mem, PAGE_ALIGN(vfb_len) / 1024);
+
+	/* more global variables and framebuffer init */
+	efb_len = efb_size;
+	info->fix.smem_len = efb_len;
+	size = PAGE_ALIGN(info->fix.smem_len);
+	info->fix.smem_start = (unsigned long)efb_mem;
+	info->screen_base = (char __iomem *)info->fix.smem_start;
 
 	spin_lock_init(&ctl->lock);
 	init_waitqueue_head(&ctl->vtrace_waitq);
 
+	dev_info(dev, "vi_reset_video()...\n");
 	vi_reset_video(ctl);
+	dev_info(dev, "vi_detect_tv_mode()...\n");
 	vi_detect_tv_mode(ctl);
+
+	/*
+	 * Initialize the GX GPU, including all of it's parts:
+	 * - BP (Blitting Processor)
+	 * - CP (Command Processor)
+	 * - PE (Pixel Engine)
+	 * - FIFO Queue
+	 */
+	dev_info(dev, "gx_init()...\n");
+	gx_init(ctl);
 
 #ifdef CONFIG_WII_AVE_RVL
 	if (!first_vi_ctl)
@@ -2333,6 +2331,7 @@ static int vifb_do_probe(struct device *dev,
 		dev_info(dev, "AVE attached successfully\n");
 #endif
 
+	dev_info(dev, "fb setup...\n");
 	info->var.xres = ctl->mode->width;
 	info->var.yres = ctl->mode->height;
 
@@ -2346,6 +2345,7 @@ static int vifb_do_probe(struct device *dev,
 		goto err_alloc_cmap;
 	}
 
+	dev_info(dev, "vifb_check_var()...\n");
 	error = vifb_check_var(&info->var, info);
 	if (error)
 		goto err_check_var;
@@ -2353,19 +2353,27 @@ static int vifb_do_probe(struct device *dev,
 	dev_info(dev, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
 		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
 
-	/* Clear virtual framebuffer */
-	memset(vfb_mem, 0, vfb_len);
-	/* Clear screen */
-	i = xfb_size >> 2;
-	j = (uint32_t *)fb_mem;
-	while (i--) {
-		*(j++) = 0x10801080;
-	}
+	dev_info(dev, "Clearing EFB...\n");
+	/* Clear EFB */
+	i = efb_size >> 2;
+	j = (u32 *)efb_mem;
+	while (i--)
+		*(j++) = 0x00000000;
 
+	dev_info(dev, "Clearing XFB...\n");
+	/* Clear XFB */
+	i = xfb_size >> 2;
+	j = (u32 *)xfb_mem;
+	while (i--)
+		*(j++) = 0x10801080;
+
+	dev_info(dev, "dev_set_drvdata()...\n");
 	dev_set_drvdata(dev, info);
 
+	dev_info(dev, "vi_enable_interrupts()...\n");
 	vi_enable_interrupts(ctl, 0);
 
+	dev_info(dev, "request_irq()...\n");
 	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
 	if (error) {
 		dev_err(dev, "unable to register IRQ %u\n", ctl->irq);
@@ -2373,6 +2381,7 @@ static int vifb_do_probe(struct device *dev,
 	}
 
 	/* now register us */
+	dev_info(dev, "register_framebuffer()...\n");
 	if (register_framebuffer(info) < 0) {
 		error = -EINVAL;
 		goto err_register_framebuffer;
@@ -2389,16 +2398,18 @@ err_check_var:
 err_request_irq:
 	fb_dealloc_cmap(&info->cmap);
 err_alloc_cmap:
-	iounmap(fb_mem);
-err_ioremap:
+	iounmap(ctl->wgPipe);
+err_ioremap_fifo:
+	vifb_release_efb();
+err_ioremap_efb:
 	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
-err_nofbmem:
+	release_mem_region(gx_xfb_start, gx_xfb_size);
 	/* release the physical framebuffer */
-	vifb_release_virtual_fb();
-
-	dev_set_drvdata(dev, NULL);
+	iounmap(xfb_mem);
+err_ioremap_xfb:
 	iounmap(ctl->io_base);
+err_ioremap_ctrl:
+	dev_set_drvdata(dev, NULL);
 	framebuffer_release(info);
 
 	return error;
@@ -2415,12 +2426,12 @@ static int vifb_do_remove(struct device *dev)
 	free_irq(ctl->irq, dev);
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);
-	iounmap(fb_mem);
+	iounmap(xfb_mem);
 
 	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
+	release_mem_region(gx_xfb_start, gx_xfb_size);
 
-	vifb_release_virtual_fb();
+	vifb_release_efb();
 
 	dev_set_drvdata(dev, NULL);
 	iounmap(ctl->io_base);
@@ -2434,19 +2445,8 @@ static int vifb_do_remove(struct device *dev)
 	return 0;
 }
 
-/* clean up reserved pages of the virtual framebuffer */
-static void vifb_release_virtual_fb() {
-	unsigned long size;
-	unsigned long adr = (unsigned long)vfb_mem;
-	
-	/* release the virtual framebuffer's reserved pages */
-	size = PAGE_ALIGN(vfb_len);
-	while ((long) size > 0) {
-		ClearPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
-	}
-	vfree((void *)vfb_mem);
+static void vifb_release_efb(void) {
+	iounmap((void *)gx_efb_start);
 }
 
 static int vifb_do_shutdown(struct device *dev)
@@ -2514,34 +2514,65 @@ static int vifb_setup(char *options)
 
 static int vifb_of_probe(struct platform_device *odev)
 {
-	struct resource res;
+	struct resource res_vi, res_fifo;
 	const unsigned long *prop;
-	unsigned long xfb_start, xfb_size;
+	unsigned long xfb_start, xfb_size, efb_start, efb_size;
+	struct device_node *fifo_np;
 	int retval;
 
-	retval = of_address_to_resource(odev->dev.of_node, 0, &res);
+	retval = of_address_to_resource(odev->dev.of_node, 0, &res_vi);
 	if (retval) {
-		dev_err(&odev->dev, "no io memory range found\n");
+		dev_err(&odev->dev, "no VI I/O memory range found\n");
 		return -ENODEV;
 	}
 
 	prop = of_get_property(odev->dev.of_node, "xfb-start", NULL);
 	if (!prop) {
-		dev_err(&odev->dev, "no xfb start found\n");
+		dev_err(&odev->dev, "no XFB start found\n");
 		return -ENODEV;
 	}
 	xfb_start = *prop;
 
 	prop = of_get_property(odev->dev.of_node, "xfb-size", NULL);
 	if (!prop) {
-		dev_err(&odev->dev, "no xfb size found\n");
+		dev_err(&odev->dev, "no XFB size found\n");
 		return -ENODEV;
 	}
 	xfb_size = *prop;
 
+	prop = of_get_property(odev->dev.of_node, "efb-start", NULL);
+	if (!prop) {
+		dev_err(&odev->dev, "no EFB start found\n");
+		return -ENODEV;
+	}
+	efb_start = *prop;
+
+	prop = of_get_property(odev->dev.of_node, "efb-size", NULL);
+	if (!prop) {
+		dev_err(&odev->dev, "no EFB size found\n");
+		return -ENODEV;
+	}
+	efb_size = *prop;
+
+	fifo_np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-gx-fifo");
+	if (!fifo_np) {
+		fifo_np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-gx-fifo");
+		if (!fifo_np) {
+			dev_err(&odev->dev, "failed to find GX FIFO node\n");
+			return -ENODEV;
+		}
+	}
+
+	retval = of_address_to_resource(fifo_np, 0, &res_fifo);
+	if (retval) {
+		dev_err(&odev->dev, "no FIFO I/O memory range found\n");
+		return -ENODEV;
+	}
+
 	return vifb_do_probe(&odev->dev,
-			     &res, irq_of_parse_and_map(odev->dev.of_node, 0),
-			     xfb_start, xfb_size);
+			     &res_vi, irq_of_parse_and_map(odev->dev.of_node, 0),
+			     xfb_start, xfb_size, efb_start, efb_size,
+			     &res_fifo);
 }
 
 static void vifb_of_remove(struct platform_device *odev)
