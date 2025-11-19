@@ -29,6 +29,7 @@
 
 #define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
 
+#include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
@@ -473,9 +474,14 @@ struct vi_ctl {
 	spinlock_t lock;
 
 	void __iomem *io_base;
-	void __iomem *fifo_base; /* physical address! */
+	void __iomem *gx_fifo_base; /* physical address! */
+	void __iomem *pi_base;
+	void __iomem *cp_base;
 	void __iomem *wgPipe;
+
 	u16 gx_token;
+	void *fifo; /* the FIFO in memory */
+	dma_addr_t fifo_dma;
 	unsigned int irq;
 
 	int in_vtrace;
@@ -1426,6 +1432,7 @@ static void gx_set_wgpipe(void *base)
 #define BP_REG(x)              (x << 24)
 #define GX_COORDS(x, y)        (((y) << 10) | (x))
 
+/* BP Registers */
 #define BP_REG_PE_DONE         BP_REG(0x45)
 #define BP_REG_PE_TOKEN        BP_REG(0x47)
 #define BP_REG_PE_TOKEN_INT    BP_REG(0x48)
@@ -1436,6 +1443,33 @@ static void gx_set_wgpipe(void *base)
 #define  PE_COPY_EXECUTE_TO_XFB BIT(14)
 #define  PE_COPY_EXECUTE_CLEAR  BIT(11)
 #define  PE_COPY_EXECUTE_CLAMP  (2 << 0)
+
+/* GX-related PI registers */
+#define PI_FIFO_BASE (0x0c)
+#define PI_FIFO_END  (0x10)
+#define PI_FIFO_CUR  (0x14)
+
+/* CP registers */
+#define CP_CR                  (0x02)
+#define  CP_CR_GP_LINK_EN       BIT(4)
+#define  CP_CR_GP_FIFO_READ_EN  BIT(0)
+#define CP_FIFO_BASE_LO        (0x20)
+#define CP_FIFO_BASE_HI        (0x22)
+#define CP_FIFO_END_LO         (0x24)
+#define CP_FIFO_END_HI         (0x26)
+#define CP_FIFO_RW_DISTANCE_LO (0x30)
+#define CP_FIFO_RW_DISTANCE_HI (0x32)
+#define CP_FIFO_WRITE_PTR_LO   (0x34)
+#define CP_FIFO_WRITE_PTR_HI   (0x36)
+#define CP_FIFO_READ_PTR_LO    (0x38)
+#define CP_FIFO_READ_PTR_HI    (0x3a)
+#define CP_FIFO_BP_LO          (0x3c)
+#define CP_FIFO_BP_HI          (0x3e)
+/*
+ * In-memory FIFO size.
+ * We'll barely be giving it any work so don't waste much memory.
+ */
+#define GX_FIFO_SIZE (4096)
 
 static void gx_bp_set_reg(struct vi_ctl *ctl, u32 data)
 {
@@ -1465,13 +1499,65 @@ static void gx_draw_done(struct vi_ctl *ctl, u16 token)
 	gx_flush(ctl);
 }
 
-static void gx_init(struct vi_ctl *ctl)
+static int gx_init(struct vi_ctl *ctl)
 {
-	gx_set_wgpipe(ctl->fifo_base);
+	u32 fifo_base, fifo_end;
+	u16 fifo_base_lo, fifo_base_hi, fifo_end_lo, fifo_end_hi, tmp;
 
+	/* allocate a FIFO */
+	dma_coerce_mask_and_coherent(ctl->dev, DMA_BIT_MASK(32));
+	ctl->fifo = dma_alloc_noncoherent(ctl->dev, GX_FIFO_SIZE, &ctl->fifo_dma, DMA_BIDIRECTIONAL, GFP_KERNEL);
+	if (!ctl->fifo)
+		return -ENOMEM;
+
+	/* do some math, type conversions, and shifts, for ease of the below */
+	fifo_base = (u32)ctl->fifo_dma;
+	fifo_end = ((u32)ctl->fifo_dma) + GX_FIFO_SIZE;
+	fifo_base_lo = (fifo_base & 0x0000ffff) >> 16;
+	fifo_base_hi = fifo_base & 0xffff0000;
+	fifo_end_lo = (fifo_end & 0x0000ffff) >> 16;
+	fifo_end_hi = fifo_end & 0xffff0000;
+
+
+	/* disconnect GX from the FIFO so we can configure CP */
+	out_be16(ctl->cp_base + CP_CR, 0);
+
+	/* set up FIFO regs in CP */
+	out_be16(ctl->cp_base + CP_FIFO_BASE_LO, fifo_base_lo);
+	out_be16(ctl->cp_base + CP_FIFO_BASE_HI, fifo_base_hi);
+	out_be16(ctl->cp_base + CP_FIFO_END_LO, fifo_end_lo);
+	out_be16(ctl->cp_base + CP_FIFO_END_HI, fifo_end_hi);
+	out_be16(ctl->cp_base + CP_FIFO_RW_DISTANCE_LO, 0);
+	out_be16(ctl->cp_base + CP_FIFO_RW_DISTANCE_HI, 0);
+	out_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO, fifo_base_lo);
+	out_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI, fifo_base_hi);
+	out_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO, fifo_base_lo);
+	out_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI, fifo_base_hi);
+	out_be16(ctl->cp_base + CP_FIFO_BP_LO, fifo_base_lo);
+	out_be16(ctl->cp_base + CP_FIFO_BP_HI, fifo_base_hi);
+	gx_ppcsync();
+
+	/* set the FIFO settings in PI */
+	out_be32(ctl->pi_base + PI_FIFO_BASE, fifo_base);
+	out_be32(ctl->pi_base + PI_FIFO_CUR, fifo_base);
+	out_be32(ctl->pi_base + PI_FIFO_END, fifo_end);
+	gx_ppcsync();
+
+	/* enable the GX FIFO */
+	out_be16(ctl->cp_base + CP_CR, CP_CR_GP_LINK_EN);
+	tmp = in_be32(ctl->cp_base + CP_CR);
+	tmp |= CP_CR_GP_FIFO_READ_EN;
+	out_be16(ctl->cp_base + CP_CR, tmp);
+
+	/* set up the write gather pipe */
+	gx_set_wgpipe(ctl->gx_fifo_base);
+
+	/* framebuffer info */
 	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MIN | GX_COORDS(0, 0));
 	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MAX | GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
 	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR | (gx_xfb_start >> 5));
+
+	return 0;
 }
 
 static void vi_transcode_RGB888(struct vi_ctl *ctl)
@@ -2217,7 +2303,8 @@ static int vifb_do_probe(struct device *dev,
 			 struct resource *res_vi, unsigned int irq,
 			 unsigned long xfb_start, unsigned long xfb_size,
 			 unsigned long efb_start, unsigned long efb_size,
-			 struct resource *res_fifo)
+			 struct resource *res_fifo, struct resource *res_pi,
+			 struct resource *res_cp)
 {
 	struct fb_info *info;
 	struct vi_ctl *ctl;
@@ -2285,7 +2372,7 @@ static int vifb_do_probe(struct device *dev,
 	 * The WGPipe will handle writing to the FIFO, so we need to stash the physical
 	 * pointer.  We also need to the remapped pointer to actually write to.
 	 */
-	ctl->fifo_base = (void *)res_fifo->start;
+	ctl->gx_fifo_base = (void *)res_fifo->start;
 	ctl->wgPipe = devm_ioremap(dev, res_fifo->start, res_fifo->end - res_fifo->start + 1);
 	if (!ctl->wgPipe) {
 		dev_err(dev, "failed to ioremap GX FIFO at %p (%dk)\n",
@@ -2294,9 +2381,29 @@ static int vifb_do_probe(struct device *dev,
 		goto err_ioremap_fifo;
 	}
 
+	/* remap PI */
+	ctl->pi_base = devm_ioremap(dev, res_pi->start, res_pi->end - res_pi->start + 1);
+	if (!ctl->pi_base) {
+		dev_err(dev, "failed to ioremap PI at %p (%dk)\n",
+			(void *)res_pi->start, (int)(res_pi->end - res_pi->start + 1));
+		error = -EIO;
+		goto err_ioremap_pi;
+	}
+
+	/* remap CP */
+	ctl->cp_base = devm_ioremap(dev, res_cp->start, res_cp->end - res_cp->start + 1);
+	if (!ctl->cp_base) {
+		dev_err(dev, "failed to ioremap PI at %p (%dk)\n",
+			(void *)res_cp->start, (int)(res_cp->end - res_cp->start + 1));
+		error = -EIO;
+		goto err_ioremap_cp;
+	}
+
 	/* more global variables and framebuffer init */
 	efb_len = efb_size;
 	info->fix.smem_len = efb_len;
+	info->fix.line_length = 4096;
+
 	size = PAGE_ALIGN(info->fix.smem_len);
 	info->fix.smem_start = (unsigned long)efb_mem;
 	info->screen_base = (char __iomem *)info->fix.smem_start;
@@ -2317,7 +2424,12 @@ static int vifb_do_probe(struct device *dev,
 	 * - FIFO Queue
 	 */
 	dev_info(dev, "gx_init()...\n");
-	gx_init(ctl);
+	error = gx_init(ctl);
+	if (error) {
+		dev_err(dev, "GX initialization failed with error %d\n", error);
+		error = -ENOMEM;
+		goto err_gx_init;
+	}
 
 #ifdef CONFIG_WII_AVE_RVL
 	if (!first_vi_ctl)
@@ -2398,6 +2510,11 @@ err_check_var:
 err_request_irq:
 	fb_dealloc_cmap(&info->cmap);
 err_alloc_cmap:
+err_gx_init:
+	iounmap(ctl->cp_base);
+err_ioremap_cp:
+	iounmap(ctl->pi_base);
+err_ioremap_pi:
 	iounmap(ctl->wgPipe);
 err_ioremap_fifo:
 	vifb_release_efb();
@@ -2435,6 +2552,8 @@ static int vifb_do_remove(struct device *dev)
 
 	dev_set_drvdata(dev, NULL);
 	iounmap(ctl->io_base);
+
+	dma_free_coherent(dev, GX_FIFO_SIZE, ctl->fifo, ctl->fifo_dma);
 
 #ifdef CONFIG_WII_AVE_RVL
 	vi_dettach_ave(ctl);
@@ -2514,10 +2633,10 @@ static int vifb_setup(char *options)
 
 static int vifb_of_probe(struct platform_device *odev)
 {
-	struct resource res_vi, res_fifo;
+	struct resource res_vi, res_fifo, res_pi, res_cp;
 	const unsigned long *prop;
 	unsigned long xfb_start, xfb_size, efb_start, efb_size;
-	struct device_node *fifo_np;
+	struct device_node *fifo_np, *pi_np, *cp_np;
 	int retval;
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &res_vi);
@@ -2569,10 +2688,40 @@ static int vifb_of_probe(struct platform_device *odev)
 		return -ENODEV;
 	}
 
+	pi_np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-pi");
+	if (!pi_np) {
+		pi_np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-pi");
+		if (!pi_np) {
+			dev_err(&odev->dev, "failed to find PI node\n");
+			return -ENODEV;
+		}
+	}
+
+	retval = of_address_to_resource(pi_np, 0, &res_pi);
+	if (retval) {
+		dev_err(&odev->dev, "no PI I/O memory range found\n");
+		return -ENODEV;
+	}
+
+	cp_np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-gx-cp");
+	if (!cp_np) {
+		cp_np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-gx-cp");
+		if (!cp_np) {
+			dev_err(&odev->dev, "failed to find GX CP node\n");
+			return -ENODEV;
+		}
+	}
+
+	retval = of_address_to_resource(cp_np, 0, &res_cp);
+	if (retval) {
+		dev_err(&odev->dev, "no CP I/O memory range found\n");
+		return -ENODEV;
+	}
+
 	return vifb_do_probe(&odev->dev,
 			     &res_vi, irq_of_parse_and_map(odev->dev.of_node, 0),
 			     xfb_start, xfb_size, efb_start, efb_size,
-			     &res_fifo);
+			     &res_fifo, &res_pi, &res_cp);
 }
 
 static void vifb_of_remove(struct platform_device *odev)

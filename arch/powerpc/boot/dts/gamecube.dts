@@ -16,13 +16,12 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "root=/dev/gcnsda2 video=gcn-vifb:tv=auto force_keyboard_port=4 no_hash_pointers keep_bootcon";
+		bootargs = "root=/dev/gcnsda2 console=usbgeckocon1 video=gcn-vifb:tv=auto force_keyboard_port=4 no_hash_pointers";
 	};
 
 	memory {
 		device_type = "memory";
-		reg = <0x00000000 0x01800000   /* MEM1 24MB 1T-SRAM */
-		       0x08000000 0x00300000>; /* GX EFB 3MB EDRAM */
+		reg = <0x00000000 0x01800000>;
 	};
 
 	reserved-memory {
@@ -34,13 +33,8 @@
 			reg = <0x01774000 0x0008c000>;
 			no-map;
 		};
-
-
-		EFB: efb@8000000 {
-			reg = <0x08000000 0x00300000>;
-			no-map;
-		};
 	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -65,8 +59,24 @@
 		model = "flipper";
 		compatible = "nintendo,flipper";
 		clock-frequency = <162000000>; /* 162MHz */
-		ranges = <0x0c000000 0x0c000000 0x00010000>;
+		ranges = <0x08000000 0x08000000 0x00300000
+			  0x0c000000 0x0c000000 0x00010000>;
 		interrupt-parent = <&PIC>;
+
+		/*
+		 * This is technically RAM, however
+		 * it's only inteded purpose is to be
+		 * used by GX for RGB framebuffer space.
+		 * It is CPU-accessible, but only accepts
+		 * 32-bit accesses, making it useless for
+		 * actual system memory.
+		 * It is defined here so that the framebuffer
+		 * driver can access it.
+		 */
+		gx-efb-mem@8000000 {
+			compatible = "nintendo,flipper-gx-efb";
+			reg = <0x08000000 0x00300000>;
+		};
 
 		gx-command-processor@c000000 {
 			compatible = "nintendo,flipper-gx-cp";
