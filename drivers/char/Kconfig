@@ -359,6 +359,15 @@ source "drivers/s390/char/Kconfig"
 
 source "drivers/char/xillybus/Kconfig"
 
+config HLWD_IPC_MINI_CHAR
+	tristate "Character device for Nintendo Wii Hollywood IPC (MINI)"
+	depends on HLWD_IPC
+	default y if WII
+	help
+	  Exposes the IPC layer provided by the "MINI" custom firmware,
+	  running on the "Starlet" CPU of the "Hollywood" chipset, as
+	  a character device.
+
 config ADI
 	tristate "SPARC Privileged ADI driver"
 	depends on SPARC64
