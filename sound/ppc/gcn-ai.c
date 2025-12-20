@@ -20,6 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/of_irq.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
@@ -112,12 +113,10 @@ struct snd_gcn {
  */
 
 static void ai_dsp_load_sample(void __iomem *dsp_base,
-			       void *addr, size_t size)
+			       dma_addr_t dma, size_t size)
 {
-	u32 daddr = (unsigned long)addr;
-
-	out_be16(dsp_base + AI_DSP_DMA_ADDRH, daddr >> 16);
-	out_be16(dsp_base + AI_DSP_DMA_ADDRL, daddr & 0xffff);
+	out_be16(dsp_base + AI_DSP_DMA_ADDRH, dma >> 16);
+	out_be16(dsp_base + AI_DSP_DMA_ADDRL, dma & 0xffff);
 	out_be16(dsp_base + AI_DSP_DMA_CTLLEN,
 		 (in_be16(dsp_base + AI_DSP_DMA_CTLLEN) & AI_CTLLEN_PLAY) |
 		 size >> 5);
@@ -270,11 +269,13 @@ static int snd_gcn_trigger(struct snd_pcm_substream *substream, int cmd)
 			chip->stop_play = 0;
 			chip->start_play = 1;
 
-			chip->dma_addr = dma_map_single(chip->dev,
-							runtime->dma_area,
-							chip->period_size,
-							DMA_TO_DEVICE);
-			ai_dsp_load_sample(chip->dsp_base, runtime->dma_area,
+			chip->dma_addr = runtime->dma_addr;
+			dma_sync_single_for_device(chip->dev,
+				chip->dma_addr,
+				chip->period_size,
+				DMA_TO_DEVICE);
+
+			ai_dsp_load_sample(chip->dsp_base, chip->dma_addr,
 					   chip->period_size);
 			ai_dsp_start_sample(chip->dsp_base);
 		}
@@ -304,7 +305,6 @@ static snd_pcm_uframes_t snd_gcn_pointer(struct snd_pcm_substream *substream)
 static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
 {
 	struct snd_gcn *chip = dev;
-	void *addr;
 	unsigned long flags;
 	u16 csr;
 
@@ -320,8 +320,6 @@ static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
 	} else {
 		/* stop current sample */
 		ai_dsp_stop_sample(chip->dsp_base);
-		dma_unmap_single(chip->dev, chip->dma_addr, chip->period_size,
-				 DMA_TO_DEVICE);
 
 		/* load next sample if we are not stopping */
 		if (!chip->stop_play) {
@@ -330,13 +328,15 @@ static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
 			else
 				chip->cur_period = 0;
 
-			addr = chip->playback_substream->runtime->dma_area
+			chip->dma_addr = chip->playback_substream->runtime->dma_addr
 				   + (chip->cur_period * chip->period_size);
-			chip->dma_addr = dma_map_single(chip->dev,
-							addr,
-							chip->period_size,
-							DMA_TO_DEVICE);
-			ai_dsp_load_sample(chip->dsp_base, addr,
+
+		 	dma_sync_single_for_device(chip->dev,
+			   	chip->dma_addr,
+			   	chip->period_size,
+			   	DMA_TO_DEVICE);
+
+			ai_dsp_load_sample(chip->dsp_base, chip->dma_addr,
 					   chip->period_size);
 			ai_dsp_start_sample(chip->dsp_base);
 
@@ -381,8 +381,8 @@ static int snd_gcn_new_pcm(struct snd_gcn *chip)
 			&snd_gcn_playback_ops);
 
 	/* preallocate 64k buffer */
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS,
-					      NULL, 64 * 1024,
+	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_NONCOHERENT, chip->dev,
+					      64 * 1024,
 					      64 * 1024);
 
 	pcm->info_flags = 0;
@@ -401,11 +401,25 @@ static void ai_shutdown(struct snd_gcn *chip)
 }
 
 static int ai_init(struct snd_gcn *chip,
-		   struct resource *dsp, struct resource *ai,
+		   struct resource *dsp, struct resource *ai, struct resource *resets,
 		   unsigned int irq)
 {
 	struct snd_card *card;
 	int retval;
+	void __iomem *resets_base;
+	u32 resets_val;
+
+	/* if we have HW_RESETS mapped, pull the DSP out of reset */
+	if (resets) {
+		resets_base = ioremap(resets->start, resets->end - resets->start + 1);
+		/* not fatal, since the DSP probably isn't in reset anyways */
+		if (resets_base) {
+			resets_val = in_be32(resets_base);
+			resets_val |= BIT(22);
+			out_be32(resets_base, resets_val);
+			iounmap(resets_base);
+		}
+	}
 
 	chip->dsp_base = ioremap(dsp->start, dsp->end - dsp->start + 1);
 	chip->ai_base = ioremap(ai->start, ai->end - ai->start + 1);
@@ -480,7 +494,7 @@ static int ai_do_shutdown(struct device *dev)
 }
 
 static int ai_do_probe(struct device *dev,
-		       struct resource *dsp, struct resource *ai,
+		       struct resource *dsp, struct resource *ai, struct resource *resets,
 		       unsigned int irq)
 {
 	struct snd_card *card;
@@ -498,7 +512,7 @@ static int ai_do_probe(struct device *dev,
 	dev_set_drvdata(dev, chip);
 	chip->dev = dev;
 
-	retval = ai_init(chip, dsp, ai, irq);
+	retval = ai_init(chip, dsp, ai, resets, irq);
 	if (retval)
 		snd_card_free(card);
 
@@ -524,10 +538,23 @@ static int ai_do_remove(struct device *dev)
  *
  */
 
+/* matches for the DSP */
+static const struct of_device_id ai_dsp_match[] = {
+	{ .compatible = "nintendo,hollywood-dsp" },
+	{ .compatible = "nintendo,flipper-dsp" },
+	{ },
+};
+
+/* matches for HW_RESETS */
+static const struct of_device_id ai_resets_match[] = {
+	{ .compatible = "nintendo,hollywood-resets" },
+	{ },
+};
+
 static int ai_of_probe(struct platform_device *odev)
 {
-	struct resource dsp, ai;
-	struct device_node *dsp_np;
+	struct resource dsp, ai, resets;
+	struct device_node *dsp_np, *resets_np;
 	int retval;
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &ai);
@@ -536,13 +563,10 @@ static int ai_of_probe(struct platform_device *odev)
 		return -ENODEV;
 	}
 
-	dsp_np = of_find_compatible_node(NULL, NULL, "nintendo,hollywood-dsp");
+	dsp_np = of_find_matching_node(NULL, ai_dsp_match);
 	if (!dsp_np) {
-		dsp_np = of_find_compatible_node(NULL, NULL, "nintendo,flipper-dsp");
-		if (!dsp_np) {
-			drv_printk(KERN_ERR, "failed to find dsp node\n");
-			return -ENODEV;
-		}
+		drv_printk(KERN_ERR, "failed to find dsp node\n");
+		return -ENODEV;
 	}
 
 	retval = of_address_to_resource(dsp_np, 0, &dsp);
@@ -553,8 +577,27 @@ static int ai_of_probe(struct platform_device *odev)
 
 	of_node_put(dsp_np);
 
-	return ai_do_probe(&odev->dev,
-			   &dsp, &ai, irq_of_parse_and_map(odev->dev.of_node, 0));
+	/*
+	 * Lacking an HW_RESETS match is non-fatal, we just won't be able to
+	 * take the DSP out of reset, so we assume that the bootloader must have
+	 * done so already.  If it hasn't, the machine will hang when trying to
+	 * initialize the DSP, since it'd be waiting on a dead device.
+	 */
+	resets_np = of_find_matching_node(NULL, ai_resets_match);
+	if (resets_np) {
+		retval = of_address_to_resource(resets_np, 0, &resets);
+		if (retval) {
+			drv_printk(KERN_ERR, "no resets io memory range found\n");
+			return -ENODEV;
+		}
+	}
+
+	of_node_put(resets_np);
+
+	of_reserved_mem_device_init(&odev->dev);
+
+	return ai_do_probe(&odev->dev, &dsp, &ai, &resets,
+			   irq_of_parse_and_map(odev->dev.of_node, 0));
 }
 
 static void ai_of_remove(struct platform_device *odev)
