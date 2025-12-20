@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+
+obj-$(CONFIG_WIIU) += setup.o espresso-pic.o latte-pic.o latte-ipc.o
+obj-$(CONFIG_DEFUSE_UDBG) += udbg_defuse.o
+obj-$(CONFIG_LATTEIPC_UDBG) += udbg_latteipc.o

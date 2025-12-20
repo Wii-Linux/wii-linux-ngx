@@ -234,6 +234,16 @@ static const struct soc_device_attribute quirk_poll_match[] = {
 	{ /* sentinel*/ }
 };
 
+/*
+ * wiiu: enable notification of EHCI interrupts
+ */
+#define WIIU_EHCI_CTL		0x00cc
+#define WIIU_EHCI_CTL_INTE	(0x1 << 15)
+static void quirk_latte_inte(struct usb_hcd *hcd)
+{
+	setbits32(hcd->regs + WIIU_EHCI_CTL, WIIU_EHCI_CTL_INTE);
+}
+
 static int ehci_platform_probe(struct platform_device *dev)
 {
 	struct usb_hcd *hcd;
@@ -370,6 +380,10 @@ static int ehci_platform_probe(struct platform_device *dev)
 
 	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
 
+	if (dev->dev.of_node && of_device_is_compatible(dev->dev.of_node,
+							"nintendo,latte-ehci"))
+		quirk_latte_inte(hcd);
+
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err)
 		goto err_power;
@@ -485,6 +499,7 @@ static const struct of_device_id vt8500_ehci_ids[] = {
 	{ .compatible = "wm,prizm-ehci", },
 	{ .compatible = "generic-ehci", },
 	{ .compatible = "cavium,octeon-6335-ehci", },
+	{ .compatible = "nintendo,latte-ehci", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, vt8500_ehci_ids);

@@ -45,6 +45,8 @@ void __init udbg_init_btext(void);
 void __init udbg_init_44x_as1(void);
 void __init udbg_init_cpm(void);
 void __init udbg_init_usbgecko(void);
+void __init udbg_init_defuse(void);
+void __init udbg_init_latteipc(void);
 void __init udbg_init_memcons(void);
 void __init udbg_init_ehv_bc(void);
 void __init udbg_init_ps3gelic(void);

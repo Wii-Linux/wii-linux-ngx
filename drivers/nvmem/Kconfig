@@ -241,7 +241,7 @@ config NVMEM_MXS_OCOTP
 
 config NVMEM_NINTENDO_OTP
 	tristate "Nintendo Wii and Wii U OTP Support"
-	depends on WII || COMPILE_TEST
+	depends on WIIU || WII || COMPILE_TEST
 	help
 	  This is a driver exposing the OTP of a Nintendo Wii or Wii U console.
 

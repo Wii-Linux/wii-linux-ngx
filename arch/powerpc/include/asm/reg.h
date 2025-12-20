@@ -632,6 +632,7 @@
 #define	 HID4_LPID1_SH	 0		/* partition ID top 2 bits */
 #define SPRN_HID4_GEKKO	0x3F3		/* Gekko HID4 */
 #define SPRN_HID5	0x3F6		/* 970 HID5 */
+#define SPRN_HID5_ESPRESSO 0x3B0	/* Espresso HID5 */
 #define SPRN_HID6	0x3F9	/* BE HID 6 */
 #define   HID6_LB	(0x0F<<12) /* Concurrent Large Page Modes */
 #define   HID6_DLP	(1<<20)	/* Disable all large page modes (4K only) */

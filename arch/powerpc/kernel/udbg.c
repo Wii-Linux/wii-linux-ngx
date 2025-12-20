@@ -47,6 +47,12 @@ void __init udbg_early_init(void)
 	udbg_init_cpm();
 #elif defined(CONFIG_PPC_EARLY_DEBUG_USBGECKO)
 	udbg_init_usbgecko();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_DEFUSE)
+	/* Wii U de_Fuse modchip */
+	udbg_init_defuse();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_LATTEIPC)
+	/* Wii U Latte coprocessor */
+	udbg_init_latteipc();
 #elif defined(CONFIG_PPC_EARLY_DEBUG_MEMCONS)
 	/* In memory console */
 	udbg_init_memcons();
@@ -142,7 +148,7 @@ static void udbg_console_write(struct console *con, const char *s,
 static struct console udbg_console = {
 	.name	= "udbg",
 	.write	= udbg_console_write,
-	.flags	= CON_PRINTBUFFER | CON_ENABLED | CON_BOOT | CON_ANYTIME,
+	.flags	= CON_PRINTBUFFER | CON_ENABLED | CON_ANYTIME,
 	.index	= 0,
 };
 

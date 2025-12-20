@@ -67,7 +67,7 @@ int hcd_buffer_create(struct usb_hcd *hcd)
 	char		name[16];
 	int		i, size;
 
-	if (hcd->localmem_pool || !hcd_uses_dma(hcd))
+	if (hcd->localmem_pool || !hcd_uses_dma(hcd) || (hcd->driver->flags & HCD_NO_COHERENT_MEM))
 		return 0;
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
@@ -98,7 +98,7 @@ void hcd_buffer_destroy(struct usb_hcd *hcd)
 {
 	int i;
 
-	if (!IS_ENABLED(CONFIG_HAS_DMA))
+	if (!IS_ENABLED(CONFIG_HAS_DMA) || (hcd->driver->flags & HCD_NO_COHERENT_MEM))
 		return;
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
@@ -129,7 +129,7 @@ void *hcd_buffer_alloc(
 		return gen_pool_dma_alloc(hcd->localmem_pool, size, dma);
 
 	/* some USB hosts just use PIO */
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || (hcd->driver->flags & HCD_NO_COHERENT_MEM)) {
 		*dma = ~(dma_addr_t) 0;
 		return kmalloc(size, mem_flags);
 	}
@@ -159,7 +159,7 @@ void hcd_buffer_free(
 		return;
 	}
 
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || (hcd->driver->flags & HCD_NO_COHERENT_MEM)) {
 		kfree(addr);
 		return;
 	}
@@ -184,7 +184,7 @@ void *hcd_buffer_alloc_pages(struct usb_hcd *hcd,
 				size, dma, PAGE_SIZE);
 
 	/* some USB hosts just use PIO */
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || (hcd->driver->flags & HCD_NO_COHERENT_MEM)) {
 		*dma = DMA_MAPPING_ERROR;
 		return (void *)__get_free_pages(mem_flags,
 				get_order(size));
@@ -206,7 +206,7 @@ void hcd_buffer_free_pages(struct usb_hcd *hcd,
 		return;
 	}
 
-	if (!hcd_uses_dma(hcd)) {
+	if (!hcd_uses_dma(hcd) || (hcd->driver->flags & HCD_NO_COHERENT_MEM)) {
 		free_pages((unsigned long)addr, get_order(size));
 		return;
 	}

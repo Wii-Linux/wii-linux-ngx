@@ -40,12 +40,18 @@ static inline u32 sdhci_be32bs_readl(struct sdhci_host *host, int reg)
 
 static inline u16 sdhci_be32bs_readw(struct sdhci_host *host, int reg)
 {
-	return in_be16(host->ioaddr + (reg ^ 0x2));
+	int base = reg & ~0x3;
+	int shift = (reg & 0x2) * 8;
+
+	return in_be32(host->ioaddr + base) >> shift;
 }
 
 static inline u8 sdhci_be32bs_readb(struct sdhci_host *host, int reg)
 {
-	return in_8(host->ioaddr + (reg ^ 0x3));
+	int base = reg & ~0x3;
+	int shift = (reg & 0x3) * 8;
+
+	return in_be32(host->ioaddr + base) >> shift;
 }
 
 static inline void sdhci_be32bs_writel(struct sdhci_host *host,

@@ -83,6 +83,14 @@ _GLOBAL(__setup_cpu_750fx)
 	bl	setup_750fx
 	mtlr	r5
 	blr
+_GLOBAL(__setup_cpu_espresso)
+	mflr	r5
+	bl	__init_fpu_registers
+	bl	setup_common_caches
+	bl	setup_750_7400_hid0
+	bl	setup_espresso
+	mtlr	r5
+	blr
 _GLOBAL(__setup_cpu_7400)
 	mflr	r5
 	bl	__init_fpu_registers
@@ -331,6 +339,30 @@ SYM_FUNC_END(setup_750cx)
 SYM_FUNC_START_LOCAL(setup_750fx)
 	blr
 SYM_FUNC_END(setup_750fx)
+
+/* Espresso specifics
+ */
+SYM_FUNC_START_LOCAL(setup_espresso)
+	mfspr r8, SPRN_HID5_ESPRESSO
+	oris r8, r8, 0xC000 // enable HID5 and PIR
+	mtspr SPRN_HID5_ESPRESSO, r8
+	sync
+
+	lis r8, 0xb3b0 // 64B fetch, depth 4, SBE, ST0, LPE, L2MUM, L2CFI
+	mtspr SPRN_HID4_GEKKO, r8
+	sync
+
+	// This value is borrowed from Cafe OS via https://fail0verflow.com/blog/2013/espresso/
+	// except for bit 0x08000000, which makes MMU init crash
+	mfspr r8, SPRN_HID5_ESPRESSO
+	oris r8, r8, 0x67FD // enable.. other things...
+	ori r8, r8, 0xC000
+	mtspr SPRN_HID5_ESPRESSO, r8
+	sync
+
+	isync
+	blr
+SYM_FUNC_END(setup_espresso)
 
 /* MPC 745x
  * Enable Store Gathering (SGE), Branch Folding (FOLD)

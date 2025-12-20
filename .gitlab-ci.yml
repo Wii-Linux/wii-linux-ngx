@@ -1,0 +1,21 @@
+linux-build:
+  stage: build
+  image: registry.gitlab.com/linux-wiiu/linux-wiiu-scripts/lw-ci:latest
+  variables:
+    GIT_DEPTH: 2
+  script:
+    - make wiiu_defconfig $LINUXMK
+    - make $LINUXMK KCFLAGS="-mcpu=750" -j`nproc`
+    - mkdir -p modules_out && INSTALL_MOD_PATH=$(pwd)/modules_out make $LINUXMK -j`nproc` modules_install
+    - tar cvzpf modules.tar.gz -C modules_out .
+    - cp arch/powerpc/boot/dtbImage.wiiu dtbImage.wiiu
+    - cp arch/powerpc/boot/dts/wiiu.dtb wiiu.dtb
+  artifacts:
+    paths:
+      - dtbImage.wiiu
+      - vmlinux
+      - wiiu.dtb
+      - vmlinux.strip.gz
+      - modules.tar.gz
+    name: "${CI_JOB_NAME}-${CI_COMMIT_REF_SLUG}"
+    expire_in: 6 weeks

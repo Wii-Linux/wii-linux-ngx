@@ -112,6 +112,20 @@
  * Here we go... the quirk table definition begins:
  */
 
+/* Nintendo Wii U DRH */
+{
+	USB_DEVICE(0x057e, 0x0341),
+	QUIRK_DRIVER_INFO {
+		QUIRK_DATA_COMPOSITE {
+			{ QUIRK_DATA_IGNORE(2) },
+			{ QUIRK_DATA_IGNORE(3) },
+			{ QUIRK_DATA_IGNORE(4) },
+			{ QUIRK_DATA_IGNORE(5) },
+			QUIRK_COMPOSITE_END
+		}
+	}
+},
+
 /* FTDI devices */
 {
 	USB_DEVICE(0x0403, 0xb8d8),

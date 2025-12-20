@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config DRM_R600FB
+	tristate "R600 (Wii U)"
+	depends on DRM && OF
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_GEM_DMA_HELPER
+	select DRM_TTM_HELPER
+	help
+	  DRM framebuffer driver for Radeon R600-class cards that doesn't use PCI at all.
+	  Use radeon instead of this unless you have a great reason.
+
+	  Might one day be extended to work on other weird Radeons like the Xenos.

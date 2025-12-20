@@ -165,6 +165,9 @@ __after_mmu_off:
 #ifdef CONFIG_PPC_EARLY_DEBUG_USBGECKO
 	bl	setup_usbgecko_bat
 #endif
+#if defined(CONFIG_PPC_EARLY_DEBUG_DEFUSE) || defined(CONFIG_PPC_EARLY_DEBUG_LATTEIPC)
+	bl	setup_latte_bat
+#endif
 
 /*
  * Call setup_cpu for CPU 0 and initialize 6xx Idle
@@ -1200,6 +1203,24 @@ SYM_FUNC_START_LOCAL(setup_usbgecko_bat)
 	mtspr	SPRN_DBAT1U, r11
 	blr
 SYM_FUNC_END(setup_usbgecko_bat)
+#endif
+
+#if defined(CONFIG_PPC_EARLY_DEBUG_DEFUSE) || defined(CONFIG_PPC_EARLY_DEBUG_LATTEIPC)
+SYM_FUNC_START_LOCAL(setup_latte_bat)
+	/* prepare a BAT for early io */
+	lis r8, 0x0d80
+
+	/*
+	 * The virtual address used must match the virtual address
+	 * associated to the fixmap entry FIX_EARLY_DEBUG_BASE.
+	 */
+	lis	r11, 0xfffe	/* top 128K */
+	ori	r8, r8, 0x002a	/* uncached, guarded ,rw */
+	ori	r11, r11, 0x2	/* 128K, Vs=1, Vp=0 */
+	mtspr	SPRN_DBAT1L, r8
+	mtspr	SPRN_DBAT1U, r11
+	blr
+SYM_FUNC_END(setup_latte_bat)
 #endif
 
 	.data

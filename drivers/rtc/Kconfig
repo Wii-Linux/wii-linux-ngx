@@ -1296,7 +1296,7 @@ config RTC_DRV_RP5C01
 
 config RTC_DRV_GAMECUBE
 	tristate "Nintendo GameCube, Wii and Wii U RTC"
-	depends on GAMECUBE || WII || COMPILE_TEST
+	depends on GAMECUBE || WII || WIIU || COMPILE_TEST
 	select REGMAP
 	help
 	  If you say yes here you will get support for the RTC subsystem

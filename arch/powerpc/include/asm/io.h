@@ -165,13 +165,24 @@ DEF_MMIO_OUT_D(out_8,   8, stb);
 #ifdef __BIG_ENDIAN__
 DEF_MMIO_IN_D(in_be16, 16, lhz);
 DEF_MMIO_IN_D(in_be32, 32, lwz);
+// Force I/O to be big endian for some known-bad drivers.
+#ifdef __BE_IO_HACK__
+DEF_MMIO_IN_D(in_le16, 16, lhz);
+DEF_MMIO_IN_D(in_le32, 32, lwz);
+#else
 DEF_MMIO_IN_X(in_le16, 16, lhbrx);
 DEF_MMIO_IN_X(in_le32, 32, lwbrx);
+#endif
 
 DEF_MMIO_OUT_D(out_be16, 16, sth);
 DEF_MMIO_OUT_D(out_be32, 32, stw);
+#ifdef __BE_IO_HACK__
+DEF_MMIO_OUT_D(out_le16, 16, sth);
+DEF_MMIO_OUT_D(out_le32, 32, stw);
+#else
 DEF_MMIO_OUT_X(out_le16, 16, sthbrx);
 DEF_MMIO_OUT_X(out_le32, 32, stwbrx);
+#endif
 #else
 DEF_MMIO_IN_X(in_be16, 16, lhbrx);
 DEF_MMIO_IN_X(in_be32, 32, lwbrx);

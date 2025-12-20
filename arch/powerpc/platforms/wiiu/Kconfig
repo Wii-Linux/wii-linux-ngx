@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config WIIU
+	bool "Nintendo Wii U"
+	depends on PPC_BOOK3S_32
+	select IRQ_DOMAIN_HIERARCHY
+	#USBs
+	select USB_ARCH_HAS_OHCI if USB_SUPPORT
+	select USB_ARCH_HAS_EHCI if USB_SUPPORT
+	select USB_EHCI_BIG_ENDIAN_MMIO if USB_SUPPORT
+	select USB_OHCI_BIG_ENDIAN_MMIO if USB_SUPPORT
+	help
+	  Select WIIU if configuring for the Nintendo Wii U.
+	  More information at: <https://linux-wiiu.org/>
+
+config DEFUSE_UDBG
+    bool "de_Fuse modchip serial udbg console"
+    depends on WIIU
+    help
+      If you say yes to this option, support will be included for the
+      de_Fuse Wii U modchip's serial output as a udbg console.
+      You must have a de_Fuse chip installed in your console to use
+      this.
+
+      This driver bypasses the GPIO layer completely.
+
+      If in doubt, say N here.
+
+config LATTEIPC_UDBG
+	bool "Chipset IPC udbg console for the Nintendo Wii U"
+	depends on WIIU
+	help
+	  If you say yes to this option, support will be included for the
+	  Wii U's chipset IPC as a udbg console.
+	  These IPC messages can be received by a firmware running on the
+	  console's "Starbuck" security coprocessor.
+
+	  This driver bypasses the IPC layer completely.
+
+	  If in doubt, say N here.

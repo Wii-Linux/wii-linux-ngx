@@ -140,6 +140,12 @@ static int ohci_platform_probe(struct platform_device *dev)
 					  "remote-wakeup-connected"))
 			ohci->hc_control = OHCI_CTRL_RWC;
 
+		if (of_device_is_compatible(dev->dev.of_node,
+					    "nintendo,latte-ohci")) {
+			dev_err(&dev->dev, "Enabling Latte control quirk");
+			ohci->flags |= OHCI_QUIRK_LATTE;
+		}
+
 		of_property_read_u32(dev->dev.of_node, "num-ports",
 				     &ohci->num_ports);
 
@@ -320,6 +326,7 @@ static const struct of_device_id ohci_platform_ids[] = {
 	{ .compatible = "generic-ohci", },
 	{ .compatible = "cavium,octeon-6335-ohci", },
 	{ .compatible = "ti,ohci-omap3", },
+	{ .compatible = "nintendo,latte-ohci", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ohci_platform_ids);

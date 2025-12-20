@@ -1245,7 +1245,11 @@ static const struct hc_driver ehci_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq =			ehci_irq,
+#ifdef CONFIG_WIIU
+	.flags =		HCD_MEMORY | HCD_DMA | HCD_USB2 | HCD_BH | HCD_NO_COHERENT_MEM,
+#else
 	.flags =		HCD_MEMORY | HCD_DMA | HCD_USB2 | HCD_BH,
+#endif
 
 	/*
 	 * basic lifecycle operations

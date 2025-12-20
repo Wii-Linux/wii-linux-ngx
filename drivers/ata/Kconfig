@@ -299,6 +299,15 @@ config AHCI_QORIQ
 
 	  If unsure, say N.
 
+config AHCI_WIIU
+	tristate "Nintendo Wii U AHCI SATA support"
+	depends on WIIU
+	default y
+	select SATA_AHCI_PLATFORM
+	help
+	  This option enables support for the SATA controller found in the Nintendo
+	  Wii U.
+
 config SATA_FSL
 	tristate "Freescale 3.0Gbps SATA support"
 	depends on FSL_SOC || COMPILE_TEST

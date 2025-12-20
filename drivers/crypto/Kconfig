@@ -878,4 +878,15 @@ source "drivers/crypto/starfive/Kconfig"
 source "drivers/crypto/inside-secure/eip93/Kconfig"
 source "drivers/crypto/ti/Kconfig"
 
+config CRYPTO_DEV_WIIU
+	tristate "Support for the Nintendo Wii U AES engine"
+	depends on WIIU
+	select CRYPTO_AES
+	help
+	  Say 'Y' here to use the Nintendo Wii U on-board AES
+	  engine for the CryptoAPI AES algorithm.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called wiiu-aes.
+
 endif # CRYPTO_HW

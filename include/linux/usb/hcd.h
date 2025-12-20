@@ -243,16 +243,17 @@ struct hc_driver {
 	irqreturn_t	(*irq) (struct usb_hcd *hcd);
 
 	int	flags;
-#define	HCD_MEMORY	0x0001		/* HC regs use memory (else I/O) */
-#define	HCD_DMA		0x0002		/* HC uses DMA */
-#define	HCD_SHARED	0x0004		/* Two (or more) usb_hcds share HW */
-#define	HCD_USB11	0x0010		/* USB 1.1 */
-#define	HCD_USB2	0x0020		/* USB 2.0 */
-#define	HCD_USB3	0x0040		/* USB 3.0 */
-#define	HCD_USB31	0x0050		/* USB 3.1 */
-#define	HCD_USB32	0x0060		/* USB 3.2 */
-#define	HCD_MASK	0x0070
-#define	HCD_BH		0x0100		/* URB complete in BH context */
+#define	HCD_MEMORY		0x0001		/* HC regs use memory (else I/O) */
+#define	HCD_DMA			0x0002		/* HC uses DMA */
+#define	HCD_SHARED		0x0004		/* Two (or more) usb_hcds share HW */
+#define HCD_NO_COHERENT_MEM	0x0008		/* HC avoids coherent mem */
+#define	HCD_USB11		0x0010		/* USB 1.1 */
+#define	HCD_USB2		0x0020		/* USB 2.0 */
+#define	HCD_USB3		0x0040		/* USB 3.0 */
+#define	HCD_USB31		0x0050		/* USB 3.1 */
+#define	HCD_USB32		0x0060		/* USB 3.2 */
+#define	HCD_MASK		0x0070
+#define	HCD_BH			0x0100		/* URB complete in BH context */
 
 	/* called to init HCD and root hub */
 	int	(*reset) (struct usb_hcd *hcd);

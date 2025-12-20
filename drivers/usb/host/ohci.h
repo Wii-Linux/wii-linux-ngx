@@ -422,6 +422,7 @@ struct ohci_hcd {
 #define	OHCI_QUIRK_AMD_PREFETCH	0x400			/* pre-fetch for ISO transfer */
 #define	OHCI_QUIRK_GLOBAL_SUSPEND	0x800		/* must suspend ports */
 #define	OHCI_QUIRK_QEMU		0x1000			/* relax timing expectations */
+#define OHCI_QUIRK_LATTE	0x2000			/* add dummy control ED */
 
 	// there are also chip quirks/bugs in init logic
 

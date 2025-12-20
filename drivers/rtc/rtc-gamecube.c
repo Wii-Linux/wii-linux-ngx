@@ -90,6 +90,7 @@
 struct priv {
 	struct regmap *regmap;
 	void __iomem *iob;
+	void __iomem *hw_srnprot;
 	u32 rtc_bias;
 };
 
@@ -179,11 +180,31 @@ static int gamecube_rtc_read_time(struct device *dev, struct rtc_time *t)
 static int gamecube_rtc_set_time(struct device *dev, struct rtc_time *t)
 {
 	struct priv *d = dev_get_drvdata(dev);
+	int ret;
+	u32 counter, old;
 	time64_t timestamp;
+
+	ret = regmap_read(d->regmap, RTC_COUNTER, &counter);
+	if (ret)
+		return ret;
 
 	/* Subtract the timestamp and the bias to obtain the counter value */
 	timestamp = rtc_tm_to_time64(t);
-	return regmap_write(d->regmap, RTC_COUNTER, timestamp - d->rtc_bias);
+	d->rtc_bias = timestamp - counter;
+
+	if (d->hw_srnprot) {
+		old = ioread32be(d->hw_srnprot);
+		if (old != 0x7bf)
+			iowrite32be(0x7bf, d->hw_srnprot);
+	}
+
+	ret = regmap_write(d->regmap, RTC_SRAM_BIAS, d->rtc_bias);
+
+	if (d->hw_srnprot) {
+		if (old != 0x7bf)
+			iowrite32be(old, d->hw_srnprot);
+	}
+	return ret;
 }
 
 static int gamecube_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
@@ -220,9 +241,8 @@ static const struct rtc_class_ops gamecube_rtc_ops = {
 static int gamecube_rtc_read_offset_from_sram(struct priv *d)
 {
 	struct device_node *np;
-	int ret;
 	struct resource res;
-	void __iomem *hw_srnprot;
+	int ret;
 	u32 old;
 
 	np = of_find_compatible_node(NULL, NULL, "nintendo,latte-srnprot");
@@ -241,8 +261,8 @@ static int gamecube_rtc_read_offset_from_sram(struct priv *d)
 		return -1;
 	}
 
-	hw_srnprot = ioremap(res.start, resource_size(&res));
-	old = ioread32be(hw_srnprot);
+	d->hw_srnprot = ioremap(res.start, resource_size(&res));
+	old = ioread32be(d->hw_srnprot);
 
 	/* TODO: figure out why we use this magic constant.  I obtained it by
 	 * reading the leftover value after boot, after IOSU already ran.
@@ -253,7 +273,7 @@ static int gamecube_rtc_read_offset_from_sram(struct priv *d)
 	 * See https://wiiubrew.org/wiki/Hardware/Latte_registers
 	 */
 	if (old != 0x7bf)
-		iowrite32be(0x7bf, hw_srnprot);
+		iowrite32be(0x7bf, d->hw_srnprot);
 
 	/* Get the offset from RTC SRAM.
 	 *
@@ -268,9 +288,7 @@ static int gamecube_rtc_read_offset_from_sram(struct priv *d)
 
 	/* Reset SRAM access to how it was before, our job here is done. */
 	if (old != 0x7bf)
-		iowrite32be(old, hw_srnprot);
-
-	iounmap(hw_srnprot);
+		iowrite32be(old, d->hw_srnprot);
 
 	if (ret)
 		pr_err("failed to get the RTC bias\n");
