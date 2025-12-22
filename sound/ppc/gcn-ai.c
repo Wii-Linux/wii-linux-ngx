@@ -1,17 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * sound/ppc/gcn-ai.c
  *
  * Nintendo GameCube/Wii Audio Interface (AI) driver
+ * Copyright (C) 2025 Michael "Techflash" Garofalo
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2007,2008,2009 Albert Herranz
  *
  * Based on work from mist, kirin, groepaz, Steve_-, isobel and others.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -33,17 +29,14 @@
 
 #define DRV_MODULE_NAME  "gcn-ai"
 #define DRV_DESCRIPTION  "Nintendo GameCube/Wii Audio Interface (AI) driver"
-#define DRV_AUTHOR       "Michael Steil, " \
+#define DRV_AUTHOR       "Michael \"Techflash\" Garofalo, " \
+			 "Michael Steil, " \
 			 "(kirin), " \
 			 "(groepaz), " \
 			 "Steven Looman, " \
 			 "Albert Herranz"
 
-static char ai_driver_version[] = "1.0i";
-
-#define drv_printk(level, format, arg...) \
-	 printk(level DRV_MODULE_NAME ": " format , ## arg)
-
+static char ai_driver_version[] = "1.1t";
 
 /*
  * Hardware.
@@ -246,7 +239,7 @@ static int snd_gcn_prepare(struct snd_pcm_substream *substream)
 		ai_set_rate(chip->ai_base, 1);
 		break;
 	default:
-		drv_printk(KERN_ERR, "unsupported rate %i\n", runtime->rate);
+		dev_err(chip->dev, "unsupported rate %i\n", runtime->rate);
 		return -EINVAL;
 	}
 
@@ -441,7 +434,7 @@ static int ai_init(struct snd_gcn *chip,
 			     IRQF_SHARED,
 			     card->shortname, chip);
 	if (retval) {
-		drv_printk(KERN_ERR, "unable to request IRQ %d\n", chip->irq);
+		dev_err(chip->dev, "unable to request IRQ %d\n", chip->irq);
 		goto err_request_irq;
 	}
 	ai_enable_interrupts(chip->dsp_base);
@@ -449,7 +442,7 @@ static int ai_init(struct snd_gcn *chip,
 	gcn_audio = chip;
 	retval = snd_card_register(card);
 	if (retval) {
-		drv_printk(KERN_ERR, "failed to register card\n");
+		dev_err(chip->dev, "failed to register card\n");
 		goto err_card_register;
 	}
 
@@ -503,7 +496,7 @@ static int ai_do_probe(struct device *dev,
 
 	retval = snd_card_new(dev, index, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
 	if (retval < 0) {
-		drv_printk(KERN_ERR, "failed to allocate card\n");
+		dev_err(dev, "failed to allocate card\n");
 		return -ENOMEM;
 	}
 	chip = (struct snd_gcn *)card->private_data;
@@ -559,19 +552,19 @@ static int ai_of_probe(struct platform_device *odev)
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &ai);
 	if (retval) {
-		drv_printk(KERN_ERR, "no ai io memory range found\n");
+		dev_err(&odev->dev, "no ai io memory range found\n");
 		return -ENODEV;
 	}
 
 	dsp_np = of_find_matching_node(NULL, ai_dsp_match);
 	if (!dsp_np) {
-		drv_printk(KERN_ERR, "failed to find dsp node\n");
+		dev_err(&odev->dev, "failed to find dsp node\n");
 		return -ENODEV;
 	}
 
 	retval = of_address_to_resource(dsp_np, 0, &dsp);
 	if (retval) {
-		drv_printk(KERN_ERR, "no dsp io memory range found\n");
+		dev_err(&odev->dev, "no dsp io memory range found\n");
 		return -ENODEV;
 	}
 
@@ -587,7 +580,7 @@ static int ai_of_probe(struct platform_device *odev)
 	if (resets_np) {
 		retval = of_address_to_resource(resets_np, 0, &resets);
 		if (retval) {
-			drv_printk(KERN_ERR, "no resets io memory range found\n");
+			dev_err(&odev->dev, "no resets io memory range found\n");
 			return -ENODEV;
 		}
 	}
@@ -637,7 +630,7 @@ static struct platform_driver ai_of_driver = {
 
 static int __init ai_init_module(void)
 {
-	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
+	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   ai_driver_version);
 
 	return platform_driver_register(&ai_of_driver);
