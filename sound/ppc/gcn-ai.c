@@ -182,9 +182,9 @@ static struct snd_pcm_hardware snd_gcn_playback = {
 	.channels_min = 2,
 	.channels_max = 2,
 	.buffer_bytes_max = 32768,
-	.period_bytes_min = 32,
+	.period_bytes_min = 4096,
 	.period_bytes_max = 32768,
-	.periods_min = 1,
+	.periods_min = 2,
 	.periods_max = 1024,
 };
 
