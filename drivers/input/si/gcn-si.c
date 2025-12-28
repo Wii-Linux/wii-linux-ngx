@@ -495,7 +495,7 @@ int si_port_probe(struct si_port *port)
 	unsigned int index;
 	void __iomem *io_base;
 	struct input_dev *idev;
-	int retval = 0;
+	int retval = 0, tries = 5;
 
 	index = port->index;
 	io_base = port->drvdata->io_base;
@@ -504,6 +504,12 @@ int si_port_probe(struct si_port *port)
 	 * Determine input device type from SI id.
 	 */
 	port->id = si_get_controller_id(io_base, index);
+	/* some controllers are weird, try it again a few times if we got nothing, with exponential backoff */
+	while (!port->id && tries) {
+		udelay(20000 / tries);
+		port->id = si_get_controller_id(io_base, index);
+		tries--;
+	}
 	if (port->id == ID_PAD) {
 		port->type = CTL_PAD;
 		strcpy(port->name, "standard pad");
@@ -597,6 +603,8 @@ int si_init(struct si_drvdata *drvdata, struct resource *mem)
 		port->drvdata = drvdata;
 
 		retval = si_port_probe(port);
+		drv_printk(KERN_INFO, "port %d: %s\n",
+			   index+1, port->name ? port->name : "(null)");
 		if (!retval) {
 			error = input_register_device(port->idev);
 			if (error) {
@@ -604,9 +612,7 @@ int si_init(struct si_drvdata *drvdata, struct resource *mem)
 					   "input device registration failed"
 					   " (%d) for port %d", error, index+1);
 				port->idev = NULL;
-			} else
-				drv_printk(KERN_INFO, "port %d: %s\n",
-					   index+1, port->name);
+			}
 		}
 	}
 
