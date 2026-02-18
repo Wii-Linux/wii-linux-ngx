@@ -29,6 +29,19 @@
 
 #define	L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
 
+/*
+ * The Nintendo Hollywood SoC assumes 32-byte alignment in many places.
+ * Linux assumes kernel memory can do dma, so it should respect the alignment.
+ */
+#if defined(CONFIG_WII)
+#if L1_CACHE_BYTES < 32
+#error must use 32-byte alignment
+#endif
+#define ARCH_SLAB_MINALIGN	L1_CACHE_BYTES
+/* ARCH_DMA_MINALIGN is already L1_CACHE_BYTES */
+/* ARCH_KMALLOC_MINALIGN is already L1_CACHE_BYTES */
+#endif
+
 #define	SMP_CACHE_BYTES		L1_CACHE_BYTES
 
 #define IFETCH_ALIGN_BYTES	(1 << IFETCH_ALIGN_SHIFT)

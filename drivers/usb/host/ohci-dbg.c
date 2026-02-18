@@ -255,13 +255,13 @@ static const char data1 [] = "DATA1";
 static void ohci_dump_td (const struct ohci_hcd *ohci, const char *label,
 		const struct td *td)
 {
-	u32	tmp = hc32_to_cpup (ohci, &td->hwINFO);
+	u32	tmp = hc32_to_cpup (ohci, &td->hw->hwINFO);
 
 	ohci_dbg (ohci, "%s td %p%s; urb %p index %d; hw next td %08x\n",
 		label, td,
 		(tmp & TD_DONE) ? " (DONE)" : "",
 		td->urb, td->index,
-		hc32_to_cpup (ohci, &td->hwNextTD));
+		hc32_to_cpup (ohci, &td->hw->hwNextTD));
 	if ((tmp & TD_ISO) == 0) {
 		const char	*toggle, *pid;
 		u32	cbp, be;
@@ -282,8 +282,8 @@ static void ohci_dump_td (const struct ohci_hcd *ohci, const char *label,
 			TD_CC_GET(tmp), /* EC, */ toggle,
 			(tmp & TD_DI) >> 21, pid,
 			(tmp & TD_R) ? "R" : "");
-		cbp = hc32_to_cpup (ohci, &td->hwCBP);
-		be = hc32_to_cpup (ohci, &td->hwBE);
+		cbp = hc32_to_cpup (ohci, &td->hw->hwCBP);
+		be = hc32_to_cpup (ohci, &td->hw->hwBE);
 		ohci_dbg (ohci, "     cbp %08x be %08x (len %d)\n", cbp, be,
 			cbp ? (be + 1 - cbp) : 0);
 	} else {
@@ -294,8 +294,8 @@ static void ohci_dump_td (const struct ohci_hcd *ohci, const char *label,
 			(tmp & TD_DI) >> 21,
 			tmp & 0x0000ffff);
 		ohci_dbg (ohci, "  bp0 %08x be %08x\n",
-			hc32_to_cpup (ohci, &td->hwCBP) & ~0x0fff,
-			hc32_to_cpup (ohci, &td->hwBE));
+			hc32_to_cpup (ohci, &td->hw->hwCBP) & ~0x0fff,
+			hc32_to_cpup (ohci, &td->hw->hwBE));
 		for (i = 0; i < MAXPSW; i++) {
 			u16	psw = ohci_hwPSW (ohci, td, i);
 			int	cc = (psw >> 12) & 0x0f;
@@ -312,13 +312,13 @@ static void __maybe_unused
 ohci_dump_ed (const struct ohci_hcd *ohci, const char *label,
 		const struct ed *ed, int verbose)
 {
-	u32	tmp = hc32_to_cpu (ohci, ed->hwINFO);
+	u32	tmp = hc32_to_cpu (ohci, ed->hw->hwINFO);
 	char	*type = "";
 
 	ohci_dbg (ohci, "%s, ed %p state 0x%x type %s; next ed %08x\n",
 		label,
 		ed, ed->state, edstring (ed->type),
-		hc32_to_cpup (ohci, &ed->hwNextED));
+		hc32_to_cpup (ohci, &ed->hw->hwNextED));
 	switch (tmp & (ED_IN|ED_OUT)) {
 	case ED_OUT: type = "-OUT"; break;
 	case ED_IN: type = "-IN"; break;
@@ -334,12 +334,12 @@ ohci_dump_ed (const struct ohci_hcd *ohci, const char *label,
 		0x000f & (tmp >> 7),
 		type,
 		0x007f & tmp);
-	tmp = hc32_to_cpup (ohci, &ed->hwHeadP);
+	tmp = hc32_to_cpup (ohci, &ed->hw->hwHeadP);
 	ohci_dbg (ohci, "  tds: head %08x %s%s tail %08x%s\n",
 		tmp,
 		(tmp & ED_C) ? data1 : data0,
 		(tmp & ED_H) ? " HALT" : "",
-		hc32_to_cpup (ohci, &ed->hwTailP),
+		hc32_to_cpup (ohci, &ed->hw->hwTailP),
 		verbose ? "" : " (not listing)");
 	if (verbose) {
 		struct list_head	*tmp;
@@ -410,8 +410,8 @@ show_list (struct ohci_hcd *ohci, char *buf, size_t count, struct ed *ed)
 
 	/* dump a snapshot of the bulk or control schedule */
 	while (ed) {
-		u32		info = hc32_to_cpu (ohci, ed->hwINFO);
-		u32		headp = hc32_to_cpu (ohci, ed->hwHeadP);
+		u32		info = hc32_to_cpu (ohci, ed->hw->hwINFO);
+		u32		headp = hc32_to_cpu (ohci, ed->hw->hwHeadP);
 		struct list_head *entry;
 		struct td	*td;
 
@@ -434,9 +434,9 @@ show_list (struct ohci_hcd *ohci, char *buf, size_t count, struct ed *ed)
 			u32		cbp, be;
 
 			td = list_entry (entry, struct td, td_list);
-			info = hc32_to_cpup (ohci, &td->hwINFO);
-			cbp = hc32_to_cpup (ohci, &td->hwCBP);
-			be = hc32_to_cpup (ohci, &td->hwBE);
+			info = hc32_to_cpup (ohci, &td->hw->hwINFO);
+			cbp = hc32_to_cpup (ohci, &td->hw->hwCBP);
+			be = hc32_to_cpup (ohci, &td->hw->hwBE);
 			temp = scnprintf (buf, size,
 					"\n\ttd %p %s %d cc=%x urb %p (%08x)",
 					td,
@@ -528,7 +528,7 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 
 			/* show more info the first time around */
 			if (temp == seen_count) {
-				u32	info = hc32_to_cpu (ohci, ed->hwINFO);
+				u32	info = hc32_to_cpu (ohci, ed->hw->hwINFO);
 				struct list_head	*entry;
 				unsigned		qlen = 0;
 
@@ -548,7 +548,7 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 					0x03ff & (info >> 16),
 					info,
 					(info & ED_SKIP) ? " K" : "",
-					(ed->hwHeadP &
+					(ed->hw->hwHeadP &
 						cpu_to_hc32(ohci, ED_H)) ?
 							" H" : "");
 				size -= temp;
