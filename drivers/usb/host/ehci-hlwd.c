@@ -25,13 +25,14 @@
  * This file is licenced under the GPL.
  */
 
-#include <linux/signal.h>
-
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of.h>
+#include <linux/signal.h>
+
+#include "hlwd-urb.h"
 
 #define DRV_MODULE_NAME "ehci-hlwd"
 #define DRV_DESCRIPTION "Nintendo Wii EHCI Host Controller"
@@ -39,7 +40,6 @@
 
 #define HLWD_EHCI_CTL		0x0d0400cc
 #define HLWD_EHCI_CTL_INTE	(1<<15)
-
 
 /* called during probe() after chip reset completes */
 static int ehci_hlwd_reset(struct usb_hcd *hcd)
@@ -51,23 +51,29 @@ static int ehci_hlwd_reset(struct usb_hcd *hcd)
 	dbg_hcs_params(ehci, "reset");
 	dbg_hcc_params(ehci, "reset");
 
-	error = ehci_setup(hcd);
-	if (error)
-		goto out;
-
 	ehci_ctl = ioremap(HLWD_EHCI_CTL, 4);
 	if (!ehci_ctl) {
-		printk(KERN_ERR __FILE__ ": ioremap failed\n");
-		error = -EBUSY;
+		ehci_err(ehci, "ioremap failed\n");
+		error = -ENOMEM;
 		goto out;
+	}
+
+	error = ehci_setup(hcd);
+	if (error) {
+		ehci_err(ehci, "ehci_setup failed\n");
+		goto out_ctl;
 	}
 
 	/* enable notification of EHCI interrupts */
 	out_be32(ehci_ctl, in_be32(ehci_ctl) | HLWD_EHCI_CTL_INTE);
-	iounmap(ehci_ctl);
 
-	ehci->sbrn = 0x20;
+	ehci->sbrn = HCD_USB2;
 	error = ehci_reset(ehci);
+	if (error)
+		ehci_err(ehci, "ehci_reset failed\n");
+
+out_ctl:
+	iounmap(ehci_ctl);
 out:
 	return error;
 }
@@ -96,6 +102,8 @@ static const struct hc_driver ehci_hlwd_hc_driver = {
 	 */
 	.urb_enqueue		= ehci_urb_enqueue,
 	.urb_dequeue		= ehci_urb_dequeue,
+	.map_urb_for_dma	= hlwd_map_urb_for_dma,
+	.unmap_urb_for_dma	= hlwd_unmap_urb_for_dma,
 	.endpoint_disable	= ehci_endpoint_disable,
 	.endpoint_reset		= ehci_endpoint_reset,
 
@@ -133,6 +141,8 @@ static int ehci_hcd_hlwd_probe(struct platform_device *op)
 	if (usb_disabled())
 		goto out;
 
+	BUILD_BUG_ON(!IS_ENABLED(CONFIG_HAS_DMA));
+
 	/* big-endian registers (reversed little-endian), little-endian descriptors */
 	if (!of_property_read_bool(dn, "big-endian-regs") ||
 	    of_property_read_bool(dn, "big-endian-desc") ||
@@ -143,6 +153,13 @@ static int ehci_hcd_hlwd_probe(struct platform_device *op)
 	}
 
 	dev_dbg(dev, "initializing " DRV_MODULE_NAME " USB Controller\n");
+
+	/* can do 32-bit addresses */
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))) {
+		dev_err(dev, "dma_set_mask_and_coherent failed\n");
+		error = -ENOTSUPP;
+		goto out;
+	}
 
 	error = of_address_to_resource(dn, 0, &res);
 	if (error)
@@ -208,7 +225,8 @@ static void ehci_hcd_hlwd_remove(struct platform_device *op)
 	struct device *dev = &op->dev;
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 
-	dev_set_drvdata(dev, NULL);
+	if (!hcd)
+		return;
 
 	dev_dbg(dev, "stopping " DRV_MODULE_NAME " USB Controller\n");
 
@@ -217,6 +235,8 @@ static void ehci_hcd_hlwd_remove(struct platform_device *op)
 	irq_dispose_mapping(hcd->irq);
 	of_reserved_mem_device_release(dev);
 	usb_put_hcd(hcd);
+
+	dev_set_drvdata(dev, NULL);
 
 	return;
 }

@@ -233,6 +233,8 @@ struct dma_pool *dma_pool_create_node(const char *name, struct device *dev,
 	if (!dev)
 		return NULL;
 
+	if (align < dma_get_cache_alignment())
+		align = dma_get_cache_alignment();
 	if (align == 0)
 		align = 1;
 	else if (align & (align - 1))
