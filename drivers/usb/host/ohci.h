@@ -17,35 +17,13 @@ typedef __u32 __bitwise __hc32;
 typedef __u16 __bitwise __hc16;
 
 /*
- * Some platforms have weird constraints when accessing memory.
- *
- * For example, the Nintendo Wii video game console is unable to perform
- * non-32 bit writes to non-cached memory for its second block of 64MB of RAM.
- * As this platform also requires CONFIG_NOT_COHERENT_CACHE, all memory
- * allocated using the dma memory allocation functions can only be written
- * using 32-bit accesses.
- *
- * Because of this constraint, as a workaround, we make sure that all
- * fields in struct ed and td (which are allocated from dma pools) are
- * always 32 bit fields.
- * Note that the remaining structs allocated from dma-able memory are already
- * 32 bit fields.
- */
-#ifdef CONFIG_USB_OHCI_HCD_HLWD
-#define ohci_fld(type)  u32
-#else
-#define ohci_fld(type)  type
-#endif
-
-
-/*
  * OHCI Endpoint Descriptor (ED) ... holds TD queue
  * See OHCI spec, section 4.2
  *
  * This is a "Queue Head" for those transfers, which is why
  * both EHCI and UHCI call similar structures a "QH".
  */
-struct ed {
+struct ed_hw {
 	/* first fields are hardware-specified */
 	__hc32			hwINFO;      /* endpoint config bitmap */
 	/* info bits defined by hcd */
@@ -62,6 +40,10 @@ struct ed {
 #define ED_H		(0x01)			/* halted */
 	__hc32			hwNextED;	/* next ED in list */
 
+} __attribute__ ((aligned(16)));
+
+struct ed {
+	struct ed_hw		*hw;
 	/* rest are purely for the driver's use */
 	dma_addr_t		dma;		/* addr of ED */
 	struct td		*dummy;		/* next TD to activate */
@@ -75,29 +57,28 @@ struct ed {
 	/* create --> IDLE --> OPER --> ... --> IDLE --> destroy
 	 * usually:  OPER --> UNLINK --> (IDLE | OPER) --> ...
 	 */
-	ohci_fld(u8)		state;		/* ED_{IDLE,UNLINK,OPER} */
+	u8		state;		/* ED_{IDLE,UNLINK,OPER} */
 #define ED_IDLE		0x00		/* NOT linked to HC */
 #define ED_UNLINK	0x01		/* being unlinked from hc */
 #define ED_OPER		0x02		/* IS linked to hc */
 
-	ohci_fld(u8)		type;		/* PIPE_{BULK,...} */
+	u8		type;		/* PIPE_{BULK,...} */
 
 	/* periodic scheduling params (for intr and iso) */
-	ohci_fld(u8)		branch;
-	ohci_fld(u16)		interval;
-	ohci_fld(u16)		load;
-	ohci_fld(u16)		last_iso;	/* iso only */
+	u8		branch;
+	u16		interval;
+	u16		load;
+	u16		last_iso;	/* iso only */
 
 	/* HC may see EDs on rm_list until next frame (frame_no == tick) */
-	ohci_fld(u16)		tick;
+	u16		tick;
 
 	/* Detect TDs not added to the done queue */
 	unsigned		takeback_wdh_cnt;
 	struct td		*pending_td;
 #define	OKAY_TO_TAKEBACK(ohci, ed)			\
 		((int) (ohci->wdh_cnt - ed->takeback_wdh_cnt) >= 0)
-
-} __attribute__ ((aligned(16)));
+};
 
 #define ED_MASK	((u32)~0x0f)		/* strip hw status in low addr bits */
 
@@ -107,7 +88,7 @@ struct ed {
  * See OHCI spec, sections 4.3.1 (general = control/bulk/interrupt)
  * and 4.3.2 (iso)
  */
-struct td {
+struct td_hw {
 	/* first fields are hardware-specified */
 	__hc32		hwINFO;		/* transfer info bitmask */
 
@@ -147,9 +128,12 @@ struct td {
 	 */
 #define MAXPSW	2
 	__hc16		hwPSW [MAXPSW];
+} __attribute__ ((aligned(32)));	/* c/b/i need 16; only iso needs 32 */
 
+struct td {
+	struct td_hw	*hw;
 	/* rest are purely for the driver's use */
-	ohci_fld(__u8)	index;
+	__u8		index;
 	struct ed	*ed;
 	struct td	*td_hash;	/* dma-->td hashtable */
 	struct td	*next_dl_td;
@@ -159,7 +143,7 @@ struct td {
 	dma_addr_t	data_dma;	/* addr of data it points to */
 
 	struct list_head td_list;	/* "shadow list", TDs on same ED */
-} __attribute__ ((aligned(32)));	/* c/b/i need 16; only iso needs 32 */
+};
 
 #define TD_MASK	((u32)~0x1f)		/* strip hw status in low addr bits */
 
@@ -410,8 +394,10 @@ struct ohci_hcd {
 	 *
 	 * @td_cache and @ed_cache are %NULL if &usb_hcd.localmem_pool is used.
 	 */
-	struct dma_pool		*td_cache;
-	struct dma_pool		*ed_cache;
+	struct dma_pool		*td_hw_cache;
+	struct kmem_cache	*td_cache;
+	struct dma_pool		*ed_hw_cache;
+	struct kmem_cache	*ed_cache;
 	struct td		*td_hash [TD_HASH_SIZE];
 	struct td		*dl_start, *dl_end;	/* the done list */
 	struct list_head	pending;
@@ -444,7 +430,6 @@ struct ohci_hcd {
 #define	OHCI_QUIRK_AMD_PREFETCH	0x400			/* pre-fetch for ISO transfer */
 #define	OHCI_QUIRK_GLOBAL_SUSPEND	0x800		/* must suspend ports */
 #define	OHCI_QUIRK_QEMU		0x1000			/* relax timing expectations */
-#define	OHCI_QUIRK_WII		0x2000			/* Hollywood chipset */
 
 	// there are also chip quirks/bugs in init logic
 
@@ -495,20 +480,6 @@ static inline int quirk_amdiso(struct ohci_hcd *ohci)
 static inline int quirk_amdprefetch(struct ohci_hcd *ohci)
 {
 	return 0;
-}
-#endif
-
-#ifdef CONFIG_USB_OHCI_HCD_HLWD
-extern void ohci_hlwd_control_quirk(struct ohci_hcd *ohci);
-extern void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci);
-#else
-static inline void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
-{
-	return;
-}
-static inline void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
-{
-	return;
 }
 #endif
 
@@ -708,17 +679,27 @@ static inline u16 ohci_frame_no(const struct ohci_hcd *ohci)
 	return (u16)tmp;
 }
 
-static inline __hc16 *ohci_hwPSWp(const struct ohci_hcd *ohci,
-                                 const struct td *td, int index)
-{
-	return (__hc16 *)(big_endian_desc(ohci) ?
-			&td->hwPSW[index ^ 1] : &td->hwPSW[index]);
-}
-
 static inline u16 ohci_hwPSW(const struct ohci_hcd *ohci,
                                const struct td *td, int index)
 {
-	return hc16_to_cpup(ohci, ohci_hwPSWp(ohci, td, index));
+	__hc32 *ptr = ((__hc32 *)&td->hw->hwPSW) + (index >> 1);
+	union {
+		u16 arr[2];
+		u32 value;
+	} tmp = { .value = hc32_to_cpup(ohci, ptr) };
+	return tmp.arr[(big_endian_desc(ohci) ? index ^ 1 : index) & 1];
+}
+
+static inline void ohci_set_hwPSW(const struct ohci_hcd *ohci,
+				  const struct td *td, int index, u16 value)
+{
+	__hc32 *ptr = ((__hc32 *)&td->hw->hwPSW) + (index >> 1);
+	union {
+		u16 arr[2];
+		u32 value;
+	} tmp = { .value = hc32_to_cpup(ohci, ptr) };
+	tmp.arr[(big_endian_desc(ohci) ? index ^ 1 : index) & 1] = value;
+	*ptr = cpu_to_hc32p(ohci, &tmp.value);
 }
 
 /*-------------------------------------------------------------------------*/
