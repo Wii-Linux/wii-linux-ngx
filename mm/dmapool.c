@@ -135,6 +135,8 @@ struct dma_pool *dma_pool_create(const char *name, struct device *dev,
 	size_t allocation;
 	bool empty = false;
 
+	if (align < dma_get_cache_alignment())
+		align = dma_get_cache_alignment();
 	if (align == 0)
 		align = 1;
 	else if (align & (align - 1))

@@ -36,33 +36,58 @@ static void ohci_hcd_init (struct ohci_hcd *ohci)
 
 static int ohci_mem_init (struct ohci_hcd *ohci)
 {
-	ohci->td_cache = dma_pool_create ("ohci_td",
+	ohci->td_hw_cache = dma_pool_create ("ohci_td_hw",
 		ohci_to_hcd(ohci)->self.controller,
-		sizeof (struct td),
+		sizeof (struct td_hw),
 		32 /* byte alignment */,
 		0 /* no page-crossing issues */);
+	if (!ohci->td_hw_cache)
+		goto err_td_hw_cache;
+	ohci->td_cache = kmem_cache_create ("ohci_td",
+		sizeof (struct td), SLAB_HWCACHE_ALIGN, 0, NULL);
 	if (!ohci->td_cache)
-		return -ENOMEM;
-	ohci->ed_cache = dma_pool_create ("ohci_ed",
+		goto err_td_cache;
+	ohci->ed_hw_cache = dma_pool_create ("ohci_ed_hw",
 		ohci_to_hcd(ohci)->self.controller,
-		sizeof (struct ed),
+		sizeof (struct ed_hw),
 		16 /* byte alignment */,
 		0 /* no page-crossing issues */);
-	if (!ohci->ed_cache) {
-		dma_pool_destroy (ohci->td_cache);
-		return -ENOMEM;
-	}
+	if (!ohci->ed_hw_cache)
+		goto err_ed_hw_cache;
+	ohci->ed_cache = kmem_cache_create ("ohci_ed",
+		sizeof (struct ed), SLAB_HWCACHE_ALIGN, 0, NULL);
+	if (!ohci->ed_cache)
+		goto err_ed_cache;
 	return 0;
+err_ed_cache:
+	dma_pool_destroy (ohci->ed_hw_cache);
+	ohci->ed_hw_cache = NULL;
+err_ed_hw_cache:
+	kmem_cache_destroy (ohci->td_cache);
+	ohci->td_cache = NULL;
+err_td_cache:
+	dma_pool_destroy (ohci->td_hw_cache);
+	ohci->td_hw_cache = NULL;
+err_td_hw_cache:
+	return -ENOMEM;
 }
 
 static void ohci_mem_cleanup (struct ohci_hcd *ohci)
 {
+	if (ohci->td_hw_cache) {
+		dma_pool_destroy (ohci->td_hw_cache);
+		ohci->td_hw_cache = NULL;
+	}
 	if (ohci->td_cache) {
-		dma_pool_destroy (ohci->td_cache);
+		kmem_cache_destroy (ohci->td_cache);
 		ohci->td_cache = NULL;
 	}
+	if (ohci->ed_hw_cache) {
+		dma_pool_destroy (ohci->ed_hw_cache);
+		ohci->ed_hw_cache = NULL;
+	}
 	if (ohci->ed_cache) {
-		dma_pool_destroy (ohci->ed_cache);
+		kmem_cache_destroy (ohci->ed_cache);
 		ohci->ed_cache = NULL;
 	}
 }
@@ -87,16 +112,28 @@ static struct td *
 td_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 {
 	dma_addr_t	dma;
+	struct td_hw	*hw;
 	struct td	*td;
 
-	td = dma_pool_zalloc (hc->td_cache, mem_flags, &dma);
-	if (td) {
-		/* in case hc fetches it, make it look dead */
-		td->hwNextTD = cpu_to_hc32 (hc, dma);
-		td->td_dma = dma;
-		/* hashed in td_fill */
+	hw = dma_pool_zalloc (hc->td_hw_cache, mem_flags, &dma);
+	if (!hw)
+		goto err_hw;
+	td = kmem_cache_zalloc (hc->td_cache, mem_flags);
+	if (!td)
+		goto err_td;
+	if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
+		ohci_warn(hc, "td %p %p %pad in MEM1\n", td, hw, &dma);
 	}
+	/* in case hc fetches it, make it look dead */
+	hw->hwNextTD = cpu_to_hc32 (hc, dma);
+	td->hw = hw;
+	td->td_dma = dma;
+	/* hashed in td_fill */
 	return td;
+err_td:
+	dma_pool_free (hc->td_hw_cache, hw, dma);
+err_hw:
+	return NULL;
 }
 
 static void
@@ -108,9 +145,10 @@ td_free (struct ohci_hcd *hc, struct td *td)
 		prev = &(*prev)->td_hash;
 	if (*prev)
 		*prev = td->td_hash;
-	else if ((td->hwINFO & cpu_to_hc32(hc, TD_DONE)) != 0)
+	else if ((td->hw->hwINFO & cpu_to_hc32(hc, TD_DONE)) != 0)
 		ohci_dbg (hc, "no hash for td %p\n", td);
-	dma_pool_free (hc->td_cache, td, td->td_dma);
+	dma_pool_free (hc->td_hw_cache, td->hw, td->td_dma);
+	kmem_cache_free (hc->td_cache, td);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -120,19 +158,32 @@ static struct ed *
 ed_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 {
 	dma_addr_t	dma;
+	struct ed_hw	*hw;
 	struct ed	*ed;
 
-	ed = dma_pool_zalloc (hc->ed_cache, mem_flags, &dma);
-	if (ed) {
-		INIT_LIST_HEAD (&ed->td_list);
-		ed->dma = dma;
+	hw = dma_pool_zalloc (hc->ed_hw_cache, mem_flags, &dma);
+	if (!hw)
+		goto err_hw;
+	ed = kmem_cache_zalloc (hc->ed_cache, mem_flags);
+	if (!ed)
+		goto err_ed;
+	if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
+		ohci_warn(hc, "ed %p %pad in MEM1\n", ed, &dma);
 	}
+	ed->hw = hw;
+	INIT_LIST_HEAD (&ed->td_list);
+	ed->dma = dma;
 	return ed;
+err_ed:
+	dma_pool_free (hc->ed_hw_cache, hw, dma);
+err_hw:
+	return NULL;
 }
 
 static void
 ed_free (struct ohci_hcd *hc, struct ed *ed)
 {
-	dma_pool_free (hc->ed_cache, ed, ed->dma);
+	dma_pool_free (hc->ed_hw_cache, ed->hw, ed->dma);
+	kmem_cache_free (hc->ed_cache, ed);
 }
 

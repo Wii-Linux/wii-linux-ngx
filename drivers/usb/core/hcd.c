@@ -1460,6 +1460,7 @@ static void unmap_urb_for_dma(struct usb_hcd *hcd, struct urb *urb)
 void usb_hcd_unmap_urb_for_dma(struct usb_hcd *hcd, struct urb *urb)
 {
 	enum dma_data_direction dir;
+	size_t size;
 
 	usb_hcd_unmap_urb_setup_for_dma(hcd, urb);
 
@@ -1488,7 +1489,24 @@ void usb_hcd_unmap_urb_for_dma(struct usb_hcd *hcd, struct urb *urb)
 				&urb->transfer_buffer,
 				urb->transfer_buffer_length,
 				dir);
-
+	else if (urb->transfer_buffer_length != 0
+		&& (urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)
+		&& (hcd->driver->flags & HCD_NO_COHERENT_MEM)) {
+		/* assume hcd_buffer_alloc was used */
+		if (urb->transfer_dma) {
+			size = _ALIGN_UP(urb->transfer_buffer_length, dma_get_cache_alignment());
+			BUG_ON(!IS_ALIGNED(urb->transfer_dma, dma_get_cache_alignment()));
+			dma_sync_single_for_cpu(hcd->self.sysdev, urb->transfer_dma, size, dir);
+		} else {
+			printk("# TODO usb_hcd_unmap_urb_for_dma with HCD_NO_COHERENT_MEM\n");
+			printk("#  size=%zu\n", size);
+			printk("#  urb->num_sgs=%d\n", urb->num_sgs);
+			printk("#  urb->sg=%px\n", urb->sg);
+			printk("#  urb->transfer_buffer_length=%d\n", urb->transfer_buffer_length);
+			printk("#  urb->transfer_buffer=%px\n", urb->transfer_buffer);
+			printk("#  urb->transfer_dma=%pad\n", &urb->transfer_dma);
+		}
+	}
 	/* Make it safe to call this routine more than once */
 	urb->transfer_flags &= ~(URB_DMA_MAP_SG | URB_DMA_MAP_PAGE |
 			URB_DMA_MAP_SINGLE | URB_MAP_LOCAL);
@@ -1508,6 +1526,7 @@ int usb_hcd_map_urb_for_dma(struct usb_hcd *hcd, struct urb *urb,
 			    gfp_t mem_flags)
 {
 	enum dma_data_direction dir;
+	size_t size;
 	int ret = 0;
 
 	/* Map the URB's buffers for DMA access.
@@ -1550,12 +1569,25 @@ int usb_hcd_map_urb_for_dma(struct usb_hcd *hcd, struct urb *urb,
 		}
 	}
 
-	if (hcd->driver->flags & HCD_NO_COHERENT_MEM)
-		urb->transfer_flags &= ~URB_NO_TRANSFER_DMA_MAP; /* always map */
-
 	dir = usb_urb_dir_in(urb) ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
-	if (urb->transfer_buffer_length != 0
-	    && !(urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)) {
+	if (urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP) {
+		 if (hcd->driver->flags & HCD_NO_COHERENT_MEM) {
+			/* assume hcd_buffer_alloc was used */
+			if (urb->transfer_dma) {
+				size = _ALIGN_UP(urb->transfer_buffer_length, dma_get_cache_alignment());
+				BUG_ON(!IS_ALIGNED(urb->transfer_dma, dma_get_cache_alignment()));
+				dma_sync_single_for_device(hcd->self.sysdev, urb->transfer_dma, size, dir);
+			} else {
+				printk("# TODO usb_hcd_map_urb_for_dma with HCD_NO_COHERENT_MEM\n");
+				printk("#  size=%zu\n", size);
+				printk("#  urb->num_sgs=%d\n", urb->num_sgs);
+				printk("#  urb->sg=%px\n", urb->sg);
+				printk("#  urb->transfer_buffer_length=%d\n", urb->transfer_buffer_length);
+				printk("#  urb->transfer_buffer=%px\n", urb->transfer_buffer);
+				printk("#  urb->transfer_dma=%pad\n", &urb->transfer_dma);
+			}
+		}
+	} else if (urb->transfer_buffer_length != 0) {
 		if (IS_ENABLED(CONFIG_HAS_DMA) && hcd->self.uses_dma) {
 			if (urb->num_sgs) {
 				int n;
