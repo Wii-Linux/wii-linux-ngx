@@ -151,20 +151,20 @@
 
 		usb@d050000 {
 			compatible = "nintendo,hollywood-usb-ohci";
-			reg = <0x0d050000 0x100
-			       0x13460000 0x80000>; /* 512 KB */
+			reg = <0x0d050000 0x100>;
 			big-endian-regs;
 			interrupts = <5>;
 			interrupt-parent = <&PIC1>;
+			memory-region = <&USB_DMA>;
 		};
 
 		usb@d060000 {
 			compatible = "nintendo,hollywood-usb-ohci";
-			reg = <0x0d060000 0x100
-			       0x134e0000 0x80000>; /* 512 KB */
+			reg = <0x0d060000 0x100>;
 			big-endian-regs;
 			interrupts = <6>;
 			interrupt-parent = <&PIC1>;
+			memory-region = <&USB_DMA>;
 		};
 
 		sd@d070000 {
