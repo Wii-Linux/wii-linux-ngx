@@ -26,15 +26,19 @@
  * This file is licenced under the GPL.
  */
 
-#include <linux/signal.h>
+#include <linux/delay.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
+#include <linux/signal.h>
+#include <linux/spinlock.h>
 
 #include <asm/prom.h>
 #include <asm/time.h>	/* for mftb() */
+
+#include "hlwd-urb.h"
 
 #define DRV_MODULE_NAME "ohci-hlwd"
 #define DRV_DESCRIPTION "Nintendo Wii OHCI Host Controller"
@@ -43,48 +47,88 @@
 #define HLWD_EHCI_CTL 0x0d0400cc	/* vendor control register */
 #define HLWD_EHCI_CTL_OH0INTE	(1<<11)	/* oh0 interrupt enable */
 #define HLWD_EHCI_CTL_OH1INTE	(1<<12)	/* oh1 interrupt enable */
+#define HLWD_EHCI_CTL_UNKNOWN	0xe0000
 
-#define __spin_event_timeout(condition, timeout_usecs, result, __end_tbl) \
-        for (__end_tbl = mftb() + tb_ticks_per_usec * timeout_usecs; \
-             !(result = (condition)) && (int)(__end_tbl - mftb()) > 0;)
+/* private driver data */
+struct ohci_hlwd {
+	struct ed	*empty_ed;
+	struct td	*dummy_td;
+	spinlock_t	control_quirk_lock;
+};
 
-
-static DEFINE_SPINLOCK(control_quirk_lock);
-
-void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
+/* convert between an ohci pointer and the corresponding ohci_hlwd */
+static inline struct ohci_hlwd *ohci_to_hlwd(struct ohci_hcd *ohci)
 {
-	static struct ed *ed; /* empty ED */
-	struct td *td; /* dummy TD */
-	__hc32 head;
-	__hc32 current;
-	unsigned long ctx;
-	int result;
-	unsigned long flags;
+	return (struct ohci_hlwd *) (ohci->priv);
+}
 
-	/*
-	 * One time only.
-	 * Allocate and keep a special empty ED with just a dummy TD.
-	 */
-	if (!ed) {
-		ed = ed_alloc(ohci, GFP_ATOMIC);
-		if (!ed)
-			return;
+/*
+ * One time only.
+ * Allocate and keep a special empty ED with just a dummy TD.
+ */
+static bool ohci_hlwd_control_quirk_alloc(struct ohci_hcd *ohci)
+{
+	struct ohci_hlwd *hlwd;
+	struct ed *empty_ed;
+	struct td *dummy_td;
+	__hc32 td_addr;
 
-		td = td_alloc(ohci, GFP_ATOMIC);
-		if (!td) {
-			ed_free(ohci, ed);
-			ed = NULL;
-			return;
-		}
+	hlwd = ohci_to_hlwd(ohci);
+	if (hlwd->empty_ed && hlwd->dummy_td)
+		return true;
 
-		ed->hwNextED = 0;
-		ed->hwTailP = ed->hwHeadP = cpu_to_hc32(ohci,
-							td->td_dma & ED_MASK);
-		ed->hwINFO |= cpu_to_hc32(ohci, ED_OUT);
-		wmb();
+	empty_ed = ed_alloc(ohci, GFP_NOIO);
+	if (!empty_ed)
+		return false;
+
+	dummy_td = td_alloc(ohci, GFP_NOIO);
+	if (!dummy_td) {
+		ed_free(ohci, empty_ed);
+		return false;
 	}
 
-	spin_lock_irqsave(&control_quirk_lock, flags);
+	empty_ed->hw->hwNextED = 0;
+	td_addr = cpu_to_hc32(ohci, dummy_td->td_dma & ED_MASK);
+	empty_ed->hw->hwTailP = td_addr;
+	empty_ed->hw->hwHeadP = td_addr;
+	empty_ed->hw->hwINFO |= cpu_to_hc32(ohci, ED_OUT);
+	wmb();
+	hlwd->empty_ed = empty_ed;
+	hlwd->dummy_td = dummy_td;
+	return true;
+}
+
+static void ohci_hlwd_control_quirk_free(struct ohci_hcd *ohci)
+{
+	struct ohci_hlwd *hlwd;
+
+	hlwd = ohci_to_hlwd(ohci);
+
+	if (hlwd->dummy_td) {
+		td_free(ohci, hlwd->dummy_td);
+		hlwd->dummy_td = NULL;
+	}
+
+	if (hlwd->empty_ed) {
+		ed_free(ohci, hlwd->empty_ed);
+		hlwd->empty_ed = NULL;
+	}
+}
+
+static void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
+{
+	struct ohci_hlwd *hlwd;
+	__hc32 head;
+	__hc32 current;
+	unsigned long flags;
+
+	if (WARN_ON(!ohci_hlwd_control_quirk_alloc(ohci))) {
+		return;
+	}
+
+	hlwd = ohci_to_hlwd(ohci);
+
+	spin_lock_irqsave(&hlwd->control_quirk_lock, flags);
 
 	/*
 	 * The OHCI USB host controllers on the Nintendo Wii
@@ -106,28 +150,30 @@ void ohci_hlwd_control_quirk(struct ohci_hcd *ohci)
 		 * Load the special empty ED and tell the controller to
 		 * process the control list.
 		 */
-		ohci_writel(ohci, ed->dma, &ohci->regs->ed_controlhead);
-		ohci_writel (ohci, ohci->hc_control | OHCI_CTRL_CLE,
-			     &ohci->regs->control);
-		ohci_writel (ohci, OHCI_CLF, &ohci->regs->cmdstatus);
+		ohci_writel(ohci, hlwd->empty_ed->dma, &ohci->regs->ed_controlhead);
+		ohci_writel(ohci, ohci->hc_control | OHCI_CTRL_CLE, &ohci->regs->control);
+		ohci_writel(ohci, OHCI_CLF, &ohci->regs->cmdstatus);
 
 		/* spin until the controller is done with the control list  */
-		current = ohci_readl(ohci, &ohci->regs->ed_controlcurrent);
+		spin_event_timeout(
+			!(current = ohci_readl(ohci, &ohci->regs->ed_controlcurrent)),
+			10/*usecs*/, 0);
+		#if 0
 		__spin_event_timeout(!current, 10 /* usecs */, result, ctx) {
 			cpu_relax();
-			current = ohci_readl(ohci,
-					     &ohci->regs->ed_controlcurrent);
+			current = ohci_readl(ohci, &ohci->regs->ed_controlcurrent);
 		}
+		#endif
 
 		/* restore the old control head and control settings */
-		ohci_writel (ohci, ohci->hc_control, &ohci->regs->control);
+		ohci_writel(ohci, ohci->hc_control, &ohci->regs->control);
 		ohci_writel(ohci, head, &ohci->regs->ed_controlhead);
 	}
 
-	spin_unlock_irqrestore(&control_quirk_lock, flags);
+	spin_unlock_irqrestore(&hlwd->control_quirk_lock, flags);
 }
 
-void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
+static void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
 {
 	/*
 	 * There seem to be issues too with the bulk list processing on the
@@ -139,39 +185,62 @@ void ohci_hlwd_bulk_quirk(struct ohci_hcd *ohci)
 	 * responding after a few seconds because one of its bulk endpoint
 	 * descriptors gets stuck.
 	 */
-	udelay(250);
+	udelay(250); /* RETEST it was probably a td not aligned to 32 bytes so it's probably fixed */
+}
+
+/*
+ * queue up an urb for anything except the root hub
+ */
+static int hlwd_ohci_urb_enqueue (
+	struct usb_hcd	*hcd,
+	struct urb	*urb,
+	gfp_t		mem_flags
+) {
+	struct ohci_hcd	*ohci;
+	unsigned int type;
+
+	if (hcd && urb) {
+		ohci = hcd_to_ohci(hcd);
+		type = usb_pipetype(urb->pipe);
+		if (type == PIPE_BULK)
+			ohci_hlwd_bulk_quirk(ohci);
+		else if (type == PIPE_CONTROL)
+			ohci_hlwd_control_quirk(ohci);
+	}
+
+	return ohci_urb_enqueue(hcd, urb, mem_flags);
 }
 
 static int ohci_hlwd_start(struct usb_hcd *hcd)
 {
 	struct ohci_hcd	*ohci = hcd_to_ohci(hcd);
 	void __iomem *ehci_ctl;
-	int error;
-
-	error = ohci_init(ohci);
-	if (error)
-		goto out;
+	int error = -EBUSY;
 
 	ehci_ctl = ioremap(HLWD_EHCI_CTL, 4);
 	if (!ehci_ctl) {
-		printk(KERN_ERR __FILE__ ": ioremap failed\n");
-		error = -EBUSY;
-		ohci_stop(hcd);
+		ohci_err(ohci, "bad ioremap\n");
+		error = -ENOMEM;
 		goto out;
 	}
+
+	error = ohci_init(ohci);
+	if (error)
+		goto out_ctl;
 
 	/* enable notification of OHCI interrupts */
 	out_be32(ehci_ctl, in_be32(ehci_ctl) |
-		 0xe0000 | HLWD_EHCI_CTL_OH0INTE | HLWD_EHCI_CTL_OH1INTE);
-	iounmap(ehci_ctl);
+		 HLWD_EHCI_CTL_UNKNOWN | HLWD_EHCI_CTL_OH0INTE | HLWD_EHCI_CTL_OH1INTE);
 
 	error = ohci_run(ohci);
 	if (error) {
-		pr_err("can't start %s", ohci_to_hcd(ohci)->self.bus_name);
+		ohci_err(ohci, "can't start %s\n", ohci_to_hcd(ohci)->self.bus_name);
 		ohci_stop(hcd);
-		goto out;
+		goto out_ctl;
 	}
 
+out_ctl:
+	iounmap(ehci_ctl);
 out:
 	return error;
 }
@@ -179,7 +248,7 @@ out:
 static const struct hc_driver ohci_hlwd_hc_driver = {
 	.description =		hcd_name,
 	.product_desc =		"Nintendo Wii OHCI Host Controller",
-	.hcd_priv_size =	sizeof(struct ohci_hcd),
+	.hcd_priv_size =	sizeof(struct ohci_hcd) + sizeof(struct ohci_hlwd),
 
 	/*
 	 * generic hardware linkage
@@ -197,8 +266,10 @@ static const struct hc_driver ohci_hlwd_hc_driver = {
 	/*
 	 * managing i/o requests and associated device resources
 	 */
-	.urb_enqueue =		ohci_urb_enqueue,
+	.urb_enqueue =		hlwd_ohci_urb_enqueue,
 	.urb_dequeue =		ohci_urb_dequeue,
+	.map_urb_for_dma	= hlwd_map_urb_for_dma,
+	.unmap_urb_for_dma	= hlwd_unmap_urb_for_dma,
 	.endpoint_disable =	ohci_endpoint_disable,
 
 	/*
@@ -225,6 +296,7 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	struct device_node *dn = dev->of_node;
 	struct usb_hcd *hcd;
 	struct ohci_hcd	*ohci = NULL;
+	struct ohci_hlwd *hlwd = NULL;
 	struct resource res;
 	int irq;
 	int error = -ENODEV;
@@ -232,16 +304,25 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	if (usb_disabled())
 		goto out;
 
+	BUILD_BUG_ON(!IS_ENABLED(CONFIG_HAS_DMA));
+
 	/* big-endian registers (reversed little-endian), little-endian descriptors */
 	if (!of_property_read_bool(dn, "big-endian-regs") ||
 	    of_property_read_bool(dn, "big-endian-desc") ||
 	    of_property_read_bool(dn, "big-endian")) {
-		dev_warn(dev, "requires only 'big-endian-regs'\n");
+		dev_err(dev, "requires only 'big-endian-regs'\n");
 		error = -EINVAL;
 		goto out;
 	}
 
 	dev_dbg(dev, "initializing " DRV_MODULE_NAME " USB Controller\n");
+
+	/* can do 32-bit addresses */
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))) {
+		dev_err(dev, "dma_set_mask_and_coherent failed\n");
+		error = -ENOTSUPP;
+		goto out;
+	}
 
 	error = of_address_to_resource(dn, 0, &res);
 	if (error)
@@ -280,9 +361,11 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 
 	ohci = hcd_to_ohci(hcd);
 	ohci->flags |= OHCI_QUIRK_BE_MMIO;
-	ohci->flags |= OHCI_QUIRK_WII;
 
 	ohci_hcd_init(ohci);
+
+	hlwd = (struct ohci_hlwd *)&ohci->priv;
+	spin_lock_init(&hlwd->control_quirk_lock);
 
 	error = usb_add_hcd(hcd, irq, 0);
 	if (error)
@@ -304,9 +387,15 @@ out:
 static void ohci_hcd_hlwd_remove(struct platform_device *op)
 {
 	struct device *dev = &op->dev;
-	struct usb_hcd *hcd = dev_get_drvdata(dev);
+	struct usb_hcd *hcd;
+	struct ohci_hcd *ohci;
 
-	dev_set_drvdata(dev, NULL);
+	hcd = dev_get_drvdata(dev);
+	if (!hcd)
+		return;
+
+	ohci = hcd_to_ohci(hcd);
+	ohci_hlwd_control_quirk_free(ohci);
 
 	dev_dbg(dev, "stopping " DRV_MODULE_NAME " USB Controller\n");
 
@@ -315,6 +404,8 @@ static void ohci_hcd_hlwd_remove(struct platform_device *op)
 	irq_dispose_mapping(hcd->irq);
 	of_reserved_mem_device_release(dev);
 	usb_put_hcd(hcd);
+
+	dev_set_drvdata(dev, NULL);
 
 	return;
 }

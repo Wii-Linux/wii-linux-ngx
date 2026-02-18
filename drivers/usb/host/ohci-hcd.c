@@ -785,7 +785,7 @@ static void io_watchdog_func(struct timer_list *t)
 		if (ed->pending_td) {
 			if (takeback_all_pending ||
 					OKAY_TO_TAKEBACK(ohci, ed)) {
-				unsigned tmp = hc32_to_cpu(ohci, ed->hwINFO);
+				unsigned tmp = hc32_to_cpu(ohci, ed->hw->hwINFO);
 
 				ohci_dbg(ohci, "takeback pending TD for dev %d ep 0x%x\n",
 						0x007f & tmp,
@@ -808,7 +808,7 @@ static void io_watchdog_func(struct timer_list *t)
 		}
 
 		/* find the last TD processed by the controller. */
-		head = hc32_to_cpu(ohci, READ_ONCE(ed->hwHeadP)) & TD_MASK;
+		head = hc32_to_cpu(ohci, READ_ONCE(ed->hw->hwHeadP)) & TD_MASK;
 		td_start = td;
 		td_next = list_prepare_entry(td, &ed->td_list, td_list);
 		list_for_each_entry_continue(td_next, &ed->td_list, td_list) {
@@ -1056,7 +1056,7 @@ int ohci_restart(struct ohci_hcd *ohci)
 		switch (ed->state) {
 		case ED_OPER:
 			ed->state = ED_UNLINK;
-			ed->hwINFO |= cpu_to_hc32(ohci, ED_DEQUEUE);
+			ed->hw->hwINFO |= cpu_to_hc32(ohci, ED_DEQUEUE);
 			ed_deschedule (ohci, ed);
 
 			ed->ed_next = ohci->ed_rm_list;
