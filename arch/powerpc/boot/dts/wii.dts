@@ -87,7 +87,8 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "nintendo,hollywood";
-                ranges = <0x0c000000 0x0c000000 0x01000000
+		ranges = <0x08000000 0x08000000 0x00400000 /* EFB */
+			  0x0c000000 0x0c000000 0x01000000
 			  0x0d000000 0x0d000000 0x00800000
 			  0x0d800000 0x0d800000 0x00800000>;
 		clock-frequency = <243000000>; /* 243MHz */

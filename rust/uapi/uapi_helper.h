@@ -7,6 +7,7 @@
  */
 
 #include <uapi/drm/drm.h>
+#include <uapi/drm/flipper_drm.h>
 #include <uapi/drm/nova_drm.h>
 #include <uapi/drm/panthor_drm.h>
 #include <uapi/linux/android/binder.h>

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0 or MIT
+
+config DRM_FLIPPER
+	tristate "Flipper (Rust DRM support for Nintendo GameCube and Wii GPUs)"
+	depends on DRM=y
+	depends on RUST
+	depends on GAMECUBE_COMMON || COMPILE_TEST
+	default n
+	select RUST_DRM_GEM_SHMEM_HELPER
+	help
+	  Rust DRM driver for Nintendo GameCube and Wii GPUs.
+
+	  This driver is work in progress and may not be functional.
+
+	  If M is selected, the module will be called flipper.
