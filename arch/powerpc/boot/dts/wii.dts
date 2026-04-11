@@ -54,6 +54,11 @@
 			reg = <0x13c00000 0x00200000>; /* 2 MiB, MEM2 */
 		};
 
+		FIFO: fifo@1734000 {
+			reg = <0x01734000 0x00040000>; /* 256 KiB */
+			no-map;
+		};
+
 		EFB: efb@8000000 {
 			reg = <0x08000000 0x00300000>;
 			no-map;
@@ -101,6 +106,8 @@
 					"nintendo,flipper-gx-pe";
 			reg = <0x0c001000 0x100>;
 			interrupts = <9 10>;
+			fifo-start = <0x01734000>; /* end-of-mem1 - xfb-size - fifo-size */
+			fifo-size = <0x40000>;     /* 256 * 1024 bytes */
 		};
 
 		video@c002000 {
