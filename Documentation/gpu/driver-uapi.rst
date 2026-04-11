@@ -34,3 +34,8 @@ drm/asahi uAPI
 ================
 
 .. kernel-doc:: include/uapi/drm/asahi_drm.h
+
+drm/flipper uAPI
+================
+
+.. kernel-doc:: include/uapi/drm/flipper_drm.h
