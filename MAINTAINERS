@@ -8853,6 +8853,7 @@ X:	drivers/gpu/drm/amd/
 X:	drivers/gpu/drm/armada/
 X:	drivers/gpu/drm/etnaviv/
 X:	drivers/gpu/drm/exynos/
+X:	drivers/gpu/drm/flipper/
 X:	drivers/gpu/drm/i915/
 X:	drivers/gpu/drm/kmb/
 X:	drivers/gpu/drm/mediatek/
@@ -19755,6 +19756,14 @@ S:	Maintained
 W:	http://www.netlab.is.tsukuba.ac.jp/~yokota/izumi/ninja/
 F:	Documentation/scsi/NinjaSCSI.rst
 F:	drivers/scsi/nsp32*
+
+NINTENDO FLIPPER DRM DRIVER
+M:	Link Mauve <linkmauve@linkmauve.fr>
+L:	dri-devel@lists.freedesktop.org
+L:	rust-for-linux@vger.kernel.org
+S:	Maintained
+F:	drivers/gpu/drm/flipper/
+F:	include/uapi/drm/flipper_drm.h
 
 NINTENDO HID DRIVER
 M:	Daniel J. Ogorchock <djogorchock@gmail.com>
