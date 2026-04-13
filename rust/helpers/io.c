@@ -193,3 +193,9 @@ __rust_helper void rust_helper_release_region(resource_size_t start,
 {
 	release_region(start, n);
 }
+
+__rust_helper unsigned long
+rust_helper_vmalloc_to_phys(void *p)
+{
+	return vmalloc_to_phys(p);
+}
