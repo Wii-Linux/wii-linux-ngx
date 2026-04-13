@@ -106,8 +106,6 @@
 					"nintendo,flipper-gx-pe";
 			reg = <0x0c001000 0x100>;
 			interrupts = <9 10>;
-			fifo-start = <0x01734000>; /* end-of-mem1 - xfb-size - fifo-size */
-			fifo-size = <0x40000>;     /* 256 * 1024 bytes */
 		};
 
 		video@c002000 {
