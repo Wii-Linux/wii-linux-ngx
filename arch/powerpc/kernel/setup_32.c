@@ -105,7 +105,9 @@ static int __init ppc_setup_l2cr(char *str)
 	if (cpu_has_feature(CPU_FTR_L2CR)) {
 		unsigned long val = simple_strtoul(str, NULL, 0);
 		printk(KERN_INFO "l2cr set to %lx\n", val);
-		_set_L2CR(0);		/* force invalidate by disable cache */
+		_set_L2CR(0);		/* disable cache */
+		_set_L2CR(0x00200000);	/* invalidate */
+		while (_get_L2CR() & 1) barrier();
 		_set_L2CR(val);		/* and enable it */
 	}
 	return 1;
