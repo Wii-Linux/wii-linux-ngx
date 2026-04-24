@@ -21,7 +21,7 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto rootwait panic=0             loglevel=8 consoleblank=0                          mark.end=1";
+		bootargs = "mark.start=1 root=/dev/sda1 console=usbgeckocon1 console=tty0      oops=panic force_keyboard_port=4 video=gcnfb:tv=auto rootwait panic=0             loglevel=8 consoleblank=0 l2cr=0x80000000          mark.end=1";
 
 	};
 
