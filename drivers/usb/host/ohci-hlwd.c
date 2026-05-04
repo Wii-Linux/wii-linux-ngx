@@ -31,6 +31,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
 
 #include <asm/prom.h>
 #include <asm/time.h>	/* for mftb() */
@@ -262,11 +263,13 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	}
 
 	irq = irq_of_parse_and_map(dn, 0);
+#if 0
 	if (irq == NO_IRQ) {
 		dev_err(dev, "irq_of_parse_and_map failed\n");
 		error = -EBUSY;
 		goto err_irq;
 	}
+#endif
 
 	hcd->regs = ioremap(hcd->rsrc_start, hcd->rsrc_len);
 	if (!hcd->regs) {
@@ -298,7 +301,7 @@ out:
 	return error;
 }
 
-static int ohci_hcd_hlwd_remove(struct platform_device *op)
+static void ohci_hcd_hlwd_remove(struct platform_device *op)
 {
 	struct device *dev = &op->dev;
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
@@ -313,7 +316,7 @@ static int ohci_hcd_hlwd_remove(struct platform_device *op)
 	of_reserved_mem_device_release(dev);
 	usb_put_hcd(hcd);
 
-	return 0;
+	return;
 }
 
 static void ohci_hcd_hlwd_shutdown(struct platform_device *op)
