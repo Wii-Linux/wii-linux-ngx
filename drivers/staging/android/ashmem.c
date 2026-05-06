@@ -900,7 +900,7 @@ static void ashmem_show_fdinfo(struct seq_file *m, struct file *file)
 	mutex_lock(&ashmem_mutex);
 
 	if (asma->file)
-		seq_printf(m, "inode:\t%ld\n", file_inode(asma->file)->i_ino);
+		seq_printf(m, "inode:\t%lld\n", file_inode(asma->file)->i_ino);
 
 	if (asma->name[ASHMEM_NAME_PREFIX_LEN] != '\0')
 		seq_printf(m, "name:\t%s\n",
