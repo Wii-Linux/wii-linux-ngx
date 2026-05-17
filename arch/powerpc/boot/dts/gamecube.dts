@@ -16,7 +16,7 @@
 	#size-cells = <1>;
 
 	chosen {
-		bootargs = "root=/dev/gcnsda2 video=gcn-vifb:tv=auto force_keyboard_port=4";
+		bootargs = "root=/dev/mmcblk0p2 video=gcn-vifb:tv=auto force_keyboard_port=4";
 	};
 
 	memory {
