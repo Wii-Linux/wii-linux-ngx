@@ -10,9 +10,8 @@
  * SRAM like for the other two consoles.
  *
  * This device sits on a bus named EXI (which is similar to SPI), channel 0,
- * device 1.  This driver assumes no other user of the EXI bus, which is
- * currently the case but would have to be reworked to add support for other
- * GameCube hardware exposed on this bus.
+ * device 1.  This driver is written to assume that EXI is exposed as an SPI
+ * host.
  *
  * References:
  * - https://wiiubrew.org/wiki/Hardware/RTC
@@ -20,6 +19,7 @@
  *
  * Copyright (C) 2018 rw-r-r-0644
  * Copyright (C) 2021 Emmanuel Gil Peyrot <linkmauve@linkmauve.fr>
+ * Copyright (C) 2026 Michael "Techflash" Garofalo
  *
  * Based on rtc-gcn.c
  * Copyright (C) 2004-2009 The GameCube Linux Team
@@ -35,39 +35,7 @@
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/time.h>
-
-/* EXI registers */
-#define EXICSR	0
-#define EXICR	12
-#define EXIDATA	16
-
-/* EXI register values */
-#define EXICSR_DEV		0x380
-	#define EXICSR_DEV1	0x100
-#define EXICSR_CLK		0x070
-	#define EXICSR_CLK_1MHZ	0x000
-	#define EXICSR_CLK_2MHZ	0x010
-	#define EXICSR_CLK_4MHZ	0x020
-	#define EXICSR_CLK_8MHZ	0x030
-	#define EXICSR_CLK_16MHZ 0x040
-	#define EXICSR_CLK_32MHZ 0x050
-#define EXICSR_INT		0x008
-	#define EXICSR_INTSET	0x008
-
-#define EXICR_TSTART		0x001
-#define EXICR_TRSMODE		0x002
-	#define EXICR_TRSMODE_IMM 0x000
-#define EXICR_TRSTYPE		0x00C
-	#define EXICR_TRSTYPE_R	0x000
-	#define EXICR_TRSTYPE_W	0x004
-#define EXICR_TLEN		0x030
-	#define EXICR_TLEN32	0x030
-
-/* EXI registers values to access the RTC */
-#define RTC_EXICSR	(EXICSR_DEV1 | EXICSR_CLK_8MHZ | EXICSR_INTSET)
-#define RTC_EXICR_W	(EXICR_TSTART | EXICR_TRSMODE_IMM | EXICR_TRSTYPE_W | EXICR_TLEN32)
-#define RTC_EXICR_R	(EXICR_TSTART | EXICR_TRSMODE_IMM | EXICR_TRSTYPE_R | EXICR_TLEN32)
-#define RTC_EXIDATA_W	0x80000000
+#include <linux/spi/spi.h>
 
 /* RTC registers */
 #define RTC_COUNTER	0x200000
@@ -89,73 +57,51 @@
 
 struct priv {
 	struct regmap *regmap;
-	void __iomem *iob;
+	struct spi_device *spi;
 	u32 rtc_bias;
 };
 
-static int exi_read(void *context, u32 reg, u32 *data)
+static int rtc_reg_read(void *context, u32 reg, u32 *data)
 {
+	int err;
+	__be32 cmd = cpu_to_be32(reg << 8);
 	struct priv *d = (struct priv *)context;
-	void __iomem *iob = d->iob;
+	struct spi_transfer xfers[2] = {
+		{ .tx_buf = &cmd, .rx_buf = NULL, .len = 4 },
+		{ .tx_buf = NULL, .rx_buf = data, .len = 4 }
+	};
 
-	/* The spin loops here loop about 15~16 times each, so there is no need
-	 * to use a more expensive sleep method.
-	 */
-
-	/* Write register offset */
-	iowrite32be(RTC_EXICSR, iob + EXICSR);
-	iowrite32be(reg << 8, iob + EXIDATA);
-	iowrite32be(RTC_EXICR_W, iob + EXICR);
-	while (!(ioread32be(iob + EXICSR) & EXICSR_INTSET))
-		cpu_relax();
-
-	/* Read data */
-	iowrite32be(RTC_EXICSR, iob + EXICSR);
-	iowrite32be(RTC_EXICR_R, iob + EXICR);
-	while (!(ioread32be(iob + EXICSR) & EXICSR_INTSET))
-		cpu_relax();
-	*data = ioread32be(iob + EXIDATA);
-
-	/* Clear channel parameters */
-	iowrite32be(0, iob + EXICSR);
+	/* Write register offset and read data */
+	err = spi_sync_transfer(d->spi, xfers, 2);
+	if (err)
+		return err;
 
 	return 0;
 }
 
-static int exi_write(void *context, u32 reg, u32 data)
+static int rtc_reg_write(void *context, u32 reg, u32 data)
 {
+	int err;
+	__be32 cmd = cpu_to_be32(reg << 8);
 	struct priv *d = (struct priv *)context;
-	void __iomem *iob = d->iob;
+	struct spi_transfer xfers[2] = {
+		{ .tx_buf = &cmd, .rx_buf = NULL, .len = 4 },
+		{ .tx_buf = &data, .rx_buf = NULL, .len = 4 }
+	};
 
-	/* The spin loops here loop about 15~16 times each, so there is no need
-	 * to use a more expensive sleep method.
-	 */
-
-	/* Write register offset */
-	iowrite32be(RTC_EXICSR, iob + EXICSR);
-	iowrite32be(RTC_EXIDATA_W | (reg << 8), iob + EXIDATA);
-	iowrite32be(RTC_EXICR_W, iob + EXICR);
-	while (!(ioread32be(iob + EXICSR) & EXICSR_INTSET))
-		cpu_relax();
-
-	/* Write data */
-	iowrite32be(RTC_EXICSR, iob + EXICSR);
-	iowrite32be(data, iob + EXIDATA);
-	iowrite32be(RTC_EXICR_W, iob + EXICR);
-	while (!(ioread32be(iob + EXICSR) & EXICSR_INTSET))
-		cpu_relax();
-
-	/* Clear channel parameters */
-	iowrite32be(0, iob + EXICSR);
+	/* Write register offset and write data */
+	err = spi_sync_transfer(d->spi, xfers, 2);
+	if (err)
+		return err;
 
 	return 0;
 }
 
-static const struct regmap_bus exi_bus = {
+static const struct regmap_bus rtc_regmap = {
 	/* TODO: is that true?  Not that it matters here, but still. */
 	.fast_io = true,
-	.reg_read = exi_read,
-	.reg_write = exi_write,
+	.reg_read = rtc_reg_read,
+	.reg_write = rtc_reg_write,
 };
 
 static int gamecube_rtc_read_time(struct device *dev, struct rtc_time *t)
@@ -316,9 +262,9 @@ static const struct regmap_config gamecube_rtc_regmap_config = {
 	.name = "gamecube-rtc",
 };
 
-static int gamecube_rtc_probe(struct platform_device *pdev)
+static int gamecube_rtc_probe(struct spi_device *spi)
 {
-	struct device *dev = &pdev->dev;
+	struct device *dev = &spi->dev;
 	struct rtc_device *rtc;
 	struct priv *d;
 	int ret;
@@ -327,11 +273,8 @@ static int gamecube_rtc_probe(struct platform_device *pdev)
 	if (!d)
 		return -ENOMEM;
 
-	d->iob = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(d->iob))
-		return PTR_ERR(d->iob);
-
-	d->regmap = devm_regmap_init(dev, &exi_bus, d,
+	d->spi = spi;
+	d->regmap = devm_regmap_init(dev, &rtc_regmap, d,
 				     &gamecube_rtc_regmap_config);
 	if (IS_ERR(d->regmap))
 		return PTR_ERR(d->regmap);
@@ -360,22 +303,20 @@ static int gamecube_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id gamecube_rtc_of_match[] = {
-	{.compatible = "nintendo,latte-exi" },
-	{.compatible = "nintendo,hollywood-exi" },
-	{.compatible = "nintendo,flipper-exi" },
+static const struct spi_device_id gamecube_rtc_id_table[] = {
+	{ "gamecube-rtc", },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, gamecube_rtc_of_match);
+MODULE_DEVICE_TABLE(spi, gamecube_rtc_id_table);
 
-static struct platform_driver gamecube_rtc_driver = {
+static struct spi_driver gamecube_rtc_driver = {
 	.probe		= gamecube_rtc_probe,
 	.driver		= {
 		.name	= "rtc-gamecube",
-		.of_match_table	= gamecube_rtc_of_match,
 	},
+	.id_table	= gamecube_rtc_id_table
 };
-module_platform_driver(gamecube_rtc_driver);
+module_spi_driver(gamecube_rtc_driver);
 
 MODULE_AUTHOR("Emmanuel Gil Peyrot <linkmauve@linkmauve.fr>");
 MODULE_DESCRIPTION("Nintendo GameCube, Wii and Wii U RTC driver");
