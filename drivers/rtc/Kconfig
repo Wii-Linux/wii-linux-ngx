@@ -940,6 +940,19 @@ config RTC_DRV_MCP795
 	  This driver can also be built as a module. If so the module
 	  will be called rtc-mcp795.
 
+config RTC_DRV_GAMECUBE
+	tristate "Nintendo GameCube, Wii and Wii U RTC"
+	depends on GAMECUBE || WII || COMPILE_TEST
+	select REGMAP
+	help
+	  If you say yes here you will get support for the RTC subsystem
+	  of the Nintendo GameCube, Wii and Wii U.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called "rtc-gamecube".
+
+
+
 endif # SPI_MASTER
 
 #
@@ -1319,20 +1332,6 @@ config RTC_DRV_RP5C01
 
 	  This driver can also be built as a module. If so, the module
 	  will be called rtc-rp5c01.
-
-config RTC_DRV_GAMECUBE
-	tristate "Nintendo GameCube, Wii and Wii U RTC"
-	depends on (GAMECUBE || WII || COMPILE_TEST) && !SPI_EXI
-	select REGMAP
-	help
-	  If you say yes here you will get support for the RTC subsystem
-	  of the Nintendo GameCube, Wii and Wii U.
-
-	  This driver can also be built as a module. If so, the module
-	  will be called "rtc-gamecube".
-
-	  NOTE: Temporarily conficts with CONFIG_SPI_EXI, since this driver
-	  also tries to be an EXI bus master.
 
 config RTC_DRV_WM831X
 	tristate "Wolfson Microelectronics WM831x RTC"
