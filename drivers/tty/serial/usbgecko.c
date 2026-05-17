@@ -5,7 +5,7 @@
  * Console and TTY driver for the USB Gecko adapter.
  * Copyright (C) 2008-2009 The GameCube Linux Team
  * Copyright (C) 2008,2009 Albert Herranz
- * Copyright (C) 2024,2025 Michael "Techflash" Garofalo
+ * Copyright (C) 2024-2026 Michael "Techflash" Garofalo
  */
 
 #define UG_DEBUG
@@ -21,31 +21,17 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/spi/spi.h>
 #include <uapi/linux/sched/types.h>
-
-#include <linux/exi.h>
 
 #define DRV_MODULE_NAME "usbgecko"
 #define DRV_DESCRIPTION "Console and TTY driver for the USB Gecko adapter"
 #define DRV_AUTHOR      "Albert Herranz, Michael \"Techflash\" Garofalo"
 
-static char ug_driver_version[] = "0.3.1";
-
-/*
- *
- * EXI related definitions.
- */
-#define UG_SLOTA_CHANNEL	0	/* EXI0xxx */
-#define UG_SLOTA_DEVICE		0	/* chip select, EXI0CSB0 */
-
-#define UG_SLOTB_CHANNEL	1	/* EXI1xxx */
-#define UG_SLOTB_DEVICE		0	/* chip select, EXI1CSB0 */
-
-#define UG_SPI_CLK_IDX		EXI_CLK_32MHZ
-
+static char ug_driver_version[] = "0.4";
 
 struct ug_adapter {
-	struct exi_device *exi_device;
+	struct spi_device *spi_device;
 	struct task_struct *poller;
 	struct mutex mutex;
 	int refcnt;
@@ -62,15 +48,15 @@ static struct ug_adapter ug_adapters[2];
 /*
  *
  */
-static void ug_exi_io_transaction(struct exi_device *exi_device, u16 i, u16 *o)
+static void ug_spi_io_transaction(struct spi_device *spi_device, u16 i, u16 *o)
 {
-	u16 data;
+	struct spi_transfer spi_xfer = {
+		.tx_buf = &i,
+		.rx_buf = o,
+		.len = 2
+	};
 
-	exi_dev_select(exi_device);
-	data = i;
-	exi_dev_readwrite(exi_device, &data, 2);
-	exi_dev_deselect(exi_device);
-	*o = data;
+	spi_sync_transfer(spi_device, &spi_xfer, 1);
 }
 
 #if 0
@@ -79,25 +65,23 @@ static void ug_exi_io_transaction(struct exi_device *exi_device, u16 i, u16 *o)
  */
 static void ug_io_transaction(struct ug_adapter *adapter, u16 i, u16 *o)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 
-	if (exi_device)
-		ug_exi_io_transaction(exi_device, i, o);
+	if (spi_device)
+		ug_spi_io_transaction(spi_device, i, o);
 }
 #endif
 
 /*
  *
  */
-static int ug_check_adapter(struct exi_device *exi_device)
+static int ug_check_adapter(struct spi_device *spi_device)
 {
 	u16 data;
 	int tries = 10;
 
 	while (tries--) {
-		exi_dev_take(exi_device);
-		ug_exi_io_transaction(exi_device, 0x9000, &data);
-		exi_dev_give(exi_device);
+		ug_spi_io_transaction(spi_device, 0x9000, &data);
 
 		if (data == 0x0470)
 			return 1;
@@ -105,7 +89,7 @@ static int ug_check_adapter(struct exi_device *exi_device)
 		msleep(50); // give it some time to wake up
 	}
 
-	dev_err(&exi_device->dev, "check failed, got 0x%04x from 0x9000\n", data);
+	dev_err(&spi_device->dev, "check failed, got 0x%04x from 0x9000\n", data);
 	return 0;
 
 }
@@ -116,18 +100,14 @@ static int ug_check_adapter(struct exi_device *exi_device)
  */
 static int ug_is_txfifo_empty(struct ug_adapter *adapter)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xC000, &data);
-		exi_dev_give(exi_device);
-		return data & 0x0400;
-	}
-	return 0;
+	ug_spi_io_transaction(spi_device, 0xC000, &data);
+	return data & 0x0400;
 }
 
 /*
@@ -135,18 +115,14 @@ static int ug_is_txfifo_empty(struct ug_adapter *adapter)
  */
 static int ug_is_rxfifo_empty(struct ug_adapter *adapter)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xD000, &data);
-		exi_dev_give(exi_device);
-		return data & 0x0400;
-	}
-	return 0;
+	ug_spi_io_transaction(spi_device, 0xD000, &data);
+	return data & 0x0400;
 }
 
 #if 0
@@ -155,18 +131,14 @@ static int ug_is_rxfifo_empty(struct ug_adapter *adapter)
  */
 static int ug_putc(struct ug_adapter *adapter, char c)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xB000| (c << 4), &data);
-		exi_dev_give(exi_device);
-		return data & 0x0400;
-	}
-	return 0;
+	ug_spi_io_transaction(spi_device, 0xB000| (c << 4), &data);
+	return data & 0x0400;
 }
 
 /*
@@ -174,19 +146,16 @@ static int ug_putc(struct ug_adapter *adapter, char c)
  */
 static int ug_getc(struct ug_adapter *adapter, char *c)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xA000, &data);
-		exi_dev_give(exi_device);
-		if ((data & 0x0800)) {
-			*c = data & 0xff;
-			return 1;
-		}
+	ug_spi_io_transaction(spi_device, 0xA000, &data);
+	if ((data & 0x0800)) {
+		*c = data & 0xff;
+		return 1;
 	}
 	return 0;
 }
@@ -196,20 +165,16 @@ static int ug_getc(struct ug_adapter *adapter, char *c)
  */
 static int ug_safe_putc(struct ug_adapter *adapter, char c)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xC000, &data);
-		if ((data & 0x0400))
-			ug_exi_io_transaction(exi_device, 0xB000|(c<<4), &data);
-		exi_dev_give(exi_device);
-		return data & 0x0400;
-	}
-	return 0;
+	ug_spi_io_transaction(spi_device, 0xC000, &data);
+	if ((data & 0x0400))
+		ug_spi_io_transaction(spi_device, 0xB000|(c<<4), &data);
+	return data & 0x0400;
 }
 
 /*
@@ -217,23 +182,18 @@ static int ug_safe_putc(struct ug_adapter *adapter, char c)
  */
 static int ug_safe_getc(struct ug_adapter *adapter, char *c)
 {
-	struct exi_device *exi_device = adapter->exi_device;
+	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
 
-	if (!exi_device)
+	if (!spi_device)
 		return 0;
 
-	if (!exi_dev_try_take(exi_device)) {
-		ug_exi_io_transaction(exi_device, 0xD000, &data);
-		if ((data & 0x0400))  {
-			ug_exi_io_transaction(exi_device, 0xA000, &data);
-			exi_dev_give(exi_device);
-			if ((data & 0x0800)) {
-				*c = data & 0xff;
-				return 1;
-			}
-		} else {
-			exi_dev_give(exi_device);
+	ug_spi_io_transaction(spi_device, 0xD000, &data);
+	if ((data & 0x0400)) {
+		ug_spi_io_transaction(spi_device, 0xA000, &data);
+		if ((data & 0x0800)) {
+			*c = data & 0xff;
+			return 1;
 		}
 	}
 	return 0;
@@ -363,7 +323,7 @@ static int ug_tty_open(struct tty_struct *tty, struct file *filp)
 
 	mutex_lock(&adapter->mutex);
 
-	if (!adapter->exi_device) {
+	if (!adapter->spi_device) {
 		mutex_unlock(&adapter->mutex);
 		return -ENODEV;
 	}
@@ -371,7 +331,7 @@ static int ug_tty_open(struct tty_struct *tty, struct file *filp)
 	if (!adapter->refcnt) {
 		adapter->poller = kthread_run(ug_tty_poller, tty, "kugtty");
 		if (IS_ERR(adapter->poller)) {
-			dev_err(&adapter->exi_device->dev, "error creating poller thread\n");
+			dev_err(&adapter->spi_device->dev, "error creating poller thread\n");
 			mutex_unlock(&adapter->mutex);
 			return -ENOMEM;
 		}
@@ -526,35 +486,37 @@ static void ug_tty_exit(void)
 /*
  *
  */
-static int ug_probe(struct exi_device *exi_device)
+static int ug_probe(struct spi_device *spi_device)
 {
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
 	struct tty_port *port;
 
-	dev_info(&exi_device->dev, "probing for channel %d, device %d\n",
-	exi_device->eid.channel, exi_device->eid.device);
+	dev_info(&spi_device->dev, "probing for channel %d, device %d\n",
+	spi_device->controller->bus_num, spi_get_chipselect(spi_device));
 
 	/* don't try to drive a device which already has a real identifier */
+#if 0
 	if (exi_device->eid.id != EXI_ID_NONE) {
 		dev_err(&exi_device->dev, "device ID is not NONE (0x%x), skipping\n",
 		        exi_device->eid.id);
 		return -ENODEV;
 	}
+#endif
 
-	if (!ug_check_adapter(exi_device)) {
-		dev_err(&exi_device->dev, "check_adapter() failed\n");
+	if (!ug_check_adapter(spi_device)) {
+		dev_err(&spi_device->dev, "check_adapter() failed\n");
 		return -ENODEV;
 	}
 
 	ug_tty_init();
-	slot = to_channel(exi_get_exi_channel(exi_device));
+	slot = spi_device->controller->bus_num;
 	console = &ug_consoles[slot];
 	adapter = console->data;
 
 	if (!ug_tty_driver->ports[slot]) {
-		dev_info(&exi_device->dev, "initializing console on slot %c\n", 'A'+slot);
+		dev_info(&spi_device->dev, "initializing console on slot %c\n", 'A'+slot);
 		port = kmalloc(sizeof(*port), GFP_KERNEL);
 
 		if (!port)
@@ -566,15 +528,15 @@ static int ug_probe(struct exi_device *exi_device)
 	}
 
 
-	dev_info(&exi_device->dev, "USB Gecko detected in memcard slot-%c\n",
+	dev_info(&spi_device->dev, "USB Gecko detected in memcard slot-%c\n",
 		   'A'+slot);
 
 	adapter->poller = ERR_PTR(-EINVAL);
 	mutex_init(&adapter->mutex);
 	adapter->refcnt = 0;
 
-	adapter->exi_device = exi_device_get(exi_device);
-	exi_set_drvdata(exi_device, adapter);
+	adapter->spi_device = spi_dev_get(spi_device);
+	spi_set_drvdata(spi_device, adapter);
 	register_console(console);
 
 
@@ -583,23 +545,23 @@ static int ug_probe(struct exi_device *exi_device)
 
 /*
  * Makes unavailable the USB Gecko adapter identified by the EXI device
- * `exi_device'.
+ * `spi_device'.
  */
-static void ug_remove(struct exi_device *exi_device)
+static void ug_remove(struct spi_device *spi_device)
 {
 	struct console *console;
 	struct ug_adapter *adapter;
 	unsigned int slot;
 
-	dev_info(&exi_device->dev, "removing device on channel %d, device %d\n",
-	exi_device->eid.channel, exi_device->eid.device);
+	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
+	spi_device->controller->bus_num, spi_get_chipselect(spi_device));
 
-	slot = to_channel(exi_get_exi_channel(exi_device));
+	slot = spi_device->controller->bus_num;
 	console = &ug_consoles[slot];
 	adapter = console->data;
 
 	if (adapter->refcnt)
-		dev_err(&exi_device->dev, "adapter removed while in use!\n");
+		dev_err(&spi_device->dev, "adapter removed while in use!\n");
 
 	unregister_console(console);
 
@@ -611,39 +573,29 @@ static void ug_remove(struct exi_device *exi_device)
 	}
 
 
-	exi_set_drvdata(exi_device, NULL);
-	adapter->exi_device = NULL;
-	exi_device_put(exi_device);
-
+	spi_set_drvdata(spi_device, NULL);
+	adapter->spi_device = NULL;
+	spi_dev_put(spi_device);
 
 
 	mutex_destroy(&adapter->mutex);
 
-	dev_info(&exi_device->dev, "USB Gecko removed from memcard slot-%c\n",
+	dev_info(&spi_device->dev, "USB Gecko removed from memcard slot-%c\n",
 		   'A'+slot);
 }
 
-static struct exi_device_id ug_eid_table[] = {
-	[0] = {
-	       .channel = UG_SLOTA_CHANNEL,
-	       .device = UG_SLOTA_DEVICE,
-	       .id = EXI_ID_NONE,
-	       },
-	[1] = {
-	       .channel = UG_SLOTB_CHANNEL,
-	       .device = UG_SLOTB_DEVICE,
-	       .id = EXI_ID_NONE,
-	       },
-	{.id = 0}
+static const struct spi_device_id ug_id_table[] = {
+	{ "exi-usb-gecko", },
+	{ }
 };
+MODULE_DEVICE_TABLE(spi, ug_id_table);
 
-static struct exi_driver ug_exi_driver = {
-	.name = DRV_MODULE_NAME,
+
+static struct spi_driver ug_spi_driver = {
 	.driver = {
 		.name = DRV_MODULE_NAME,
 	},
-	.eid_table = ug_eid_table,
-	.frequency = UG_SPI_CLK_IDX,
+	.id_table = ug_id_table,
 	.probe = ug_probe,
 	.remove = ug_remove,
 };
@@ -659,12 +611,12 @@ static int __init ug_init_module(void)
 	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   ug_driver_version);
 
-	return exi_driver_register(&ug_exi_driver);
+	return spi_register_driver(&ug_spi_driver);
 }
 
 static void __exit ug_exit_module(void)
 {
-	exi_driver_unregister(&ug_exi_driver);
+	spi_unregister_driver(&ug_spi_driver);
 }
 
 module_init(ug_init_module);
