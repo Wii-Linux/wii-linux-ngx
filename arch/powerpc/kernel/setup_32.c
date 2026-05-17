@@ -75,8 +75,10 @@ EXPORT_SYMBOL(DMA_MODE_WRITE);
  */
 notrace void __init machine_init(u64 dt_ptr)
 {
+#ifndef CONFIG_GAMECUBE_COMMON // XXX memset and memcpy are used with uncahed memory, which breaks on GC/Wii
 	u32 *addr = (u32 *)patch_site_addr(&patch__memset_nocache);
 	ppc_inst_t insn;
+#endif
 
 	/* Configure static keys first, now that we're relocated. */
 	setup_feature_keys();
@@ -86,10 +88,12 @@ notrace void __init machine_init(u64 dt_ptr)
 	/* Enable early debugging if any specified (see udbg.h) */
 	udbg_early_init();
 
+#ifndef CONFIG_GAMECUBE_COMMON
 	patch_instruction_site(&patch__memcpy_nocache, ppc_inst(PPC_RAW_NOP()));
 
 	create_cond_branch(&insn, addr, branch_target(addr), 0x820000);
 	patch_instruction(addr, insn);	/* replace b by bne cr0 */
+#endif
 
 	/* Do some early initialization based on the flat device tree */
 	early_init_devtree(__va(dt_ptr));
