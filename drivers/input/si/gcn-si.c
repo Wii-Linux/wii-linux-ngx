@@ -11,7 +11,6 @@
 
 /* #define SI_DEBUG */
 
-#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/io.h>
@@ -49,8 +48,9 @@ static char si_driver_version[] = "1.0i";
 
 #define SI_MAX_PORTS		4		/* the four controller ports */
 #define SI_REFRESH_TIME		(HZ/100)	/* input polling interval */
-#define SI_HOTPLUG_TIME		(HZ/4)		/* device detection interval */
+#define SI_HOTPLUG_TIME		HZ		/* device detection interval */
 #define SI_TRANSFER_TIMEOUT	(HZ/10)		/* timeout for transfers */
+#define SI_PROBE_TRIES		1
 
 /*
  * Hardware registers
@@ -725,7 +725,7 @@ static enum si_control_type si_decode_device_id(u32 id)
 
 static int si_probe_port_id(struct si_port *port, u32 *id)
 {
-	unsigned int tries = port->type == CTL_NONE ? 10 : 1;
+	unsigned int tries = SI_PROBE_TRIES;
 	u32 resp = 0;
 	int error;
 
@@ -740,8 +740,6 @@ static int si_probe_port_id(struct si_port *port, u32 *id)
 
 		if (error == -ETIMEDOUT)
 			return error;
-
-		udelay(2000);
 	}
 
 	*id = 0xffff;
