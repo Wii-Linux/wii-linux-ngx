@@ -6,6 +6,7 @@
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Steven Looman
  * Copyright (C) 2005,2008,2009 Albert Herranz
+ * Copyright (C) 2026 Michael "Techflash" Garofalo
  */
 
 /* #define SI_DEBUG */
@@ -21,6 +22,7 @@
 #include <linux/of_address.h>
 #include <linux/slab.h>
 #include <linux/timer.h>
+#include <linux/workqueue.h>
 
 /*
  * This keymap is for a datel adapter + normal US keyboard.
@@ -46,7 +48,9 @@ static char si_driver_version[] = "1.0i";
 	 printk(level DRV_MODULE_NAME ": " format , ## arg)
 
 #define SI_MAX_PORTS		4		/* the four controller ports */
-#define SI_REFRESH_TIME	(HZ/100)	/* polling interval */
+#define SI_REFRESH_TIME		(HZ/100)	/* input polling interval */
+#define SI_HOTPLUG_TIME		(HZ/4)		/* device detection interval */
+#define SI_TRANSFER_TIMEOUT	(HZ/10)		/* timeout for transfers */
 
 /*
  * Hardware registers
@@ -60,24 +64,91 @@ static char si_driver_version[] = "1.0i";
 #define SICOMCSR	0x34
 #define SISR		0x38
 #define SIEXILK		0x3c
+#define SIBUF(i)	(0x80 + (i) * sizeof(u32))
+#define SI_BUF_SIZE	0x80
 
-#define ID_PAD		0x0900
-#define ID_KEYBOARD	0x0820
-#define ID_WIRELESS_BIT (1 << 15)
-#define ID_WAVEBIRD_BIT (1 << 8)
+/* SICOMCSR bits */
+#define SI_COMCSR_TSTART		BIT(0)
+#define SI_COMCSR_CHAN_SHIFT		1
+#define SI_COMCSR_INLEN_SHIFT		8
+#define SI_COMCSR_OUTLEN_SHIFT		16
+#define SI_COMCSR_RDSTINT		BIT(28)
+#define SI_COMCSR_COMERR		BIT(29)
+#define SI_COMCSR_TCINT			BIT(31)
+#define SI_COMCSR_W1C_MASK		(SI_COMCSR_TCINT | SI_COMCSR_RDSTINT)
 
-#define PAD_START	(1 << 28)
-#define PAD_Y		(1 << 27)
-#define PAD_X		(1 << 26)
-#define PAD_B		(1 << 25)
-#define PAD_A		(1 << 24)
-#define PAD_LT		(1 << 22)
-#define PAD_RT		(1 << 21)
-#define PAD_Z		(1 << 20)
-#define PAD_UP		(1 << 19)
-#define PAD_DOWN	(1 << 18)
-#define PAD_RIGHT	(1 << 17)
-#define PAD_LEFT	(1 << 16)
+/* SIPOLL bits */
+#define SI_POLL_VBCPY_SHIFT		0
+#define SI_POLL_EN_SHIFT		4
+#define SI_POLL_Y_SHIFT			8
+#define SI_POLL_X_SHIFT			16
+
+/* SISR bits */
+#define SI_SR_WR			BIT(31)
+#define SI_SR_RDST(n)			BIT(5 + ((3 - (n)) * 8))
+#define SI_SR_WRST(n)			BIT(4 + ((3 - (n)) * 8))
+#define SI_SR_NOREP(n)			BIT(3 + ((3 - (n)) * 8))
+#define SI_SR_COLL(n)			BIT(2 + ((3 - (n)) * 8))
+#define SI_SR_OVRUN(n)			BIT(1 + ((3 - (n)) * 8))
+#define SI_SR_UNRUN(n)			BIT((3 - (n)) * 8)
+#define SI_SR_ERR_MASK(n)		(SI_SR_NOREP(n) | SI_SR_COLL(n) | \
+					 SI_SR_OVRUN(n) | SI_SR_UNRUN(n))
+#define SI_SR_ALL_ERR_MASK		(SI_SR_ERR_MASK(0) | SI_SR_ERR_MASK(1) | \
+					 SI_SR_ERR_MASK(2) | SI_SR_ERR_MASK(3))
+
+/* JoyBus commands */
+#define JOYBUS_CMD_STATUS		0x00
+#define JOYBUS_CMD_DIRECT_GCN		0x40
+#define JOYBUS_CMD_DIRECT_GCN_KB	0x54
+
+#define SI_MKOUTBUF(cmd, output0, output1) \
+	(((u32)(cmd) << 16) | ((u32)(output0) << 8) | (u32)(output1))
+#define SI_MKPOLL(vbcpy, en, y, x) \
+	((((u32)(vbcpy) & 0x0f) << SI_POLL_VBCPY_SHIFT) | \
+	 (((u32)(en) & 0x0f) << SI_POLL_EN_SHIFT) | \
+	 (((u32)(y) & 0xff) << SI_POLL_Y_SHIFT) | \
+	 (((u32)(x) & 0x3ff) << SI_POLL_X_SHIFT))
+
+enum si_device_id {
+	SI_DEVICE_ID_N64_MIC		= 0x0001,
+	SI_DEVICE_ID_N64_KBD		= 0x0002,
+	SI_DEVICE_ID_GBA		= 0x0004,
+	SI_DEVICE_ID_N64_MOUSE		= 0x0200,
+	SI_DEVICE_ID_N64_CONTROLLER	= 0x0500,
+	SI_DEVICE_ID_GBA_2		= 0x0800,
+	SI_DEVICE_ID_GCN_KBD		= 0x0820,
+	SI_DEVICE_ID_STANDARD		= 0x0900,
+	SI_DEVICE_ID_WAVEBIRD_1		= 0xa800,
+	SI_DEVICE_ID_WAVEBIRD_2		= 0xe960,
+	SI_DEVICE_ID_WAVEBIRD_3		= 0xe9a0,
+	SI_DEVICE_ID_WAVEBIRD_4		= 0xebb0,
+};
+
+/* GameCube controller direct report */
+#define GCN_PAD_LSTICK_Y_SHIFT		0
+#define GCN_PAD_LSTICK_Y		(0xffu << GCN_PAD_LSTICK_Y_SHIFT)
+#define GCN_PAD_LSTICK_X_SHIFT		8
+#define GCN_PAD_LSTICK_X		(0xffu << GCN_PAD_LSTICK_X_SHIFT)
+#define GCN_PAD_LEFT			BIT(16)
+#define GCN_PAD_RIGHT			BIT(17)
+#define GCN_PAD_DOWN			BIT(18)
+#define GCN_PAD_UP			BIT(19)
+#define GCN_PAD_Z			BIT(20)
+#define GCN_PAD_RT			BIT(21)
+#define GCN_PAD_LT			BIT(22)
+#define GCN_PAD_A			BIT(24)
+#define GCN_PAD_B			BIT(25)
+#define GCN_PAD_X			BIT(26)
+#define GCN_PAD_Y			BIT(27)
+#define GCN_PAD_START			BIT(28)
+#define GCN_PAD_RTRIG_SHIFT		0
+#define GCN_PAD_RTRIG			(0xffu << GCN_PAD_RTRIG_SHIFT)
+#define GCN_PAD_LTRIG_SHIFT		8
+#define GCN_PAD_LTRIG			(0xffu << GCN_PAD_LTRIG_SHIFT)
+#define GCN_PAD_CSTICK_Y_SHIFT		16
+#define GCN_PAD_CSTICK_Y		(0xffu << GCN_PAD_CSTICK_Y_SHIFT)
+#define GCN_PAD_CSTICK_X_SHIFT		24
+#define GCN_PAD_CSTICK_X		(0xffu << GCN_PAD_CSTICK_X_SHIFT)
 
 
 struct si_keyboard_status {
@@ -85,8 +156,14 @@ struct si_keyboard_status {
 };
 
 enum si_control_type {
+	CTL_NONE,
 	CTL_PAD,
 	CTL_KEYBOARD,
+	CTL_GBA,
+	CTL_N64_PAD,
+	CTL_N64_KEYBOARD,
+	CTL_N64_MOUSE,
+	CTL_N64_MIC,
 	CTL_UNKNOWN
 };
 
@@ -99,7 +176,7 @@ struct si_port {
 	u32 id; /* SI id */
 
 	enum si_control_type type;
-	unsigned int raw[2];
+	bool registered;
 
 	struct input_dev *idev;
 	struct timer_list timer;
@@ -116,6 +193,7 @@ struct si_drvdata {
 #define SI_QUIESCE	(1<<0)
 
 	struct si_port ports[SI_MAX_PORTS];
+	struct delayed_work hotplug_work;
 
 	void __iomem *io_base;
 
@@ -149,6 +227,8 @@ __setup("force_keyboard_port=", si_force_keyboard_port_setup);
  *
  */
 
+static void si_drain_all_inbufs(void __iomem *io_base);
+
 static void si_reset_all(void __iomem *io_base)
 {
 	int i;
@@ -157,92 +237,184 @@ static void si_reset_all(void __iomem *io_base)
 
 	for (i = 0; i < SI_MAX_PORTS; ++i)
 		out_be32(io_base + SICOUTBUF(i), 0);
-	for (i = 0; i < SI_MAX_PORTS; ++i)
-		out_be32(io_base + SICINBUFH(i), 0);
-	for (i = 0; i < SI_MAX_PORTS; ++i)
-		out_be32(io_base + SICINBUFL(i), 0);
 	out_be32(io_base + SIPOLL, 0);
-	out_be32(io_base + SICOMCSR, 0);
-	out_be32(io_base + SISR, 0);
+	out_be32(io_base + SICOMCSR, SI_COMCSR_W1C_MASK);
+	out_be32(io_base + SISR, SI_SR_ALL_ERR_MASK);
 
-	/* these too... */
-	out_be32(io_base + 0x80, 0);
-	out_be32(io_base + 0x84, 0);
-	out_be32(io_base + 0x88, 0);
-	out_be32(io_base + 0x8c, 0);
-	out_be32(io_base + 0x90, 0);
-	out_be32(io_base + 0x94, 0);
-	out_be32(io_base + 0x98, 0);
-	out_be32(io_base + 0x9c, 0);
-	out_be32(io_base + 0xa0, 0);
-	out_be32(io_base + 0xa4, 0);
-	out_be32(io_base + 0xa8, 0);
-	out_be32(io_base + 0xac, 0);
+	for (i = 0; i < SI_BUF_SIZE / sizeof(u32); ++i)
+		out_be32(io_base + SIBUF(i), 0);
+
+	si_drain_all_inbufs(io_base);
+	out_be32(io_base + SIEXILK, 0);
 }
 
 static void si_set_rumbling(void __iomem *io_base, unsigned int index,
 			    int rumble)
 {
-	out_be32(io_base + SICOUTBUF(index), 0x00400000 | (rumble) ? 1 : 0);
-	out_be32(io_base + SISR, 0x80000000);
+	out_be32(io_base + SICOUTBUF(index),
+		 SI_MKOUTBUF(JOYBUS_CMD_DIRECT_GCN, 0, 0) |
+		 (rumble ? 1 : 0));
+	out_be32(io_base + SISR, SI_SR_WR);
 }
 
-static void si_wait_transfer_done(void __iomem *io_base)
+static void si_drain_inbuf(void __iomem *io_base, unsigned int index)
 {
-	unsigned long deadline = jiffies + 2*HZ;
-	int borked = 0;
+	u32 resp;
 
-	while (!(in_be32(io_base + SICOMCSR) & (1 << 31)) && !borked) {
+	resp = in_be32(io_base + SICINBUFH(index));
+	resp = in_be32(io_base + SICINBUFL(index));
+	(void)resp;
+}
+
+static void si_drain_all_inbufs(void __iomem *io_base)
+{
+	unsigned int i;
+
+	for (i = 0; i < SI_MAX_PORTS; ++i)
+		si_drain_inbuf(io_base, i);
+}
+
+static void si_clear_iobuf(void __iomem *io_base)
+{
+	unsigned int i;
+
+	for (i = 0; i < SI_BUF_SIZE / sizeof(u32); ++i)
+		out_be32(io_base + SIBUF(i), 0);
+}
+
+static int si_flush_poll_buffers(struct si_drvdata *drvdata)
+{
+	void __iomem *io_base = drvdata->io_base;
+	unsigned long deadline = jiffies + SI_TRANSFER_TIMEOUT;
+
+	out_be32(io_base + SISR, SI_SR_WR);
+	while (in_be32(io_base + SISR) & SI_SR_WR) {
+		if (time_after(jiffies, deadline)) {
+			dev_err(drvdata->dev, "SI buffer flush timed out\n");
+			return -ETIMEDOUT;
+		}
 		cpu_relax();
-		borked = time_after(jiffies, deadline);
 	}
 
-	if (borked) {
-		drv_printk(KERN_ERR, "serial transfer took too long, "
-			   "is your hardware ok?");
-	}
-
-	out_be32(io_base + SICOMCSR,
-		 in_be32(io_base + SICOMCSR) | (1 << 31)); /* ack IRQ */
+	return 0;
 }
 
-static u32 si_get_controller_id(void __iomem *io_base,
-					  unsigned int index)
+enum si_comerr_result {
+	SI_COMERR_NONE,
+	SI_COMERR_NOREP,
+	SI_COMERR_ERROR,
+};
+
+static enum si_comerr_result si_handle_comerr(struct si_drvdata *drvdata,
+					      unsigned int index)
 {
-	out_be32(io_base + SICOUTBUF(index), 0);
-	out_be32(io_base + SIPOLL, 0);
+	void __iomem *io_base = drvdata->io_base;
+	u32 sr;
 
-	out_be32(io_base + SISR, 0x80000000);
-	out_be32(io_base + SICOMCSR, 0xd0010001 | index << 1);
-	si_wait_transfer_done(io_base);
+	if (!(in_be32(io_base + SICOMCSR) & SI_COMCSR_COMERR))
+		return SI_COMERR_NONE;
 
-	return in_be32(io_base + 0x80) >> 16;
+	sr = in_be32(io_base + SISR);
+	out_be32(io_base + SISR, SI_SR_ERR_MASK(index));
+
+	/* FIXME: Latte always reports COLL; add quirk if this driver is ever to work on it */
+	if (sr & (SI_SR_COLL(index) | SI_SR_OVRUN(index) |
+		  SI_SR_UNRUN(index))) {
+		dev_warn(drvdata->dev,
+			 "port %u transfer error: no response=%u collision=%u overrun=%u underrun=%u\n",
+			 index + 1, !!(sr & SI_SR_NOREP(index)),
+			 !!(sr & SI_SR_COLL(index)),
+			 !!(sr & SI_SR_OVRUN(index)),
+			 !!(sr & SI_SR_UNRUN(index)));
+		return SI_COMERR_ERROR;
+	}
+
+	return SI_COMERR_NOREP;
+}
+
+static int si_wait_transfer_done(struct si_drvdata *drvdata,
+				 unsigned int index)
+{
+	void __iomem *io_base = drvdata->io_base;
+	unsigned long deadline = jiffies + SI_TRANSFER_TIMEOUT;
+
+	while (!(in_be32(io_base + SICOMCSR) & SI_COMCSR_TCINT)) {
+		if (time_after(jiffies, deadline)) {
+			dev_err(drvdata->dev,
+				"port %u serial transfer timed out\n",
+				index + 1);
+			return -ETIMEDOUT;
+		}
+		cpu_relax();
+	}
+
+	out_be32(io_base + SICOMCSR, SI_COMCSR_TCINT);
+	return 0;
+}
+
+static int si_transfer(struct si_drvdata *drvdata, unsigned int index,
+		       u32 out, unsigned int out_len, unsigned int in_len,
+		       u32 *resp)
+{
+	void __iomem *io_base = drvdata->io_base;
+	enum si_comerr_result comerr;
+	u32 comcsr;
+	int error;
+
+	out_be32(io_base + SICOMCSR, SI_COMCSR_W1C_MASK);
+	si_drain_all_inbufs(io_base);
+	si_clear_iobuf(io_base);
+
+	out_be32(io_base + SIBUF(0), out);
+	comcsr = (out_len << SI_COMCSR_OUTLEN_SHIFT) |
+		 (in_len << SI_COMCSR_INLEN_SHIFT) |
+		 (index << SI_COMCSR_CHAN_SHIFT) |
+		 SI_COMCSR_TSTART;
+	out_be32(io_base + SICOMCSR, comcsr);
+
+	error = si_wait_transfer_done(drvdata, index);
+	if (error)
+		return error;
+
+	comerr = si_handle_comerr(drvdata, index);
+	if (comerr == SI_COMERR_NOREP)
+		return -ENODEV;
+	if (comerr == SI_COMERR_ERROR)
+		return -EIO;
+
+	if (resp)
+		*resp = in_be32(io_base + SIBUF(0));
+	return 0;
 }
 
 static void si_setup_polling(struct si_drvdata *drvdata)
 {
 	void __iomem *io_base = drvdata->io_base;
-	unsigned long pad_bits = 0;
+	unsigned int poll_bits = 0;
 	int i;
+
+	out_be32(io_base + SIPOLL, 0);
 
 	for (i = 0; i < SI_MAX_PORTS; ++i) {
 		switch (drvdata->ports[i].type) {
 		case CTL_PAD:
-			out_be32(io_base + SICOUTBUF(i), 0x00400300);
+			out_be32(io_base + SICOUTBUF(i),
+				 SI_MKOUTBUF(JOYBUS_CMD_DIRECT_GCN, 0x03, 0));
 			break;
 		case CTL_KEYBOARD:
-			out_be32(io_base + SICOUTBUF(i), 0x00540000);
+			out_be32(io_base + SICOUTBUF(i),
+				 SI_MKOUTBUF(JOYBUS_CMD_DIRECT_GCN_KB, 0, 0));
 			break;
 		default:
 			continue;
 		}
-		pad_bits |= 1 << (7 - i);
+		poll_bits |= 1 << (SI_POLL_EN_SHIFT + (3 - i));
 	}
-	out_be32(io_base + SIPOLL, 0x00f70200 | pad_bits);
 
-	out_be32(io_base + SISR, 0x80000000);
-	out_be32(io_base + SICOMCSR, 0xc0010801);
-	si_wait_transfer_done(io_base);
+	out_be32(io_base + SIPOLL, SI_MKPOLL(0, poll_bits >> SI_POLL_EN_SHIFT,
+					     1, 7));
+	si_flush_poll_buffers(drvdata);
+	out_be32(io_base + SICOMCSR, SI_COMCSR_W1C_MASK);
 }
 
 static void si_timer(struct timer_list *t)
@@ -256,61 +428,70 @@ static void si_timer(struct timer_list *t)
 	unsigned char oldkey;
 	int i;
 
+	if (!port->registered || !port->idev)
+		goto out;
+
 	raw[0] = in_be32(io_base + SICINBUFH(index));
 	raw[1] = in_be32(io_base + SICINBUFL(index));
 
 	switch (port->type) {
 	case CTL_PAD:
 		/* buttons */
-		input_report_key(port->idev, BTN_A, raw[0] & PAD_A);
-		input_report_key(port->idev, BTN_B, raw[0] & PAD_B);
-		input_report_key(port->idev, BTN_X, raw[0] & PAD_X);
-		input_report_key(port->idev, BTN_Y, raw[0] & PAD_Y);
-		input_report_key(port->idev, BTN_Z, raw[0] & PAD_Z);
+		input_report_key(port->idev, BTN_A, raw[0] & GCN_PAD_A);
+		input_report_key(port->idev, BTN_B, raw[0] & GCN_PAD_B);
+		input_report_key(port->idev, BTN_X, raw[0] & GCN_PAD_X);
+		input_report_key(port->idev, BTN_Y, raw[0] & GCN_PAD_Y);
+		input_report_key(port->idev, BTN_Z, raw[0] & GCN_PAD_Z);
 		input_report_key(port->idev, BTN_TL,
-				 raw[0] & PAD_LT);
+				 raw[0] & GCN_PAD_LT);
 		input_report_key(port->idev, BTN_TR,
-				 raw[0] & PAD_RT);
+				 raw[0] & GCN_PAD_RT);
 		input_report_key(port->idev, BTN_START,
-				 raw[0] & PAD_START);
-		input_report_key(port->idev, BTN_0, raw[0] & PAD_UP);
-		input_report_key(port->idev, BTN_1, raw[0] & PAD_RIGHT);
-		input_report_key(port->idev, BTN_2, raw[0] & PAD_DOWN);
-		input_report_key(port->idev, BTN_3, raw[0] & PAD_LEFT);
+				 raw[0] & GCN_PAD_START);
+		input_report_key(port->idev, BTN_0, raw[0] & GCN_PAD_UP);
+		input_report_key(port->idev, BTN_1, raw[0] & GCN_PAD_RIGHT);
+		input_report_key(port->idev, BTN_2, raw[0] & GCN_PAD_DOWN);
+		input_report_key(port->idev, BTN_3, raw[0] & GCN_PAD_LEFT);
 
 		/* axis */
 		/* a stick */
 		input_report_abs(port->idev, ABS_X,
-				 raw[0] >> 8 & 0xFF);
+				 (raw[0] & GCN_PAD_LSTICK_X) >>
+				 GCN_PAD_LSTICK_X_SHIFT);
 		input_report_abs(port->idev, ABS_Y,
-				 0xFF - (raw[0] >> 0 & 0xFF));
+				 0xFF - ((raw[0] & GCN_PAD_LSTICK_Y) >>
+					 GCN_PAD_LSTICK_Y_SHIFT));
 
 		/* b pad */
-		if (raw[0] & PAD_RIGHT)
+		if (raw[0] & GCN_PAD_RIGHT)
 			input_report_abs(port->idev, ABS_HAT0X, 1);
-		else if (raw[0] & PAD_LEFT)
+		else if (raw[0] & GCN_PAD_LEFT)
 			input_report_abs(port->idev, ABS_HAT0X, -1);
 		else
 			input_report_abs(port->idev, ABS_HAT0X, 0);
 
-		if (raw[0] & PAD_DOWN)
+		if (raw[0] & GCN_PAD_DOWN)
 			input_report_abs(port->idev, ABS_HAT0Y, 1);
-		else if (raw[0] & PAD_UP)
+		else if (raw[0] & GCN_PAD_UP)
 			input_report_abs(port->idev, ABS_HAT0Y, -1);
 		else
 			input_report_abs(port->idev, ABS_HAT0Y, 0);
 
 		/* c stick */
 		input_report_abs(port->idev, ABS_RX,
-				 raw[1] >> 24 & 0xFF);
+				 (raw[1] & GCN_PAD_CSTICK_X) >>
+				 GCN_PAD_CSTICK_X_SHIFT);
 		input_report_abs(port->idev, ABS_RY,
-				 raw[1] >> 16 & 0xFF);
+				 (raw[1] & GCN_PAD_CSTICK_Y) >>
+				 GCN_PAD_CSTICK_Y_SHIFT);
 
 		/* triggers */
 		input_report_abs(port->idev, ABS_BRAKE,
-				 raw[1] >> 8 & 0xFF);
+				 (raw[1] & GCN_PAD_LTRIG) >>
+				 GCN_PAD_LTRIG_SHIFT);
 		input_report_abs(port->idev, ABS_GAS,
-				 raw[1] >> 0 & 0xFF);
+				 (raw[1] & GCN_PAD_RTRIG) >>
+				 GCN_PAD_RTRIG_SHIFT);
 
 		break;
 
@@ -353,7 +534,9 @@ static void si_timer(struct timer_list *t)
 
 	input_sync(port->idev);
 
-	if (!(port->drvdata->flags & SI_QUIESCE))
+out:
+	if (port->registered && port->idev &&
+	    !(port->drvdata->flags & SI_QUIESCE))
 		mod_timer(&port->timer, jiffies + SI_REFRESH_TIME);
 }
 
@@ -397,7 +580,6 @@ static int si_event(struct input_dev *idev, unsigned int type,
 
 static int si_setup_pad(struct input_dev *idev)
 {
-	struct ff_device *ff;
 	int retval;
 
 	set_bit(EV_KEY, idev->evbit);
@@ -467,7 +649,6 @@ static int si_setup_pad(struct input_dev *idev)
 	retval = input_ff_create(idev, 1);
 	if (retval)
 		return retval;
-	ff = idev->ff;
 	idev->event = si_event;
 	return 0;
 }
@@ -483,67 +664,99 @@ static void si_setup_keyboard(struct input_dev *idev)
 		set_bit(gamecube_keymap[i], idev->keybit);
 }
 
-static int si_port_probe(struct si_port *port)
+static const char *si_type_name(enum si_control_type type)
 {
-	unsigned int index;
-	void __iomem *io_base;
-	struct input_dev *idev;
-	int retval = 0, tries = 5;
-
-	index = port->index;
-	io_base = port->drvdata->io_base;
-
-	/*
-	 * Determine input device type from SI id.
-	 */
-	port->id = si_get_controller_id(io_base, index);
-	/* some controllers are weird, try it again a few times if we got nothing, with exponential backoff */
-	while (!port->id && tries) {
-		udelay(20000 / tries);
-		port->id = si_get_controller_id(io_base, index);
-		tries--;
+	switch (type) {
+	case CTL_NONE:
+		return "not present";
+	case CTL_PAD:
+		return "GameCube controller";
+	case CTL_KEYBOARD:
+		return "GameCube ASCII keyboard";
+	case CTL_GBA:
+		return "Game Boy Advance";
+	case CTL_N64_PAD:
+		return "N64 controller";
+	case CTL_N64_KEYBOARD:
+		return "N64 keyboard";
+	case CTL_N64_MOUSE:
+		return "N64 mouse";
+	case CTL_N64_MIC:
+		return "N64 microphone";
+	default:
+		return "unknown";
 	}
-	if (port->id == ID_PAD) {
-		port->type = CTL_PAD;
-		strcpy(port->name, "standard pad");
-	} else if (port->id & ID_WIRELESS_BIT) {
-		/* wireless pad */
-		port->type = CTL_PAD;
-		strcpy(port->name, (port->id & ID_WAVEBIRD_BIT) ?
-		       "Nintendo Wavebird" : "wireless pad");
-	} else if (port->id == ID_KEYBOARD) {
-		port->type = CTL_KEYBOARD;
-		strcpy(port->name, "keyboard");
-	} else {
-		port->type = CTL_UNKNOWN;
-		if (port->id) {
-			sprintf(port->name, "unknown (%x)",
-				port->id);
-#ifdef HACK_FORCE_KEYBOARD_PORT
-			if (index+1 == si_force_keyboard_port) {
-				drv_printk(KERN_WARNING,
-					  "port %d forced to keyboard mode\n",
-					  index+1);
-				port->id = ID_KEYBOARD;
-				port->type = CTL_KEYBOARD;
-				strcpy(port->name, "keyboard (forced)");
-			}
-#endif /* HACK_FORCE_KEYBOARD_PORT */
-		} else {
-			strcpy(port->name, "not present");
+}
+
+static bool si_type_supported(enum si_control_type type)
+{
+	return type == CTL_PAD || type == CTL_KEYBOARD;
+}
+
+static enum si_control_type si_decode_device_id(u32 id)
+{
+	switch (id) {
+	case SI_DEVICE_ID_STANDARD:
+	case SI_DEVICE_ID_WAVEBIRD_1:
+	case SI_DEVICE_ID_WAVEBIRD_2:
+	case SI_DEVICE_ID_WAVEBIRD_3:
+	case SI_DEVICE_ID_WAVEBIRD_4:
+		return CTL_PAD;
+	case SI_DEVICE_ID_GCN_KBD:
+		return CTL_KEYBOARD;
+	case SI_DEVICE_ID_GBA:
+	case SI_DEVICE_ID_GBA_2:
+		return CTL_GBA;
+	case SI_DEVICE_ID_N64_CONTROLLER:
+		return CTL_N64_PAD;
+	case SI_DEVICE_ID_N64_KBD:
+		return CTL_N64_KEYBOARD;
+	case SI_DEVICE_ID_N64_MOUSE:
+		return CTL_N64_MOUSE;
+	case SI_DEVICE_ID_N64_MIC:
+		return CTL_N64_MIC;
+	case 0:
+	case 0xffff:
+		return CTL_NONE;
+	default:
+		return CTL_UNKNOWN;
+	}
+}
+
+static int si_probe_port_id(struct si_port *port, u32 *id)
+{
+	unsigned int tries = port->type == CTL_NONE ? 10 : 1;
+	u32 resp = 0;
+	int error;
+
+	while (tries--) {
+		error = si_transfer(port->drvdata, port->index,
+				    SI_MKOUTBUF(JOYBUS_CMD_STATUS, 0, 0),
+				    1, 3, &resp);
+		if (!error) {
+			*id = resp >> 16;
+			return 0;
 		}
+
+		if (error == -ETIMEDOUT)
+			return error;
+
+		udelay(2000);
 	}
 
-	if (port->type == CTL_UNKNOWN) {
-		retval = -ENODEV;
-		goto done;
-	}
+	*id = 0xffff;
+	return -ENODEV;
+}
+
+static int si_register_port(struct si_port *port)
+{
+	struct input_dev *idev;
+	int retval = 0;
 
 	idev = input_allocate_device();
 	if (!idev) {
-		drv_printk(KERN_ERR, "failed to allocate input_dev\n");
-		retval = -ENOMEM;
-		goto done;
+		dev_err(port->drvdata->dev, "failed to allocate input_dev\n");
+		return -ENOMEM;
 	}
 
 	idev->open = si_open;
@@ -563,14 +776,120 @@ static int si_port_probe(struct si_port *port)
 
 	if (retval) {
 		input_free_device(idev);
-		goto done;
+		return retval;
 	}
 
 	input_set_drvdata(idev, port);
 	port->idev = idev;
+	retval = input_register_device(idev);
+	if (retval) {
+		dev_err(port->drvdata->dev,
+			"input device registration failed (%d) for port %u\n",
+			retval, port->index + 1);
+		input_free_device(idev);
+		port->idev = NULL;
+		return retval;
+	}
 
-done:
-	return retval;
+	port->registered = true;
+	return 0;
+}
+
+static void si_unregister_port(struct si_port *port)
+{
+	struct input_dev *idev = port->idev;
+
+	if (!idev)
+		return;
+
+	port->registered = false;
+	timer_delete_sync(&port->timer);
+	port->idev = NULL;
+	input_unregister_device(idev);
+	memset(&port->keyboard, 0, sizeof(port->keyboard));
+}
+
+static void si_update_port(struct si_port *port)
+{
+	enum si_control_type old_type = port->type;
+	enum si_control_type new_type;
+	u32 id;
+	int error;
+
+	error = si_probe_port_id(port, &id);
+	if (error == -ETIMEDOUT)
+		return;
+
+	if (error == -ENODEV)
+		new_type = CTL_NONE;
+	else
+		new_type = si_decode_device_id(id);
+
+#ifdef HACK_FORCE_KEYBOARD_PORT
+	if (new_type == CTL_UNKNOWN && port->index + 1 == si_force_keyboard_port) {
+		dev_warn(port->drvdata->dev, "port %u forced to keyboard mode\n",
+			 port->index + 1);
+		id = SI_DEVICE_ID_GCN_KBD;
+		new_type = CTL_KEYBOARD;
+	}
+#endif /* HACK_FORCE_KEYBOARD_PORT */
+
+	if (old_type == new_type && port->id == id) {
+		if (!port->registered && si_type_supported(new_type))
+			si_register_port(port);
+		return;
+	}
+
+	if (port->registered)
+		si_unregister_port(port);
+
+	port->id = id;
+	port->type = new_type;
+	snprintf(port->name, sizeof(port->name), "%s", si_type_name(new_type));
+
+	if (new_type == CTL_UNKNOWN)
+		dev_info(port->drvdata->dev, "port %u: unknown device 0x%04x\n",
+			 port->index + 1, id);
+	else if (new_type == CTL_NONE)
+		dev_info(port->drvdata->dev, "port %u: disconnected\n",
+			 port->index + 1);
+	else
+		dev_info(port->drvdata->dev, "port %u: %s (0x%04x)%s\n",
+			 port->index + 1, si_type_name(new_type), id,
+			 si_type_supported(new_type) ? "" : " unsupported");
+
+	if (si_type_supported(new_type))
+		si_register_port(port);
+}
+
+static void si_scan_ports(struct si_drvdata *drvdata)
+{
+	int i;
+
+	out_be32(drvdata->io_base + SIPOLL, 0);
+	if (si_flush_poll_buffers(drvdata))
+		return;
+	si_drain_all_inbufs(drvdata->io_base);
+
+	for (i = 0; i < SI_MAX_PORTS; ++i)
+		si_update_port(&drvdata->ports[i]);
+
+	si_setup_polling(drvdata);
+}
+
+static void si_hotplug_work(struct work_struct *work)
+{
+	struct si_drvdata *drvdata =
+		container_of(to_delayed_work(work), struct si_drvdata,
+			     hotplug_work);
+
+	if (drvdata->flags & SI_QUIESCE)
+		return;
+
+	si_scan_ports(drvdata);
+
+	if (!(drvdata->flags & SI_QUIESCE))
+		schedule_delayed_work(&drvdata->hotplug_work, SI_HOTPLUG_TIME);
 }
 
 /*
@@ -582,34 +901,27 @@ static int si_init(struct si_drvdata *drvdata, struct resource *mem)
 {
 	struct si_port *port;
 	int index;
-	int retval;
-	int error;
 
 	drvdata->io_base = ioremap(mem->start, mem->end - mem->start + 1);
+	if (!drvdata->io_base)
+		return -ENOMEM;
 
+	INIT_DELAYED_WORK(&drvdata->hotplug_work, si_hotplug_work);
 	si_reset_all(drvdata->io_base);
+
 	for (index = 0; index < SI_MAX_PORTS; ++index) {
 		port = &drvdata->ports[index];
 
 		memset(port, 0, sizeof(*port));
 		port->index = index;
 		port->drvdata = drvdata;
-
-		retval = si_port_probe(port);
-		drv_printk(KERN_INFO, "port %d: %s\n",
-			   index+1, port->name ? port->name : "(null)");
-		if (!retval) {
-			error = input_register_device(port->idev);
-			if (error) {
-				drv_printk(KERN_ERR,
-					   "input device registration failed"
-					   " (%d) for port %d", error, index+1);
-				port->idev = NULL;
-			}
-		}
+		port->type = CTL_NONE;
+		snprintf(port->name, sizeof(port->name), "%s",
+			 si_type_name(CTL_NONE));
 	}
 
-	si_setup_polling(drvdata);
+	si_scan_ports(drvdata);
+	schedule_delayed_work(&drvdata->hotplug_work, SI_HOTPLUG_TIME);
 
 	return 0;
 }
@@ -619,13 +931,16 @@ static void si_exit(struct si_drvdata *drvdata)
 	struct si_port *port;
 	int index;
 
+	drvdata->flags |= SI_QUIESCE;
+	cancel_delayed_work_sync(&drvdata->hotplug_work);
+
 	for (index = 0; index < SI_MAX_PORTS; ++index) {
 		port = &drvdata->ports[index];
-		if (port->idev)
-			input_unregister_device(port->idev);
+		si_unregister_port(port);
 	}
 
 	if (drvdata->io_base) {
+		si_reset_all(drvdata->io_base);
 		iounmap(drvdata->io_base);
 		drvdata->io_base = NULL;
 	}
@@ -677,6 +992,7 @@ static int si_do_shutdown(struct device *dev)
 
 	if (drvdata) {
 		drvdata->flags |= SI_QUIESCE;
+		cancel_delayed_work_sync(&drvdata->hotplug_work);
 		for (i = 0; i < SI_MAX_PORTS; ++i)
 			timer_delete_sync(&drvdata->ports[i].timer);
 		si_reset_all(drvdata->io_base);
@@ -714,7 +1030,7 @@ static void si_of_shutdown(struct platform_device *odev)
 	si_do_shutdown(&odev->dev);
 }
 
-static struct of_device_id si_of_match[] = {
+static const struct of_device_id si_of_match[] = {
 	{ .compatible = "nintendo,flipper-si" },
 	{ .compatible = "nintendo,hollywood-si" },
 	{ },
