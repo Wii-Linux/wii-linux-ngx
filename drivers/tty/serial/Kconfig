@@ -1594,11 +1594,13 @@ config SERIAL_NUVOTON_MA35D1_CONSOLE
 
 config SERIAL_USBGECKO
 	tristate "USBGecko adapter on the Nintendo GameCube/Wii"
-	depends on GAMECUBE_EXI
+	depends on SPI
 	select SERIAL_CORE
 	help
 	  This is a driver for the USB Gecko adapter for the Nintendo GameCube
 	  and Wii gaming consoles. It provides a console and a tty interface.
+
+	  It can also work on any other SPI-compatible host, if wired properly.
 
 	  If you have an adapter like this, say Y here, otherwise say N.
 
