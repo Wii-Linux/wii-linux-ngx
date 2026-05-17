@@ -209,14 +209,7 @@ static unsigned int exi_speed_exi_to_spi(unsigned int idx)
 
 static bool exi_is_hotplug_slot(unsigned int channel, unsigned int cs)
 {
-	if (channel == 0 && (cs == 0 || cs == 2))
-		return true;
-	if (channel == 1 && cs == 0)
-		return true;
-	if (channel == 2 && cs == 0)
-		return true;
-
-	return false;
+	return cs == 0 && (channel == 0 || channel == 1);
 }
 
 static bool exi_ext_present(struct exi_channel *channel)
@@ -566,12 +559,46 @@ static struct exi_id_entry *exi_id_to_entry(u32 id)
 }
 
 /*
+ * Check for a few classes of devices that don't
+ * report a standard EXI ID
+ */
+static void exi_probe_noid(struct exi_spi *exi,
+			   unsigned int channel,
+			   unsigned int cs,
+			   char **modalias,
+			   u32 *speed)
+{
+	u16 resp, cmd = 0x9000;
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return;
+
+	exi_lock(ch);                         /* grab (or wait for) lock on channel */
+	exi_select(ch, cs, EXI_CSR_CLK_8MHZ); /* select this device */
+	exi_rdwr_imm(ch, 2, &cmd, &resp);     /* send USB Gecko ID command */
+	exi_deselect(ch);                     /* deselect this device */
+	exi_unlock(ch);                       /* release lock on the channel */
+
+	if (resp == 0x0470) {
+		*modalias = "exi-usb-gecko";
+		*speed = EXI_CSR_CLK_32MHZ;
+	}
+	else {
+		/* assume SD Card */
+		*modalias = "mmc-spi-slot";
+		*speed = EXI_CSR_CLK_32MHZ;
+	}
+}
+
+
+/*
  * Probe what device is on a given channel + CS, and
  * create a new SPI device for it.
  */
 static int exi_probe(struct exi_spi *exi,
-		      unsigned int channel,
-		      unsigned int cs)
+		     unsigned int channel,
+		     unsigned int cs)
 {
 	char *name, *modalias;
 	struct spi_device *device;
@@ -587,13 +614,10 @@ static int exi_probe(struct exi_spi *exi,
 		name = ent->name;
 		modalias = ent->modalias;
 		speed = ent->speed;
-	} else {
-		name = "Unknown";
-		modalias = "none";
-		speed = EXI_CSR_CLK_8MHZ;
+		dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
 	}
-
-	dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
+	else
+		dev_info(exi->dev, "[%d:%d]: Bogus ID: 0x%08x, trying exi_probe_noid\n", channel, cs, id);
 
 	/* clear our spi_board_info */
 	memset(&info, 0, sizeof(struct spi_board_info));
@@ -606,23 +630,8 @@ static int exi_probe(struct exi_spi *exi,
 	}
 
 	/* FIXME: Really should autodetect, this is just blatant guessing */
-	if (!ent && channel == 0 && cs == 0) {
-		/* assume SDGecko in Slot-A */
-		modalias = "mmc-spi-slot";
-		speed = EXI_CSR_CLK_16MHZ;
-	}
-
-	if (!ent && channel == 2 && cs == 0) {
-		/* assume SD2SP2 */
-		modalias = "mmc-spi-slot";
-		speed = EXI_CSR_CLK_16MHZ;
-	}
-
-	if (!ent && channel == 1 && cs == 0) {
-		/* assume USB Gecko in Slot-B */
-		modalias = "exi-usb-gecko";
-		speed = EXI_CSR_CLK_32MHZ;
-	}
+	if (!ent)
+		exi_probe_noid(exi, channel, cs, &modalias, &speed);
 
 	dev_info(exi->dev, "[%d:%d]: new modalias: %s\n", channel, cs, modalias);
 
@@ -674,13 +683,19 @@ static void exi_remove_device(struct exi_spi *exi,
 static void exi_rescan_slot(struct exi_spi *exi,
 			    unsigned int channel, unsigned int cs)
 {
-	bool present = exi_slot_present(exi, channel, cs);
+	bool present;
 
-	if (present) {
+	if (exi_is_hotplug_slot(channel, cs)) {
+		present = exi_slot_present(exi, channel, cs);
+
+		if (present) {
+			if (!exi->channels[channel].devices[cs])
+				exi_probe(exi, channel, cs);
+		} else if (exi->channels[channel].devices[cs])
+			exi_remove_device(exi, channel, cs);
+	} else {
 		if (!exi->channels[channel].devices[cs])
 			exi_probe(exi, channel, cs);
-	} else if (exi->channels[channel].devices[cs]) {
-		exi_remove_device(exi, channel, cs);
 	}
 }
 
@@ -688,10 +703,14 @@ static void exi_rescan_channel(struct exi_spi *exi, unsigned int channel)
 {
 	unsigned int cs;
 
-	for (cs = 0; cs < 3; cs++) {
-		if (exi_is_hotplug_slot(channel, cs))
+	if (channel == 0) {
+		for (cs = 0; cs < 3; cs++)
 			exi_rescan_slot(exi, channel, cs);
 	}
+	else if (channel == 1)
+		exi_rescan_slot(exi, channel, 0);
+	else if (channel == 2)
+		exi_rescan_slot(exi, channel, 0);
 }
 
 static void exi_hotplug_work(struct work_struct *work)
@@ -701,7 +720,7 @@ static void exi_hotplug_work(struct work_struct *work)
 
 	for (channel = 0; channel < 3; channel++) {
 		if (test_and_clear_bit(channel, &exi->pending_hotplug))
-			exi_rescan_channel(exi, channel);
+			exi_rescan_slot(exi, channel, 0);
 	}
 }
 
