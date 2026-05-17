@@ -494,7 +494,7 @@ static int ug_probe(struct spi_device *spi_device)
 	struct tty_port *port;
 
 	dev_info(&spi_device->dev, "probing for channel %d, device %d\n",
-	spi_device->controller->bus_num, spi_get_chipselect(spi_device));
+	spi_device->controller->bus_num, spi_get_chipselect(spi_device, 0));
 
 	/* don't try to drive a device which already has a real identifier */
 #if 0
@@ -554,7 +554,7 @@ static void ug_remove(struct spi_device *spi_device)
 	unsigned int slot;
 
 	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
-	spi_device->controller->bus_num, spi_get_chipselect(spi_device));
+	spi_device->controller->bus_num, spi_get_chipselect(spi_device, 0));
 
 	slot = spi_device->controller->bus_num;
 	console = &ug_consoles[slot];
