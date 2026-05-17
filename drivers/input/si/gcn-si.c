@@ -41,10 +41,7 @@
 #define DRV_AUTHOR       "Steven Looman <steven@krx.nl>, " \
 			 "Albert Herranz"
 
-static char si_driver_version[] = "1.0i";
-
-#define drv_printk(level, format, arg...) \
-	 printk(level DRV_MODULE_NAME ": " format , ## arg)
+static const char si_driver_version[] = "1.1t";
 
 #define SI_MAX_PORTS		4		/* the four controller ports */
 #define SI_REFRESH_TIME		(HZ/100)	/* input polling interval */
@@ -956,7 +953,7 @@ static int si_do_probe(struct device *dev, struct resource *mem)
 
 	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata) {
-		drv_printk(KERN_ERR, "failed to allocate si_drvdata\n");
+		dev_err(dev, "failed to allocate si_drvdata\n");
 		return -ENOMEM;
 	}
 	dev_set_drvdata(dev, drvdata);
@@ -1011,7 +1008,7 @@ static int si_of_probe(struct platform_device *odev)
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &mem);
 	if (retval) {
-		drv_printk(KERN_ERR, "no io memory range found\n");
+		dev_err(odev->dev, "no io memory range found\n");
 		return -ENODEV;
 	}
 
@@ -1056,7 +1053,7 @@ static struct platform_driver si_of_driver = {
 
 static int __init si_init_module(void)
 {
-	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
+	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   si_driver_version);
 
 	return platform_driver_register(&si_of_driver);
