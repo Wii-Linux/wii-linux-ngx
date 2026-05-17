@@ -89,6 +89,15 @@ config N64CART
 	help
 	  Support for the N64 cart.
 
+config BLK_DEV_HLWD_DI
+	tristate "Nintendo Hollywood Drive Interface support"
+	depends on WII || GAMECUBE
+	depends on OF && GPIOLIB
+	help
+	  This enables read-only block device support for the optical disc
+	  drive interface found in the Nintendo Wii Hollywood chipset. Wii
+	  support is implemented first; GameCube support will be added later.
+
 config CDROM
 	tristate
 
