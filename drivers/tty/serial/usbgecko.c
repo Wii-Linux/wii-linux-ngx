@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/serial/usbgecko.c
  *
  * Console and TTY driver for the USB Gecko adapter.
  * Copyright (C) 2008-2009 The GameCube Linux Team
  * Copyright (C) 2008,2009 Albert Herranz
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * 
- * This file has been modified from it's original state
- * to allow it to work properly on modern kernels
+ * Copyright (C) 2024,2025 Michael "Techflash" Garofalo
  */
 
 #define UG_DEBUG
@@ -34,12 +27,9 @@
 
 #define DRV_MODULE_NAME "usbgecko"
 #define DRV_DESCRIPTION "Console and TTY driver for the USB Gecko adapter"
-#define DRV_AUTHOR      "Albert Herranz and Techflash"
+#define DRV_AUTHOR      "Albert Herranz, Michael \"Techflash\" Garofalo"
 
-static char ug_driver_version[] = "0.3";
-
-#define drv_printk(level, format, arg...) \
-	printk(level DRV_MODULE_NAME ": " format , ## arg)
+static char ug_driver_version[] = "0.3.1";
 
 /*
  *
@@ -115,7 +105,7 @@ static int ug_check_adapter(struct exi_device *exi_device)
 		msleep(50); // give it some time to wake up
 	}
 
-	drv_printk(KERN_ERR, "check failed, got 0x%04x from 0x9000\n", data);
+	dev_err(&exi_device->dev, "check failed, got 0x%04x from 0x9000\n", data);
 	return 0;
 
 }
@@ -381,7 +371,7 @@ static int ug_tty_open(struct tty_struct *tty, struct file *filp)
 	if (!adapter->refcnt) {
 		adapter->poller = kthread_run(ug_tty_poller, tty, "kugtty");
 		if (IS_ERR(adapter->poller)) {
-			drv_printk(KERN_ERR, "error creating poller thread\n");
+			dev_err(&adapter->exi_device->dev, "error creating poller thread\n");
 			mutex_unlock(&adapter->mutex);
 			return -ENOMEM;
 		}
@@ -543,18 +533,18 @@ static int ug_probe(struct exi_device *exi_device)
 	unsigned int slot;
 	struct tty_port *port;
 
-	drv_printk(KERN_INFO, "probing for channel %d, device %d\n",
+	dev_info(&exi_device->dev, "probing for channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
 
 	/* don't try to drive a device which already has a real identifier */
 	if (exi_device->eid.id != EXI_ID_NONE) {
-		drv_printk(KERN_ERR, "device ID is not NONE (0x%x), skipping\n",
+		dev_err(&exi_device->dev, "device ID is not NONE (0x%x), skipping\n",
 		        exi_device->eid.id);
 		return -ENODEV;
 	}
 
 	if (!ug_check_adapter(exi_device)) {
-		drv_printk(KERN_ERR, "check_adapter() failed\n");
+		dev_err(&exi_device->dev, "check_adapter() failed\n");
 		return -ENODEV;
 	}
 
@@ -564,7 +554,7 @@ static int ug_probe(struct exi_device *exi_device)
 	adapter = console->data;
 
 	if (!ug_tty_driver->ports[slot]) {
-		drv_printk(KERN_INFO, "initializing console on slot %c\n", 'A'+slot);
+		dev_info(&exi_device->dev, "initializing console on slot %c\n", 'A'+slot);
 		port = kmalloc(sizeof(*port), GFP_KERNEL);
 
 		if (!port)
@@ -576,7 +566,7 @@ static int ug_probe(struct exi_device *exi_device)
 	}
 
 
-	drv_printk(KERN_INFO, "USB Gecko detected in memcard slot-%c\n",
+	dev_info(&exi_device->dev, "USB Gecko detected in memcard slot-%c\n",
 		   'A'+slot);
 
 	adapter->poller = ERR_PTR(-EINVAL);
@@ -601,7 +591,7 @@ static void ug_remove(struct exi_device *exi_device)
 	struct ug_adapter *adapter;
 	unsigned int slot;
 
-	drv_printk(KERN_INFO, "removing device on channel %d, device %d\n",
+	dev_info(&exi_device->dev, "removing device on channel %d, device %d\n",
 	exi_device->eid.channel, exi_device->eid.device);
 
 	slot = to_channel(exi_get_exi_channel(exi_device));
@@ -609,7 +599,7 @@ static void ug_remove(struct exi_device *exi_device)
 	adapter = console->data;
 
 	if (adapter->refcnt)
-		drv_printk(KERN_ERR, "adapter removed while in use!\n");
+		dev_err(&exi_device->dev, "adapter removed while in use!\n");
 
 	unregister_console(console);
 
@@ -629,7 +619,7 @@ static void ug_remove(struct exi_device *exi_device)
 
 	mutex_destroy(&adapter->mutex);
 
-	drv_printk(KERN_INFO, "USB Gecko removed from memcard slot-%c\n",
+	dev_info(&exi_device->dev, "USB Gecko removed from memcard slot-%c\n",
 		   'A'+slot);
 }
 
@@ -666,7 +656,7 @@ static struct exi_driver ug_exi_driver = {
 
 static int __init ug_init_module(void)
 {
-	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
+	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   ug_driver_version);
 
 	return exi_driver_register(&ug_exi_driver);
