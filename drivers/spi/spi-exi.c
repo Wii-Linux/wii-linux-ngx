@@ -60,6 +60,7 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 
 
 /*
@@ -80,6 +81,10 @@ struct exi_regs {
 /*
  * Hardware register values, masks, and shifts
  */
+#define EXI_CSR_EXIINTMASK   BIT(0)
+#define EXI_CSR_EXIINT       BIT(1)
+#define EXI_CSR_TCINTMASK    BIT(2)
+#define EXI_CSR_TCINT        BIT(3)
 #define EXI_CSR_CLK_SHIFT    4
 #define EXI_CSR_CLK          (7 << EXI_CSR_CLK_SHIFT)
 #define   EXI_CSR_CLK_64MHZ    (6 << EXI_CSR_CLK_SHIFT)
@@ -91,7 +96,11 @@ struct exi_regs {
 #define   EXI_CSR_CLK_1MHZ     (0 << EXI_CSR_CLK_SHIFT)
 #define EXI_CSR_CS_SHIFT     7
 #define EXI_CSR_CS           (7 << EXI_CSR_CS_SHIFT)
+#define EXI_CSR_EXTINTMASK   BIT(10)
+#define EXI_CSR_EXTINT       BIT(11)
 #define EXI_CSR_EXT          BIT(12)
+#define EXI_CSR_ROMDIS       BIT(13)
+#define EXI_CSR_PRESERVE     (EXI_CSR_EXIINTMASK | EXI_CSR_TCINTMASK | EXI_CSR_EXTINTMASK)
 
 #define EXI_CR_TSTART        BIT(0)
 #define EXI_CR_DMA           BIT(1)
@@ -104,15 +113,25 @@ struct exi_regs {
 #define EXI_CR_TLEN          (3 << EXI_CR_TLEN_SHIFT)
 
 
+enum exi_cs_mode {
+	EXI_CS_NORMAL,
+	EXI_CS_SD,
+};
+
+struct exi_spi;
+
 /*
  * Driver state
  */
 struct exi_channel {
 	struct mutex lock;
+	struct exi_spi *exi;
 	struct spi_controller *ctlr;
-	struct exi_channel_regs *regs;
+	struct exi_channel_regs __iomem *regs;
 	struct spi_device *devices[3];
-	bool device_cs[3];
+	bool selected[3];
+	bool clock_only[3];
+	enum exi_cs_mode cs_mode[3];
 	int num;
 };
 
@@ -120,6 +139,8 @@ struct exi_spi {
 	struct device *dev;
 	struct exi_regs __iomem *regs; /* EXI channel registers */
 	struct exi_channel channels[3];
+	struct work_struct hotplug_work;
+	unsigned long pending_hotplug;
 	int irq;
 };
 
@@ -133,10 +154,8 @@ struct exi_spi {
 static struct exi_channel *exi_get_channel(struct exi_spi *exi,
 					   unsigned int channel)
 {
-	if (channel > 2) {
-		BUG();
+	if (WARN_ON(channel > 2))
 		return NULL;
-	}
 
 	return &exi->channels[channel];
 }
@@ -163,6 +182,7 @@ static void exi_unlock(struct exi_channel *channel)
 static unsigned int exi_speed_spi_to_exi(unsigned int hz)
 {
 	unsigned int mhz = hz / 1000000;
+
 	if (mhz > 32)
 		return EXI_CSR_CLK_64MHZ;
 	else if (mhz > 16)
@@ -187,6 +207,50 @@ static unsigned int exi_speed_exi_to_spi(unsigned int idx)
 	return (1 << (idx >> EXI_CSR_CLK_SHIFT)) * 1000000;
 }
 
+static bool exi_is_hotplug_slot(unsigned int channel, unsigned int cs)
+{
+	if (channel == 0 && (cs == 0 || cs == 2))
+		return true;
+	if (channel == 1 && cs == 0)
+		return true;
+	if (channel == 2 && cs == 0)
+		return true;
+
+	return false;
+}
+
+static bool exi_ext_present(struct exi_channel *channel)
+{
+	return !!(in_be32(&channel->regs->csr) & EXI_CSR_EXT);
+}
+
+static bool exi_slot_present(struct exi_spi *exi,
+			     unsigned int channel, unsigned int cs)
+{
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return false;
+
+	if (channel == 0 && cs == 1)
+		return true;
+
+	if (!exi_is_hotplug_slot(channel, cs))
+		return false;
+
+	return exi_ext_present(ch);
+}
+
+static u32 exi_preserved_csr(struct exi_channel *channel)
+{
+	return in_be32(&channel->regs->csr) & EXI_CSR_PRESERVE;
+}
+
+static void exi_clear_ext(struct exi_channel *channel)
+{
+	out_be32(&channel->regs->csr, exi_preserved_csr(channel) | EXI_CSR_EXTINT);
+}
+
 /*
  * EXI hardware functions
  */
@@ -200,20 +264,47 @@ static void exi_select(struct exi_channel *channel,
 		       unsigned int clk)
 {
 	u32 csr;
-	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	struct exi_spi *exi;
 
-	if (WARN_ON(cs > 2) ||
-	    WARN_ON(clk > EXI_CSR_CLK_32MHZ) ||
-	    WARN_ON(!channel))
+	if (WARN_ON(!channel))
 		return;
 
-	dev_dbg(exi->dev, "Channel %d, selecting CS %d at clock %dMHz, CSR @ 0x%08x\n", channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)), (u32)&channel->regs->csr);
+	exi = channel->exi;
+	if (WARN_ON(cs > 2) || WARN_ON(clk > EXI_CSR_CLK_32MHZ))
+		return;
 
-	csr = 0;
+	dev_dbg(exi->dev, "Channel %d, selecting CS %d at clock %dMHz, CSR @ %p\n",
+		channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)),
+		&channel->regs->csr);
+
+	csr = exi_preserved_csr(channel);
 	csr |= (1 << (EXI_CSR_CS_SHIFT + cs)); /* set the appropriate CS bit */
 	csr |= clk;                            /* set the appropriate CLK bits */
 	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
+}
+
+/*
+ * Selects an EXI clock without asserting a CS line.
+ */
+static void exi_select_clock(struct exi_channel *channel, unsigned int clk)
+{
+	u32 csr;
+	struct exi_spi *exi;
+
+	if (WARN_ON(!channel))
+		return;
+
+	exi = channel->exi;
+	if (WARN_ON(clk > EXI_CSR_CLK_32MHZ))
+		return;
+
+	dev_dbg(exi->dev, "Channel %d, selecting clock %dMHz without CS\n",
+		channel->num, (1 << (clk >> EXI_CSR_CLK_SHIFT)));
+
+	csr = exi_preserved_csr(channel);
+	csr |= clk;
+	out_be32(&channel->regs->csr, csr);
 }
 
 /*
@@ -223,14 +314,21 @@ static void exi_select(struct exi_channel *channel,
 static void exi_deselect(struct exi_channel *channel)
 {
 	u32 csr;
-	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	struct exi_spi *exi;
 
 	if (WARN_ON(!channel))
 		return;
 
-	csr = 0;
+	exi = channel->exi;
+	csr = exi_preserved_csr(channel);
 	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
+}
+
+static void exi_select_for_device(struct exi_channel *channel,
+				  unsigned int cs, unsigned int speed)
+{
+	exi_select(channel, cs, exi_speed_spi_to_exi(speed));
 }
 
 /*
@@ -250,11 +348,13 @@ static int exi_xfer_imm(struct exi_channel *channel,
 			const void *in, void *out)
 {
 	u32 cr, data;
-	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	struct exi_spi *exi;
 
-	if (WARN_ON(len > 4) ||
-	    WARN_ON(!len)    ||
-	    WARN_ON(!channel))
+	if (WARN_ON(!channel))
+		return -EINVAL;
+
+	exi = channel->exi;
+	if (WARN_ON(len > 4) || WARN_ON(!len))
 		return -EINVAL;
 
 	/*
@@ -275,8 +375,8 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	 * we've done something very wrong
 	 */
 	if (WARN_ON(cr & EXI_CR_TSTART))
-		while (in_be32(&channel->regs->cr) & EXI_CR_TSTART);
-
+		while (in_be32(&channel->regs->cr) & EXI_CR_TSTART)
+			;
 
 	dev_dbg(exi->dev, "Channel %d, doing xfer with len=%d mode=%c%c\n",
 			channel->num, len, (mode & MODE_READ) ? 'R' : '-',
@@ -292,7 +392,9 @@ static int exi_xfer_imm(struct exi_channel *channel,
 			data = *(u16 *)in << 16;
 			break;
 		case 3:
-			data = (*(u32 *)in & 0x00ffffff) << 8;
+			data = (u32)((u8 *)in)[0] << 24;
+			data |= (u32)((u8 *)in)[1] << 16;
+			data |= (u32)((u8 *)in)[2] << 8;
 			break;
 		case 4:
 			data = *(u32 *)in;
@@ -301,8 +403,7 @@ static int exi_xfer_imm(struct exi_channel *channel,
 			return -EINVAL;
 		}
 		dev_dbg(exi->dev, "Outgoing data from buffer, data=0x%08x\n", data);
-	}
-	else {
+	} else {
 		data = 0;
 		dev_dbg(exi->dev, "Outgoing data static, data=0x%08x\n", data);
 	}
@@ -327,7 +428,8 @@ static int exi_xfer_imm(struct exi_channel *channel,
 	out_be32(&channel->regs->cr, cr); /* do it */
 
 	/* spin until transfer done */
-	while (in_be32(&channel->regs->cr) & EXI_CR_TSTART);
+	while (in_be32(&channel->regs->cr) & EXI_CR_TSTART)
+		;
 
 	/* transfer done, read our data, if any */
 	if (mode & MODE_READ) {
@@ -343,7 +445,9 @@ static int exi_xfer_imm(struct exi_channel *channel,
 			*(u16 *)out = (data & 0xffff0000) >> 16;
 			break;
 		case 3:
-			*(u32 *)out = (data & 0xffffff00) >> 8;
+			((u8 *)out)[0] = (data & 0xff000000) >> 24;
+			((u8 *)out)[1] = (data & 0x00ff0000) >> 16;
+			((u8 *)out)[2] = (data & 0x0000ff00) >> 8;
 			break;
 		case 4:
 			*(u32 *)out = data;
@@ -360,6 +464,21 @@ static int exi_xfer_imm(struct exi_channel *channel,
 #define exi_write_imm(channel, len, in)     exi_xfer_imm(channel, len, MODE_WRITE, in, NULL)
 #define exi_rdwr_imm(channel, len, in, out) exi_xfer_imm(channel, len, MODE_READ | MODE_WRITE, in, out)
 
+static void exi_deselect_for_device(struct exi_channel *channel,
+				    unsigned int cs, unsigned int speed)
+{
+	u8 tx = 0xff, rx;
+
+	exi_deselect(channel);
+
+	if (channel->cs_mode[cs] != EXI_CS_SD)
+		return;
+
+	exi_select_clock(channel, exi_speed_spi_to_exi(speed));
+	exi_rdwr_imm(channel, 1, &tx, &rx);
+	exi_deselect(channel);
+}
+
 /*
  * Read the ID of the given devicn device on the given channel
  */
@@ -370,6 +489,9 @@ static u32 exi_read_id(struct exi_spi *exi,
 	u32 id;
 	u16 cmd = 0x0000;
 	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return 0;
 
 	exi_lock(ch);                         /* grab (or wait for) lock on channel */
 	exi_select(ch, cs, EXI_CSR_CLK_8MHZ); /* select this device */
@@ -413,6 +535,20 @@ static struct exi_id_entry exi_id_table[] = {
 	{ 0, NULL, NULL }
 };
 
+static void exi_set_device_mode(struct exi_spi *exi,
+				unsigned int channel, unsigned int cs,
+				const char *modalias)
+{
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return;
+
+	if (!strcmp(modalias, "mmc-spi-slot"))
+		ch->cs_mode[cs] = EXI_CS_SD;
+	else
+		ch->cs_mode[cs] = EXI_CS_NORMAL;
+}
 
 /*
  * Get an ID entry from an ID
@@ -420,6 +556,7 @@ static struct exi_id_entry exi_id_table[] = {
 static struct exi_id_entry *exi_id_to_entry(u32 id)
 {
 	struct exi_id_entry *ent = exi_id_table;
+
 	while (ent->name) {
 		if (ent->id == id)
 			return ent;
@@ -442,14 +579,15 @@ static int exi_probe(struct exi_spi *exi,
 	u32 speed, id = exi_read_id(exi, channel, cs);
 	struct exi_id_entry *ent = exi_id_to_entry(id);
 	struct spi_controller *ctlr = exi->channels[channel].ctlr;
-	int ret;
-	
+
+	if (exi->channels[channel].devices[cs])
+		return 0;
+
 	if (ent) {
 		name = ent->name;
 		modalias = ent->modalias;
 		speed = ent->speed;
-	}
-	else {
+	} else {
 		name = "Unknown";
 		modalias = "none";
 		speed = EXI_CSR_CLK_8MHZ;
@@ -471,7 +609,13 @@ static int exi_probe(struct exi_spi *exi,
 	if (!ent && channel == 0 && cs == 0) {
 		/* assume SDGecko in Slot-A */
 		modalias = "mmc-spi-slot";
-		speed = EXI_CSR_CLK_32MHZ;
+		speed = EXI_CSR_CLK_16MHZ;
+	}
+
+	if (!ent && channel == 2 && cs == 0) {
+		/* assume SD2SP2 */
+		modalias = "mmc-spi-slot";
+		speed = EXI_CSR_CLK_16MHZ;
 	}
 
 	if (!ent && channel == 1 && cs == 0) {
@@ -479,7 +623,7 @@ static int exi_probe(struct exi_spi *exi,
 		modalias = "exi-usb-gecko";
 		speed = EXI_CSR_CLK_32MHZ;
 	}
-	
+
 	dev_info(exi->dev, "[%d:%d]: new modalias: %s\n", channel, cs, modalias);
 
 	/* set info */
@@ -488,10 +632,12 @@ static int exi_probe(struct exi_spi *exi,
 	info.chip_select = cs;
 	info.max_speed_hz = exi_speed_exi_to_spi(speed);
 	info.controller_data = ctlr;
+	exi_set_device_mode(exi, channel, cs, modalias);
 
 	/* create it */
 	device = spi_new_device(ctlr, &info);
 	if (!device) {
+		exi->channels[channel].cs_mode[cs] = EXI_CS_NORMAL;
 		dev_err(exi->dev, "[%d:%d]: spi_new_device failed\n", channel, cs);
 		return -ENOMEM;
 	}
@@ -499,7 +645,88 @@ static int exi_probe(struct exi_spi *exi,
 	exi->channels[channel].devices[cs] = device;
 	dev_info(exi->dev, "[%d:%d]: successfully added device\n", channel, cs);
 
-	return ret;
+	return 0;
+}
+
+static void exi_remove_device(struct exi_spi *exi,
+			      unsigned int channel, unsigned int cs)
+{
+	struct spi_device *device;
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return;
+
+	exi_lock(ch);
+	device = ch->devices[cs];
+	ch->devices[cs] = NULL;
+	ch->selected[cs] = false;
+	ch->clock_only[cs] = false;
+	ch->cs_mode[cs] = EXI_CS_NORMAL;
+	exi_unlock(ch);
+
+	if (device) {
+		dev_info(exi->dev, "[%d:%d]: removed device\n", channel, cs);
+		spi_unregister_device(device);
+	}
+}
+
+static void exi_rescan_slot(struct exi_spi *exi,
+			    unsigned int channel, unsigned int cs)
+{
+	bool present = exi_slot_present(exi, channel, cs);
+
+	if (present) {
+		if (!exi->channels[channel].devices[cs])
+			exi_probe(exi, channel, cs);
+	} else if (exi->channels[channel].devices[cs]) {
+		exi_remove_device(exi, channel, cs);
+	}
+}
+
+static void exi_rescan_channel(struct exi_spi *exi, unsigned int channel)
+{
+	unsigned int cs;
+
+	for (cs = 0; cs < 3; cs++) {
+		if (exi_is_hotplug_slot(channel, cs))
+			exi_rescan_slot(exi, channel, cs);
+	}
+}
+
+static void exi_hotplug_work(struct work_struct *work)
+{
+	struct exi_spi *exi = container_of(work, struct exi_spi, hotplug_work);
+	unsigned int channel;
+
+	for (channel = 0; channel < 3; channel++) {
+		if (test_and_clear_bit(channel, &exi->pending_hotplug))
+			exi_rescan_channel(exi, channel);
+	}
+}
+
+static irqreturn_t exi_irq(int irq, void *data)
+{
+	struct exi_spi *exi = data;
+	unsigned int channel;
+	bool handled = false;
+
+	for (channel = 0; channel < 3; channel++) {
+		struct exi_channel *ch = &exi->channels[channel];
+		u32 csr = in_be32(&ch->regs->csr);
+
+		if (!(csr & EXI_CSR_EXTINT))
+			continue;
+
+		exi_clear_ext(ch);
+		set_bit(channel, &exi->pending_hotplug);
+		handled = true;
+	}
+
+	if (handled)
+		schedule_work(&exi->hotplug_work);
+
+	return handled ? IRQ_HANDLED : IRQ_NONE;
 }
 
 
@@ -515,15 +742,26 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 				struct spi_transfer *xfer)
 {
 	struct exi_channel *channel = spi_controller_get_devdata(ctlr);
-	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	struct exi_spi *exi = channel->exi;
 	const u8 *tx = xfer->tx_buf;
 	u8 *rx = xfer->rx_buf;
 	size_t len = xfer->len;
-	int ret, cs, speed = spi->max_speed_hz;
+	int ret = 0, cs;
+	unsigned int speed = xfer->speed_hz ?: spi->max_speed_hz;
 
 	cs = spi_get_chipselect(spi, 0);
 	dev_dbg(exi->dev, "[%d:%d]: spi xfer, have_rx=%d have_tx=%d\n", channel->num, cs, !!rx, !!tx);
+
+	if (len && !rx && !tx)
+		return -EINVAL;
+
 	exi_lock(channel);
+	if (channel->selected[cs]) {
+		if (channel->clock_only[cs])
+			exi_select_clock(channel, exi_speed_spi_to_exi(speed));
+		else
+			exi_select_for_device(channel, cs, speed);
+	}
 
 	while (len) {
 		unsigned int xferLen;
@@ -532,16 +770,10 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 		if (len >= 4) {
 			xferLen = 4;
 			len -= 4;
-		}
-		else { /* short / end of transfer */
+		} else { /* short / end of transfer */
 			xferLen = len;
 			len = 0;
 		}
-
-		if (channel->device_cs[cs])
-			exi_select(channel, cs, exi_speed_spi_to_exi(speed));
-		else
-			exi_deselect(channel);
 
 		if (rx && tx)
 			ret = exi_rdwr_imm(channel, xferLen, tx, rx);
@@ -550,14 +782,13 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 		else if (tx)
 			ret = exi_write_imm(channel, xferLen, tx);
 
-		if (channel->device_cs[cs])
-			exi_deselect(channel);
-		else
-			exi_select(channel, cs, exi_speed_spi_to_exi(speed));
-
-
 		if (ret)
 			break;
+
+		if (tx)
+			tx += xferLen;
+		if (rx)
+			rx += xferLen;
 	}
 
 	if (!ret)
@@ -573,24 +804,39 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 static void exi_spi_set_cs(struct spi_device *spi, bool enable)
 {
 	struct exi_channel *channel = spi_controller_get_devdata(spi->controller);
-	struct exi_spi *exi = container_of_const(channel, struct exi_spi, channels[channel->num]);
+	struct exi_spi *exi = channel->exi;
 	int cs = spi_get_chipselect(spi, 0);
-	int speed = spi->max_speed_hz;
+	unsigned int speed = spi->max_speed_hz;
+	bool active = (spi->mode & SPI_CS_HIGH) ? enable : !enable;
+	bool clock_only = active && channel->cs_mode[cs] == EXI_CS_SD &&
+			  (spi->mode & SPI_CS_HIGH);
 
 	dev_dbg(exi->dev, "[%d:%d]: spi set_cs, set CS %d = %d with speed %d\n", channel->num, cs, cs, enable, speed);
 
-	channel->device_cs[cs] = enable;
-#if 0
 	exi_lock(channel);
-	if (enable)
-		exi_select(channel, cs, exi_speed_spi_to_exi(speed));
+	if (clock_only)
+		exi_select_clock(channel, exi_speed_spi_to_exi(speed));
+	else if (active)
+		exi_select_for_device(channel, cs, speed);
 	else
-		exi_deselect(channel);
-	channel->device_cs[cs] = enable;
+		exi_deselect_for_device(channel, cs, speed);
+	channel->selected[cs] = active;
+	channel->clock_only[cs] = clock_only;
 	exi_unlock(channel);
-#endif
+}
 
-	return;
+static void exi_init_channel(struct exi_channel *channel)
+{
+	u32 csr = EXI_CSR_EXTINTMASK | EXI_CSR_EXTINT;
+
+	if (channel->num == 0)
+		csr |= EXI_CSR_ROMDIS;
+
+	out_be32(&channel->regs->csr, csr);
+	out_be32(&channel->regs->mar, 0);
+	out_be32(&channel->regs->length, 0);
+	out_be32(&channel->regs->cr, 0);
+	out_be32(&channel->regs->data, 0);
 }
 
 
@@ -603,11 +849,15 @@ static int exi_spi_probe(struct platform_device *pdev)
 	struct exi_spi *exi;
 	struct spi_controller *ctlr;
 	struct resource *res;
-	int i;
+	int i, ret;
 
 	/* Driver state */
-	exi = kzalloc(sizeof(struct exi_spi), GFP_KERNEL);
+	exi = devm_kzalloc(&pdev->dev, sizeof(*exi), GFP_KERNEL);
+	if (!exi)
+		return -ENOMEM;
+
 	exi->dev = &pdev->dev;
+	INIT_WORK(&exi->hotplug_work, exi_hotplug_work);
 
 	platform_set_drvdata(pdev, exi);
 
@@ -620,13 +870,14 @@ static int exi_spi_probe(struct platform_device *pdev)
 	/* EXI has 3 channels, so register 3 controllers */
 	dev_info(&pdev->dev, "Registering EXI SPI controllers\n");
 	for (i = 0; i < 3; i++) {
-		ctlr = spi_alloc_host(&pdev->dev, sizeof(*exi));
+		ctlr = devm_spi_alloc_host(&pdev->dev, 0);
 		if (!ctlr)
 			return -ENOMEM;
 
 		/* per-channel data */
+		exi->channels[i].exi = exi;
 		exi->channels[i].ctlr = ctlr;
-		exi->channels[i].regs = (struct exi_channel_regs *)((void *)exi->regs + (sizeof(struct exi_channel_regs) * i));
+		exi->channels[i].regs = &exi->regs->channels[i];
 		exi->channels[i].num = i;
 		mutex_init(&exi->channels[i].lock);
 
@@ -641,33 +892,46 @@ static int exi_spi_probe(struct platform_device *pdev)
 		ctlr->dev.of_node = pdev->dev.of_node;
 
 		/* reset the hardware */
-		out_be32(&exi->channels[i].regs->csr, 0);
-		out_be32(&exi->channels[i].regs->mar, 0);
-		out_be32(&exi->channels[i].regs->length, 0);
-		out_be32(&exi->channels[i].regs->cr, 0);
-		out_be32(&exi->channels[i].regs->data, 0);
+		exi_init_channel(&exi->channels[i]);
 
 		/* set our per-controller devdata to the per-channel EXI state */
 		spi_controller_set_devdata(ctlr, &exi->channels[i]);
 
-		if (devm_spi_register_controller(&pdev->dev, ctlr))
-			return dev_err_probe(&pdev->dev, -ENODEV, "Failed to register SPI controller %d\n", i);
+		ret = devm_spi_register_controller(&pdev->dev, ctlr);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret, "Failed to register SPI controller %d\n", i);
 	}
 
-	/* Check all devices that might exist */
-	exi_probe(exi, 0, 0); /* Slot-A */
+	exi->irq = platform_get_irq(pdev, 0);
+	if (exi->irq < 0)
+		return exi->irq;
+
+	ret = devm_request_irq(&pdev->dev, exi->irq, exi_irq, 0,
+			       dev_name(&pdev->dev), exi);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Failed to request EXI IRQ\n");
+
+	/* Check all devices that might exist. */
 	exi_probe(exi, 0, 1); /* Internal */
-	exi_probe(exi, 0, 2); /* SP1 */
-	exi_probe(exi, 1, 0); /* Slot-B */
-	exi_probe(exi, 2, 0); /* SP2 */
+	for (i = 0; i < 3; i++)
+		exi_rescan_channel(exi, i);
 
 	return 0;
 }
 
 static void exi_spi_remove(struct platform_device *pdev)
 {
+	struct exi_spi *exi = platform_get_drvdata(pdev);
+	unsigned int channel, cs;
+
 	dev_info(&pdev->dev, "Removing EXI SPI host\n");
-	return;
+	disable_irq(exi->irq);
+	cancel_work_sync(&exi->hotplug_work);
+
+	for (channel = 0; channel < 3; channel++) {
+		for (cs = 0; cs < 3; cs++)
+			exi_remove_device(exi, channel, cs);
+	}
 }
 
 
@@ -692,4 +956,3 @@ module_platform_driver(exi_spi_driver);
 MODULE_DESCRIPTION("Nintendo GameCube/Wii/Wii U EXI SPI controller driver");
 MODULE_AUTHOR("Michael \"Techflash\" Garoflalo <officialTechflashYT@gmail.com>");
 MODULE_LICENSE("GPL");
-
