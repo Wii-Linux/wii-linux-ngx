@@ -16,7 +16,6 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 
-#include <linux/exi.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
 #include <asm/time.h>
@@ -162,7 +161,6 @@ static void wii_show_cpuinfo(struct seq_file *m)
 static void wii_shutdown(void)
 {
 	hlwd_quiesce();
-	exi_quiesce();
 	flipper_quiesce();
 }
 
