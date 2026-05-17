@@ -59,6 +59,7 @@
 #include <linux/of_device.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/mmc/mmc.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 
@@ -108,6 +109,11 @@ struct exi_regs {
 #define   EXI_CR_RW_RDWR       (2 << EXI_CR_RW_SHIFT)
 #define EXI_CR_TLEN_SHIFT    4
 
+#define EXI_SD_CMD0_RETRIES  16
+#define EXI_SD_IDLE_BYTES    10
+#define EXI_SD_INIT_CRC      0x95
+#define EXI_SD_R1_IDLE       BIT(0)
+#define EXI_SD_R1_BUSY       BIT(7)
 
 enum exi_cs_mode {
 	EXI_CS_NORMAL,
@@ -205,14 +211,7 @@ static unsigned int exi_speed_exi_to_spi(unsigned int idx)
 
 static bool exi_is_hotplug_slot(unsigned int channel, unsigned int cs)
 {
-	if (channel == 0 && (cs == 0 || cs == 2))
-		return true;
-	if (channel == 1 && cs == 0)
-		return true;
-	if (channel == 2 && cs == 0)
-		return true;
-
-	return false;
+	return cs == 0 && (channel == 0 || channel == 1);
 }
 
 static bool exi_ext_present(struct exi_channel *channel)
@@ -561,18 +560,144 @@ static struct exi_id_entry *exi_id_to_entry(u32 id)
 	return NULL;
 }
 
+static int exi_sd_idle_clocks(struct exi_channel *ch, unsigned int clk)
+{
+	u8 tx = 0xff, rx;
+	int i, ret = 0;
+
+	exi_deselect(ch);
+	exi_select_clock(ch, clk);
+	for (i = 0; i < EXI_SD_IDLE_BYTES; i++) {
+		ret = exi_rdwr_imm(ch, 1, &tx, &rx);
+		if (ret)
+			break;
+	}
+	exi_deselect(ch);
+
+	return ret;
+}
+
+static int exi_sd_send_cmd0(struct exi_channel *ch,
+			    unsigned int cs, unsigned int clk, u8 *r1)
+{
+	u8 cmd[6] = {
+		0x40 | MMC_GO_IDLE_STATE,
+		0, 0, 0, 0,
+		EXI_SD_INIT_CRC,
+	};
+	u8 tx = 0xff;
+	int i, ret = 0;
+
+	exi_select(ch, cs, clk);
+	for (i = 0; i < ARRAY_SIZE(cmd); i++) {
+		ret = exi_write_imm(ch, 1, &cmd[i]);
+		if (ret)
+			goto out;
+	}
+
+	for (i = 0; i < EXI_SD_CMD0_RETRIES; i++) {
+		ret = exi_rdwr_imm(ch, 1, &tx, r1);
+		if (ret)
+			goto out;
+		if (!(*r1 & EXI_SD_R1_BUSY))
+			break;
+	}
+
+	if (i == EXI_SD_CMD0_RETRIES)
+		ret = -ETIMEDOUT;
+
+out:
+	exi_deselect(ch);
+	return ret;
+}
+
+static bool exi_probe_sd(struct exi_spi *exi, unsigned int channel,
+			 unsigned int cs)
+{
+	static const unsigned int init_clks[] = {
+		EXI_CSR_CLK_1MHZ,
+		EXI_CSR_CLK_2MHZ,
+		EXI_CSR_CLK_4MHZ,
+	};
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+	u8 r1 = 0xff;
+	int i;
+
+	if (!ch)
+		return false;
+
+	exi_lock(ch);
+	for (i = 0; i < ARRAY_SIZE(init_clks); i++) {
+		if (exi_sd_idle_clocks(ch, init_clks[i]))
+			continue;
+		if (exi_sd_send_cmd0(ch, cs, init_clks[i], &r1))
+			continue;
+		if (r1 == EXI_SD_R1_IDLE)
+			break;
+	}
+	exi_unlock(ch);
+
+	if (r1 != EXI_SD_R1_IDLE) {
+		dev_dbg(exi->dev, "[%d:%d]: SD probe failed, last R1=0x%02x\n",
+			channel, cs, r1);
+		return false;
+	}
+
+	dev_info(exi->dev, "[%d:%d]: SD card detected via SPI CMD0\n",
+		 channel, cs);
+	return true;
+}
+
+/*
+ * Check for a few classes of devices that don't
+ * report a standard EXI ID
+ */
+static bool exi_probe_noid(struct exi_spi *exi,
+			   unsigned int channel,
+			   unsigned int cs,
+			   char **modalias,
+			   u32 *speed)
+{
+	u16 resp = 0xffff, cmd = 0x9000;
+	struct exi_channel *ch = exi_get_channel(exi, channel);
+
+	if (!ch)
+		return false;
+
+	exi_lock(ch);                         /* grab (or wait for) lock on channel */
+	exi_select(ch, cs, EXI_CSR_CLK_8MHZ); /* select this device */
+	exi_rdwr_imm(ch, 2, &cmd, &resp);     /* send USB Gecko ID command */
+	exi_deselect(ch);                     /* deselect this device */
+	exi_unlock(ch);                       /* release lock on the channel */
+
+	if (resp == 0x0470) {
+		*modalias = "exi-usb-gecko";
+		*speed = EXI_CSR_CLK_32MHZ;
+		return true;
+	}
+
+	if (exi_probe_sd(exi, channel, cs)) {
+		*modalias = "mmc-spi-slot";
+		*speed = EXI_CSR_CLK_16MHZ;
+		return true;
+	}
+
+	return false;
+}
+
+
 /*
  * Probe what device is on a given channel + CS, and
  * create a new SPI device for it.
  */
 static int exi_probe(struct exi_spi *exi,
-		      unsigned int channel,
-		      unsigned int cs)
+		     unsigned int channel,
+		     unsigned int cs)
 {
-	char *name, *modalias;
+	char *name = "Unknown", *modalias = NULL;
 	struct spi_device *device;
 	struct spi_board_info info;
-	u32 speed, id = exi_read_id(exi, channel, cs);
+	u32 speed = EXI_CSR_CLK_8MHZ, id = exi_read_id(exi, channel, cs);
 	struct exi_id_entry *ent = exi_id_to_entry(id);
 	struct spi_controller *ctlr = exi->channels[channel].ctlr;
 
@@ -583,13 +708,10 @@ static int exi_probe(struct exi_spi *exi,
 		name = ent->name;
 		modalias = ent->modalias;
 		speed = ent->speed;
+		dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
 	} else {
-		name = "Unknown";
-		modalias = "none";
-		speed = EXI_CSR_CLK_8MHZ;
+		dev_info(exi->dev, "[%d:%d]: Bogus ID: 0x%08x, trying exi_probe_noid\n", channel, cs, id);
 	}
-
-	dev_info(exi->dev, "[%d:%d]: Got ID: 0x%08x, device type: %s, modalias: %s\n", channel, cs, id, name, modalias);
 
 	/* clear our spi_board_info */
 	memset(&info, 0, sizeof(struct spi_board_info));
@@ -601,23 +723,10 @@ static int exi_probe(struct exi_spi *exi,
 		speed = EXI_CSR_CLK_8MHZ;
 	}
 
-	/* FIXME: Really should autodetect, this is just blatant guessing */
-	if (!ent && channel == 0 && cs == 0) {
-		/* assume SDGecko in Slot-A */
-		modalias = "mmc-spi-slot";
-		speed = EXI_CSR_CLK_16MHZ;
-	}
-
-	if (!ent && channel == 2 && cs == 0) {
-		/* assume SD2SP2 */
-		modalias = "mmc-spi-slot";
-		speed = EXI_CSR_CLK_16MHZ;
-	}
-
-	if (!ent && channel == 1 && cs == 0) {
-		/* assume USB Gecko in Slot-B */
-		modalias = "exi-usb-gecko";
-		speed = EXI_CSR_CLK_32MHZ;
+	if (!modalias && !exi_probe_noid(exi, channel, cs, &modalias, &speed)) {
+		dev_info(exi->dev, "[%d:%d]: no supported device detected\n",
+			 channel, cs);
+		return 0;
 	}
 
 	dev_info(exi->dev, "[%d:%d]: new modalias: %s\n", channel, cs, modalias);
@@ -662,21 +771,27 @@ static void exi_remove_device(struct exi_spi *exi,
 	exi_unlock(ch);
 
 	if (device) {
-		dev_info(exi->dev, "[%d:%d]: removed device\n", channel, cs);
 		spi_unregister_device(device);
+		dev_info(exi->dev, "[%d:%d]: removed device\n", channel, cs);
 	}
 }
 
 static void exi_rescan_slot(struct exi_spi *exi,
 			    unsigned int channel, unsigned int cs)
 {
-	bool present = exi_slot_present(exi, channel, cs);
+	bool present;
 
-	if (present) {
+	if (exi_is_hotplug_slot(channel, cs)) {
+		present = exi_slot_present(exi, channel, cs);
+
+		if (present) {
+			if (!exi->channels[channel].devices[cs])
+				exi_probe(exi, channel, cs);
+		} else if (exi->channels[channel].devices[cs])
+			exi_remove_device(exi, channel, cs);
+	} else {
 		if (!exi->channels[channel].devices[cs])
 			exi_probe(exi, channel, cs);
-	} else if (exi->channels[channel].devices[cs]) {
-		exi_remove_device(exi, channel, cs);
 	}
 }
 
@@ -684,9 +799,13 @@ static void exi_rescan_channel(struct exi_spi *exi, unsigned int channel)
 {
 	unsigned int cs;
 
-	for (cs = 0; cs < 3; cs++) {
-		if (exi_is_hotplug_slot(channel, cs))
+	if (channel == 0) {
+		for (cs = 0; cs < 3; cs++)
 			exi_rescan_slot(exi, channel, cs);
+	} else if (channel == 1) {
+		exi_rescan_slot(exi, channel, 0);
+	} else if (channel == 2) {
+		exi_rescan_slot(exi, channel, 0);
 	}
 }
 
@@ -697,7 +816,7 @@ static void exi_hotplug_work(struct work_struct *work)
 
 	for (channel = 0; channel < 3; channel++) {
 		if (test_and_clear_bit(channel, &exi->pending_hotplug))
-			exi_rescan_channel(exi, channel);
+			exi_rescan_slot(exi, channel, 0);
 	}
 }
 
