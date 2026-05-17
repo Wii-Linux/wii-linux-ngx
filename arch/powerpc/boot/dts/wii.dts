@@ -254,6 +254,7 @@
 			compatible = "nintendo,hollywood-di";
 			reg = <0x0d806000 0x40>;
 			interrupts = <2>;
+			di-spin-gpios = <&GPIO 4 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
