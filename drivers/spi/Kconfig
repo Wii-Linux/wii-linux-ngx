@@ -406,7 +406,7 @@ config SPI_EP93XX
 
 config SPI_EXI
 	tristate "Nintendo GameCube/Wii/Wii U EXI bus as SPI support"
-	depends on GAMECUBE_COMMON && !RTC_GAMECUBE
+	depends on GAMECUBE_COMMON
 	help
 	  If you say yes to this option, support will be included for
 	  the "EXI" EXternal Interface bus found on the Nintendo
@@ -414,9 +414,6 @@ config SPI_EXI
 	  multiplexed, multi-device, SPI-like bus, with support for
 	  both normal SPI devices (with an appropriate adapter), and
 	  Nintendo's custom EXI-native devices.
-
-	  NOTE: Temporarily conflicts with CONFIG_RTC_GAMECUBE, since
-	  it also tries to be an EXI bus master.
 
 config SPI_FALCON
 	bool "Falcon SPI controller support"
