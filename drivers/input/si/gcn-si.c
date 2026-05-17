@@ -1008,7 +1008,7 @@ static int si_of_probe(struct platform_device *odev)
 
 	retval = of_address_to_resource(odev->dev.of_node, 0, &mem);
 	if (retval) {
-		dev_err(odev->dev, "no io memory range found\n");
+		dev_err(&odev->dev, "no io memory range found\n");
 		return -ENODEV;
 	}
 
