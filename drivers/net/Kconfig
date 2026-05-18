@@ -135,7 +135,7 @@ config EQUALIZER
 
 config GAMECUBE_BBA
 	tristate "Nintendo GameCube ethernet BroadBand Adapter (BBA)"
-	depends on GAMECUBE_EXI && GAMECUBE
+	depends on SPI
 	help
 	  Say Y here to add ethernet support for the Broadband Adapter (BBA).
 
