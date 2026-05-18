@@ -1459,7 +1459,7 @@ int usb_hcd_map_urb_for_dma(struct usb_hcd *hcd, struct urb *urb,
 				printk("#  urb->sg=%px\n", urb->sg);
 				printk("#  urb->transfer_buffer_length=%d\n", urb->transfer_buffer_length);
 				printk("#  urb->transfer_buffer=%px\n", urb->transfer_buffer);
-				printk("#  urb->transfer_dma=%pad\n", urb->transfer_dma);
+				printk("#  urb->transfer_dma=%pad\n", &urb->transfer_dma);
 			}
 		}
 		else {
@@ -3146,8 +3146,14 @@ int usb_hcd_setup_local_mem(struct usb_hcd *hcd, phys_addr_t phys_addr,
 {
 	int err;
 	void *local_mem;
+	int min_alloc_order;
 
-	hcd->localmem_pool = devm_gen_pool_create(hcd->self.sysdev, 4,
+	/* enforce minimum dma alignment */
+	min_alloc_order = 4;
+	while ((1 << min_alloc_order) < dma_get_cache_alignment())
+		min_alloc_order += 1;
+
+	hcd->localmem_pool = devm_gen_pool_create(hcd->self.sysdev, min_alloc_order,
 						  dev_to_node(hcd->self.sysdev),
 						  dev_name(hcd->self.sysdev));
 	if (IS_ERR(hcd->localmem_pool))
