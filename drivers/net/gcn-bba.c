@@ -29,13 +29,14 @@
 #include <linux/delay.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
+#include <linux/spi/spi.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/kthread.h>
 #include <linux/wait.h>
 #include <linux/io.h>
-#include <linux/exi.h>
 
 
 #define DRV_MODULE_NAME	"gcn-bba"
@@ -56,60 +57,38 @@ static char bba_driver_version[] = "1.4i";
 #  define DBG(fmt, args...)
 #endif
 
-/*
- * EXpansion Interface glue for the Broadband Adapter.
- *
- */
-#define BBA_EXI_ID 0x04020200
-
-#define BBA_EXI_IRQ_CHANNEL 2 /* INT line uses EXI2INTB */
-#define BBA_EXI_CHANNEL     0 /* rest of lines use EXI0xxx */
-#define BBA_EXI_DEVICE      2 /* chip select, EXI0CSB2 */
-#define BBA_EXI_FREQ        5 /* 32MHz */
-
 #define BBA_CMD_IR_MASKALL  0x00
 #define BBA_CMD_IR_MASKNONE 0xf8
 
-static inline void bba_select(void);
-static inline void bba_deselect(void);
-static inline void bba_write(void *data, size_t len);
-static inline void bba_read(void *data, size_t len);
-
+static void bba_transfer(struct spi_transfer *xfers, unsigned int num_xfers);
 static void bba_ins(int reg, void *val, int len);
 static void bba_outs(int reg, void *val, int len);
+static struct net_device *bba_dev;
 
 /*
  * Command Registers I/O.
  */
 
-static inline void bba_cmd_ins_nosel(int reg, void *val, int len)
-{
-	u16 req;
-	req = reg << 8;
-	bba_write(&req, sizeof(req));
-	bba_read(val, len);
-}
-
 static void bba_cmd_ins(int reg, void *val, int len)
 {
-	bba_select();
-	bba_cmd_ins_nosel(reg, val, len);
-	bba_deselect();
-}
+	__be16 req = cpu_to_be16(reg << 8);
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{ .rx_buf = val, .len = len },
+	};
 
-static inline void bba_cmd_outs_nosel(int reg, void *val, int len)
-{
-	u16 req;
-	req = (reg << 8) | 0x4000;
-	bba_write(&req, sizeof(req));
-	bba_write(val, len);
+	bba_transfer(xfers, ARRAY_SIZE(xfers));
 }
 
 static void bba_cmd_outs(int reg, void *val, int len)
 {
-	bba_select();
-	bba_cmd_outs_nosel(reg, val, len);
-	bba_deselect();
+	__be16 req = cpu_to_be16((reg << 8) | 0x4000);
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{ .tx_buf = val, .len = len },
+	};
+
+	bba_transfer(xfers, ARRAY_SIZE(xfers));
 }
 
 static inline u8 bba_cmd_in8(int reg)
@@ -121,11 +100,21 @@ static inline u8 bba_cmd_in8(int reg)
 
 static u8 bba_cmd_in8_slow(int reg)
 {
+	__be16 req = cpu_to_be16(reg << 8);
 	u8 val;
-	bba_select();
-	bba_cmd_ins_nosel(reg, &val, sizeof(val));
-	udelay(200);
-	bba_deselect();
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{
+			.rx_buf = &val,
+			.len = sizeof(val),
+			.delay = {
+				.value = 200,
+				.unit = SPI_DELAY_UNIT_USECS,
+			},
+		},
+	};
+
+	bba_transfer(xfers, ARRAY_SIZE(xfers));
 	return val;
 }
 
@@ -133,7 +122,6 @@ static inline void bba_cmd_out8(int reg, u8 val)
 {
 	bba_cmd_outs(reg, &val, sizeof(val));
 }
-
 
 /*
  * Registers I/O.
@@ -167,39 +155,39 @@ static inline void bba_out16(int reg, u16 val)
 #define bba_in12(reg)      (bba_in16(reg) & 0x0fff)
 #define bba_out12(reg, val) do { bba_out16(reg, (val)&0x0fff); } while (0)
 
-static inline void bba_ins_nosel(int reg, void *val, int len)
-{
-	u32 req;
-	req = (reg << 8) | 0x80000000;
-	bba_write(&req, sizeof(req));
-	bba_read(val, len);
-}
-
 static void bba_ins(int reg, void *val, int len)
 {
-	bba_select();
-	bba_ins_nosel(reg, val, len);
-	bba_deselect();
-}
+	__be32 req = cpu_to_be32((reg << 8) | 0x80000000);
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{ .rx_buf = val, .len = len },
+	};
 
-static inline void bba_outs_nosel(int reg, void *val, int len)
-{
-	u32 req;
-	req = (reg << 8) | 0xC0000000;
-	bba_write(&req, sizeof(req));
-	bba_write(val, len);
-}
-
-static inline void bba_outs_nosel_continued(void *val, int len)
-{
-	bba_write(val, len);
+	bba_transfer(xfers, ARRAY_SIZE(xfers));
 }
 
 static void bba_outs(int reg, void *val, int len)
 {
-	bba_select();
-	bba_outs_nosel(reg, val, len);
-	bba_deselect();
+	__be32 req = cpu_to_be32((reg << 8) | 0xC0000000);
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{ .tx_buf = val, .len = len },
+	};
+
+	return bba_transfer(xfers, ARRAY_SIZE(xfers));
+}
+
+static void bba_outs_with_pad(int reg, const void *val, int len,
+			     const void *pad, int pad_len)
+{
+	__be32 req = cpu_to_be32((reg << 8) | 0xC0000000);
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &req, .len = sizeof(req) },
+		{ .tx_buf = val, .len = len },
+		{ .tx_buf = pad, .len = pad_len },
+	};
+
+	bba_transfer(xfers, pad_len ? ARRAY_SIZE(xfers) : 2);
 }
 
 
@@ -373,15 +361,23 @@ struct bba_private {
 
 	struct task_struct	*io_thread;
 	wait_queue_head_t	io_waitq;
+	struct mutex		io_mutex;
 
 	struct net_device	*dev;
 	struct net_device_stats	stats;
 
-	struct exi_device	*exi_device;
+	struct spi_device	*spi_device;
 };
 
-static int bba_event_handler(struct exi_channel *exi_channel,
-			     unsigned int event, void *dev0);
+static void bba_transfer(struct spi_transfer *xfers, unsigned int num_xfers)
+{
+	struct bba_private *priv = netdev_priv(bba_dev);
+
+	spi_sync_transfer(priv->spi_device, xfers, num_xfers);
+}
+
+static irqreturn_t bba_irq(int irq, void *dev0);
+static irqreturn_t bba_irq_thread(int irq, void *dev0);
 static int bba_setup_hardware(struct net_device *dev);
 
 /*
@@ -392,25 +388,33 @@ static int bba_open(struct net_device *dev)
 	struct bba_private *priv = netdev_priv(dev);
 	int retval;
 
-	/* INTs are triggered on EXI channel 2 */
-	retval = exi_event_register(to_exi_channel(BBA_EXI_IRQ_CHANNEL),
-				    EXI_EVENT_IRQ,
-				    priv->exi_device,
-				    bba_event_handler, dev,
-				    (1 << BBA_EXI_CHANNEL));
-	if (retval < 0) {
-		bba_printk(KERN_ERR, "unable to register EXI event %d\n",
-			   EXI_EVENT_IRQ);
+	if (!priv->spi_device->irq) {
+		bba_printk(KERN_ERR, "no IRQ configured\n");
+		return -ENXIO;
+	}
+
+	retval = request_threaded_irq(priv->spi_device->irq, bba_irq,
+				      bba_irq_thread, IRQF_SHARED,
+				      dev_name(&priv->spi_device->dev), dev);
+	if (retval) {
+		bba_printk(KERN_ERR, "unable to register IRQ %d\n",
+			   priv->spi_device->irq);
 		goto out;
 	}
 
 	/* reset the hardware to a known state */
-	exi_dev_take(priv->exi_device);
+	mutex_lock(&priv->io_mutex);
 	retval = bba_setup_hardware(dev);
-	exi_dev_give(priv->exi_device);
+	mutex_unlock(&priv->io_mutex);
+	if (retval)
+		goto out_free_irq;
 
 	/* inform the network layer that we are ready */
 	netif_start_queue(dev);
+	return 0;
+
+out_free_irq:
+	free_irq(priv->spi_device->irq, dev);
 out:
 	return retval;
 }
@@ -426,7 +430,7 @@ static int bba_close(struct net_device *dev)
 	netif_carrier_off(dev);
 	netif_stop_queue(dev);
 
-	exi_dev_take(priv->exi_device);
+	mutex_lock(&priv->io_mutex);
 
 	/* stop receiver */
 	bba_out8(BBA_NCRA, bba_in8(BBA_NCRA) & ~BBA_NCRA_SR);
@@ -434,11 +438,10 @@ static int bba_close(struct net_device *dev)
 	/* mask all interrupts */
 	bba_out8(BBA_IMR, 0x00);
 
-	exi_dev_give(priv->exi_device);
+	mutex_unlock(&priv->io_mutex);
 
-	/* unregister exi event */
-	exi_event_unregister(to_exi_channel(BBA_EXI_IRQ_CHANNEL),
-			     EXI_EVENT_IRQ);
+	if (priv->spi_device->irq)
+		free_irq(priv->spi_device->irq, dev);
 
 	return 0;
 }
@@ -542,10 +545,10 @@ static int bba_tx(struct net_device *dev)
 	unsigned long flags;
 	int retval = NETDEV_TX_OK;
 
-	static u8 pad[ETH_ZLEN] __attribute__ ((aligned(EXI_DMA_ALIGN+1)));
+	static u8 pad[ETH_ZLEN] __aligned(32);
 	int pad_len;
 
-	exi_dev_take(priv->exi_device);
+	mutex_lock(&priv->io_mutex);
 
 	/* if the TXFIFO is in use, we'll try it later when free */
 	if (bba_in8(BBA_NCRA) & (BBA_NCRA_ST0 | BBA_NCRA_ST1)) {
@@ -566,14 +569,13 @@ static int bba_tx(struct net_device *dev)
 	 * Packet transmission tries to make use of DMA transfers.
 	 */
 
-	bba_select();
-	bba_outs_nosel(BBA_WRTXFIFOD, skb->data, skb->len);
+	pad_len = 0;
 	if (skb->len < ETH_ZLEN) {
 		pad_len = ETH_ZLEN - skb->len;
 		memset(pad, 0, pad_len);
-		bba_outs_nosel_continued(pad, pad_len);
 	}
-	bba_deselect();
+	bba_outs_with_pad(BBA_WRTXFIFOD, skb->data, skb->len,
+			  pad, pad_len);
 
 	/* tell the card to send the packet right now */
 	bba_out8(BBA_NCRA, (bba_in8(BBA_NCRA) | BBA_NCRA_ST1) & ~BBA_NCRA_ST0);
@@ -586,14 +588,12 @@ static int bba_tx(struct net_device *dev)
 	dev_kfree_skb(skb);
 
 out:
-	exi_dev_give(priv->exi_device);
-
+	mutex_unlock(&priv->io_mutex);
 	return retval;
 }
 
 /*
  * Updates reception error statistics.
- * Caller has already taken the exi channel.
  */
 static int bba_rx_err(u8 status, struct net_device *dev)
 {
@@ -654,7 +654,7 @@ static int bba_rx(struct net_device *dev, int budget)
 	unsigned short rrp, rwp;
 	int received = 0;
 
-	exi_dev_take(priv->exi_device);
+	mutex_lock(&priv->io_mutex);
 
 	/* get current receiver pointers */
 	rwp = bba_in12(BBA_RWP);
@@ -732,8 +732,7 @@ static int bba_rx(struct net_device *dev, int budget)
 	if (test_and_clear_bit(__BBA_RBFIM_OFF, &priv->flags))
 		bba_out8(BBA_IMR, bba_in8(BBA_IMR) | BBA_IMR_RBFIM);
 
-	exi_dev_give(priv->exi_device);
-
+	mutex_unlock(&priv->io_mutex);
 	return received;
 }
 
@@ -777,7 +776,6 @@ static int bba_io_thread(void *bba_priv)
 
 /*
  * Handles interrupt work from the network device.
- * Caller has already taken the exi channel.
  */
 static void bba_interrupt(struct net_device *dev)
 {
@@ -850,18 +848,19 @@ out:
 
 /*
  * Retrieves the MAC address of the adapter.
- * Caller has already taken the exi channel.
  */
 static void bba_retrieve_ether_addr(struct net_device *dev)
 {
-	bba_ins(BBA_NAFR_PAR0, dev->dev_addr, ETH_ALEN);
-	if (!is_valid_ether_addr(dev->dev_addr))
-		eth_random_addr(dev->dev_addr);
+	u8 addr[ETH_ALEN];
+
+	bba_ins(BBA_NAFR_PAR0, addr, ETH_ALEN);
+	if (!is_valid_ether_addr(addr))
+		eth_random_addr(addr);
+	eth_hw_addr_set(dev, addr);
 }
 
 /*
  * Resets the hardware to a known state.
- * Caller has already taken the exi channel.
  */
 static void bba_reset_hardware(struct net_device *dev)
 {
@@ -926,7 +925,6 @@ static void bba_reset_hardware(struct net_device *dev)
 
 /*
  * Prepares the hardware for operation.
- * Caller has already taken the exi channel.
  */
 static int bba_setup_hardware(struct net_device *dev)
 {
@@ -979,25 +977,29 @@ static unsigned long bba_calc_response(unsigned long val,
 	return (c0 << 24) | (c1 << 16) | (c2 << 8) | c3;
 }
 
-/*
- * Handles IRQ events from the exi layer.
- *
- * We are called from softirq context, and with the exi channel kindly taken
- * for us. We can also safely do exi transfers of less than 32 bytes, which
- * are guaranteed to not sleep by the exi layer.
- */
-static int bba_event_handler(struct exi_channel *exi_channel,
-			     unsigned int event, void *dev0)
+static irqreturn_t bba_irq(int irq, void *dev0)
+{
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t bba_irq_thread(int irq, void *dev0)
 {
 	struct net_device *dev = (struct net_device *)dev0;
 	struct bba_private *priv = netdev_priv(dev);
 	register u8 status, mask;
+
+	mutex_lock(&priv->io_mutex);
 
 	/* XXX mask all EXI glue interrupts */
 	bba_cmd_out8(0x02, BBA_CMD_IR_MASKALL);
 
 	/* get interrupt status from EXI glue */
 	status = bba_cmd_in8(0x03);
+	if (!status) {
+		bba_cmd_out8(0x02, BBA_CMD_IR_MASKNONE);
+		mutex_unlock(&priv->io_mutex);
+		return IRQ_NONE;
+	}
 
 	/* start with the usual case */
 	mask = (1<<7);
@@ -1060,34 +1062,8 @@ out:
 	/* enable interrupts again */
 	bba_cmd_out8(0x02, BBA_CMD_IR_MASKNONE);
 
-	return 1;
-}
-
-static struct net_device *bba_dev;
-
-static inline void bba_select(void)
-{
-	struct bba_private *priv = netdev_priv(bba_dev);
-	exi_dev_select(priv->exi_device);
-
-}
-
-static inline void bba_deselect(void)
-{
-	struct bba_private *priv = netdev_priv(bba_dev);
-	exi_dev_deselect(priv->exi_device);
-}
-
-static inline void bba_read(void *data, size_t len)
-{
-	struct bba_private *priv = netdev_priv(bba_dev);
-	return exi_dev_read(priv->exi_device, data, len);
-}
-
-static inline void bba_write(void *data, size_t len)
-{
-	struct bba_private *priv = netdev_priv(bba_dev);
-	return exi_dev_write(priv->exi_device, data, len);
+	mutex_unlock(&priv->io_mutex);
+	return IRQ_HANDLED;
 }
 
 static const struct net_device_ops bba_netdev_ops = {
@@ -1102,7 +1078,7 @@ static const struct net_device_ops bba_netdev_ops = {
 /*
  * Initializes a BroadBand Adapter device.
  */
-static int bba_init_device(struct exi_device *exi_device)
+static int bba_probe(struct spi_device *spi)
 {
 	struct net_device *dev;
 	struct bba_private *priv;
@@ -1115,19 +1091,19 @@ static int bba_init_device(struct exi_device *exi_device)
 		err = -ENOMEM;
 		goto err_out;
 	}
-	SET_NETDEV_DEV(dev, &exi_device->dev);
+	SET_NETDEV_DEV(dev, &spi->dev);
 
-	/* we use the event system from the EXI driver, so no irq here */
-	dev->irq = 0;
+	dev->irq = spi->irq;
 
 	/* network device hooks */
 	dev->netdev_ops = &bba_netdev_ops;
 
 	priv = netdev_priv(dev);
 	priv->dev = dev;
-	priv->exi_device = exi_device;
+	priv->spi_device = spi;
 
 	spin_lock_init(&priv->lock);
+	mutex_init(&priv->io_mutex);
 
 	/* initialization values */
 	priv->revid = 0xf0;
@@ -1140,20 +1116,20 @@ static int bba_init_device(struct exi_device *exi_device)
 	priv->rx_work = 0;
 	init_waitqueue_head(&priv->io_waitq);
 	priv->io_thread = kthread_run(bba_io_thread, priv, "kbbaiod");
+	if (IS_ERR(priv->io_thread)) {
+		err = PTR_ERR(priv->io_thread);
+		goto err_out_free_dev;
+	}
 
 	/* the hardware can't do multicast */
 	dev->flags &= ~IFF_MULTICAST;
 
-	exi_set_drvdata(exi_device, dev);
-	if (bba_dev)
-		free_netdev(bba_dev);
+	spi_set_drvdata(spi, dev);
 	bba_dev = dev;
 
 	/* we need to retrieve the MAC address before registration */
-	exi_dev_take(priv->exi_device);
 	bba_reset_hardware(dev);
 	bba_retrieve_ether_addr(dev);
-	exi_dev_give(priv->exi_device);
 
 	/* this makes our device available to the kernel */
 	err = register_netdev(dev);
@@ -1165,9 +1141,11 @@ static int bba_init_device(struct exi_device *exi_device)
 	return 0;
 
 err_out_free_dev:
-	exi_set_drvdata(exi_device, NULL);
-	free_netdev(dev);
+	if (!IS_ERR_OR_NULL(priv->io_thread))
+		kthread_stop(priv->io_thread);
+	spi_set_drvdata(spi, NULL);
 	bba_dev = NULL;
+	free_netdev(dev);
 
 err_out:
 	return err;
@@ -1176,10 +1154,9 @@ err_out:
 /*
  * Removes a BroadBand Adapter device from the system.
  */
-static void bba_remove(struct exi_device *exi_device)
+static void bba_remove(struct spi_device *spi)
 {
-	struct net_device *dev = (struct net_device *)
-				 exi_get_drvdata(exi_device);
+	struct net_device *dev = spi_get_drvdata(spi);
 	struct bba_private *priv;
 
 	if (dev) {
@@ -1189,40 +1166,22 @@ static void bba_remove(struct exi_device *exi_device)
 
 		unregister_netdev(dev);
 		free_netdev(dev);
-		exi_set_drvdata(exi_device, NULL);
+		spi_set_drvdata(spi, NULL);
 		bba_dev = NULL;
 	}
-	exi_device_put(exi_device);
 }
 
-/*
- * Probes for a BroadBand Adapter device.
- * Actually, the exi layer has already probed for us.
- */
-static int bba_probe(struct exi_device *exi_device)
-{
-	int ret = -ENODEV;
-
-	if (exi_device_get(exi_device))
-		ret = bba_init_device(exi_device);
-
-	return ret;
-}
-
-
-static struct exi_device_id bba_eid_table[] = {
-	[0] = {
-		.channel = BBA_EXI_CHANNEL,
-		.device  = BBA_EXI_DEVICE,
-		.id      = BBA_EXI_ID
-	},
-	{ .id = 0 }
+static const struct spi_device_id bba_id_table[] = {
+	{ "gamecube-bba" },
+	{ }
 };
+MODULE_DEVICE_TABLE(spi, bba_id_table);
 
-static struct exi_driver bba_driver = {
-	.name = "bba",
-	.eid_table = bba_eid_table,
-	.frequency = BBA_EXI_FREQ,
+static struct spi_driver bba_driver = {
+	.driver = {
+		.name = DRV_MODULE_NAME,
+	},
+	.id_table = bba_id_table,
 	.probe = bba_probe,
 	.remove = bba_remove,
 };
@@ -1238,7 +1197,7 @@ static int __init bba_init_module(void)
 	bba_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
 		   bba_driver_version);
 
-	return exi_driver_register(&bba_driver);
+	return spi_register_driver(&bba_driver);
 }
 
 /**
@@ -1249,7 +1208,7 @@ static int __init bba_init_module(void)
  */
 static void __exit bba_exit_module(void)
 {
-	exi_driver_unregister(&bba_driver);
+	spi_unregister_driver(&bba_driver);
 }
 
 module_init(bba_init_module);
