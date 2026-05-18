@@ -344,13 +344,11 @@ static int ohci_hcd_hlwd_probe(struct platform_device *op)
 	}
 
 	irq = irq_of_parse_and_map(dn, 0);
-#if 0
-	if (irq == NO_IRQ) {
+	if (!irq) {
 		dev_err(dev, "irq_of_parse_and_map failed\n");
 		error = -EBUSY;
 		goto err_irq;
 	}
-#endif
 
 	hcd->regs = ioremap(hcd->rsrc_start, hcd->rsrc_len);
 	if (!hcd->regs) {
