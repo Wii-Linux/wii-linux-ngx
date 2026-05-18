@@ -17,12 +17,13 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/freezer.h>
 #include <linux/proc_fs.h>
-#include <linux/exi.h>
 #include <linux/slab.h>
+#include <linux/spi/spi.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -48,17 +49,6 @@ static char mic_driver_version[] = "0.1i";
 #else
 #  define DBG(fmt, args...)
 #endif
-
-
-#define MIC_EXI_ID		0x0a000000
-
-#define MIC_SLOTA_CHANNEL	0	/* EXI0xxx */
-#define MIC_SLOTA_DEVICE	0	/* chip select, EXI0CSB0 */
-
-#define MIC_SLOTB_CHANNEL	1	/* EXI1xxx */
-#define MIC_SLOTB_DEVICE	0	/* chip select, EXI1CSB0 */
-
-#define MIC_SPI_CLK_IDX		EXI_CLK_16MHZ
 
 
 struct mic_device {
@@ -95,7 +85,7 @@ struct mic_device {
 #endif /* CONFIG_PROC_FS */
 
 	int refcnt;
-	struct exi_device *exi_device;
+	struct spi_device *spi_device;
 };
 
 
@@ -104,12 +94,9 @@ struct mic_device {
  */
 static void mic_hey(struct mic_device *dev)
 {
-	struct exi_device *exi_device = dev->exi_device;
 	u8 cmd = 0xff;
 
-	exi_dev_select(exi_device);
-	exi_dev_write(exi_device, &cmd, sizeof(cmd));
-	exi_dev_deselect(exi_device);
+	spi_write(dev->spi_device, &cmd, sizeof(cmd));
 }
 
 /*
@@ -117,13 +104,15 @@ static void mic_hey(struct mic_device *dev)
  */
 static int mic_get_status(struct mic_device *dev)
 {
-	struct exi_device *exi_device = dev->exi_device;
 	u8 cmd = 0x40;
+	__be16 status;
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &cmd, .len = sizeof(cmd) },
+		{ .rx_buf = &status, .len = sizeof(status) },
+	};
 
-	exi_dev_select(exi_device);
-	exi_dev_write(exi_device, &cmd, sizeof(cmd));
-	exi_dev_read(exi_device, &dev->status, sizeof(dev->status));
-	exi_dev_deselect(exi_device);
+	spi_sync_transfer(dev->spi_device, xfers, ARRAY_SIZE(xfers));
+	dev->status = be16_to_cpu(status);
 
 	return dev->status;
 }
@@ -133,7 +122,6 @@ static int mic_get_status(struct mic_device *dev)
  */
 static void mic_control(struct mic_device *dev)
 {
-	struct exi_device *exi_device = dev->exi_device;
 	u8 cmd[3];
 
 	cmd[0] = 0x80;
@@ -142,9 +130,7 @@ static void mic_control(struct mic_device *dev)
 
 	DBG("control 0x80%02x%02x\n", cmd[1], cmd[2]);
 
-	exi_dev_select(exi_device);
-	exi_dev_write(exi_device, cmd, sizeof(cmd));
-	exi_dev_deselect(exi_device);
+	spi_write(dev->spi_device, cmd, sizeof(cmd));
 
 }
 
@@ -153,13 +139,13 @@ static void mic_control(struct mic_device *dev)
  */
 static void mic_read_period(struct mic_device *dev, void *buf, size_t len)
 {
-	struct exi_device *exi_device = dev->exi_device;
 	u8 cmd = 0x20;
+	struct spi_transfer xfers[] = {
+		{ .tx_buf = &cmd, .len = sizeof(cmd) },
+		{ .rx_buf = buf, .len = len },
+	};
 
-	exi_dev_select(exi_device);
-	exi_dev_write(exi_device, &cmd, sizeof(cmd));
-	exi_dev_read(exi_device, buf, len);
-	exi_dev_deselect(exi_device);
+	spi_sync_transfer(dev->spi_device, xfers, ARRAY_SIZE(xfers));
 
 /*	DBG("mic cmd 0x20\n"); */
 }
@@ -334,7 +320,6 @@ static int mic_io_thread(void *param)
 		if (try_to_freeze())
 			continue;
 
-		exi_dev_take(dev->exi_device);
 		status = mic_get_status(dev);
 		if (dev->running) {
 			substream = dev->c_substream;
@@ -352,9 +337,7 @@ static int mic_io_thread(void *param)
 			dev->c_cur += period_bytes;
 			dev->c_left -= period_bytes;
 
-			exi_dev_give(dev->exi_device);
 			snd_pcm_period_elapsed(substream);
-			exi_dev_take(dev->exi_device);
 
 			if (status & 0x0200) {
 				DBG("0x0200\n");
@@ -367,7 +350,6 @@ static int mic_io_thread(void *param)
 			dev->control = 0;
 			mic_control(dev);
 		}
-		exi_dev_give(dev->exi_device);
 	}
 	return 0;
 }
@@ -375,15 +357,18 @@ static int mic_io_thread(void *param)
 /*
  *
  */
-static int mic_event_handler(struct exi_channel *exi_channel,
-			     unsigned int event, void *dev0)
+static irqreturn_t mic_irq(int irq, void *dev0)
+{
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t mic_irq_thread(int irq, void *dev0)
 {
 	struct mic_device *dev = (struct mic_device *)dev0;
 
-	/* exi channel is not taken, no exi operations here please */
 	mic_wakeup_io_thread(dev);
 
-	return 0;
+	return IRQ_HANDLED;
 }
 
 static int hw_rule_period_bytes_by_rate(struct snd_pcm_hw_params *params,
@@ -535,11 +520,9 @@ static int mic_snd_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 		if (!dev->running) {
 			DBG("trigger start\n");
 			dev->running = 1;
-			exi_dev_take(dev->exi_device);
 			mic_hey(dev);
 			mic_enable_sampling(dev, 1);
 			mic_control(dev);
-			exi_dev_give(dev->exi_device);
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
@@ -665,8 +648,6 @@ DBG("enter\n");
  */
 static int mic_init(struct mic_device *dev)
 {
-	struct exi_device *exi_device = dev->exi_device;
-	struct exi_channel *exi_channel = exi_get_exi_channel(exi_device);
 	int channel;
 	int retval = -ENOMEM;
 
@@ -681,19 +662,24 @@ DBG("enter\n");
 		goto err_init_snd;
 
 	init_waitqueue_head(&dev->io_waitq);
-	channel = to_channel(exi_get_exi_channel(dev->exi_device));
+	channel = dev->spi_device->controller->bus_num;
 	dev->io_thread = kthread_run(mic_io_thread, dev, "kmicd/%d", channel);
 	if (IS_ERR(dev->io_thread)) {
 		mic_printk(KERN_ERR, "error creating io thread\n");
 		goto err_io_thread;
 	}
 
-	retval = exi_event_register(exi_channel, EXI_EVENT_IRQ,
-				    exi_device,
-				    mic_event_handler, dev,
-				    0 /*(1 << to_channel(exi_channel))*/);
+	if (!dev->spi_device->irq) {
+		mic_printk(KERN_ERR, "no IRQ configured\n");
+		retval = -ENXIO;
+		goto err_event_register;
+	}
+
+	retval = request_threaded_irq(dev->spi_device->irq, mic_irq,
+				      mic_irq_thread, IRQF_SHARED,
+				      dev_name(&dev->spi_device->dev), dev);
 	if (retval) {
-		mic_printk(KERN_ERR, "error registering exi event\n");
+		mic_printk(KERN_ERR, "error registering IRQ\n");
 		goto err_event_register;
 	}
 
@@ -704,7 +690,7 @@ DBG("enter\n");
 	return 0;
 
 err_init_proc:
-	exi_event_unregister(exi_channel, EXI_EVENT_IRQ);
+	free_irq(dev->spi_device->irq, dev);
 err_event_register:
 	mic_stop_io_thread(dev);
 err_io_thread:
@@ -719,16 +705,14 @@ err_init_snd:
  */
 static void mic_exit(struct mic_device *dev)
 {
-	struct exi_device *exi_device = dev->exi_device;
-	struct exi_channel *exi_channel = exi_get_exi_channel(exi_device);
-
 DBG("enter\n");
 
 	dev->running = 0;
 
 	mic_exit_proc(dev);
 
-	exi_event_unregister(exi_channel, EXI_EVENT_IRQ);
+	if (dev->spi_device->irq)
+		free_irq(dev->spi_device->irq, dev);
 
 	if (!IS_ERR(dev->io_thread))
 		mic_stop_io_thread(dev);
@@ -739,14 +723,10 @@ DBG("enter\n");
 /*
  *
  */
-static int mic_probe(struct exi_device *exi_device)
+static int mic_probe(struct spi_device *spi)
 {
 	struct mic_device *dev;
 	int retval;
-
-	/* we only care about the microphone */
-	if (exi_device->eid.id != MIC_EXI_ID)
-		return -ENODEV;
 
 	DBG("Microphone inserted\n");
 
@@ -754,14 +734,12 @@ static int mic_probe(struct exi_device *exi_device)
 	if (!dev)
 		return -ENOMEM;
 
-	dev->exi_device = exi_device_get(exi_device);
-	exi_set_drvdata(exi_device, dev);
+	dev->spi_device = spi;
+	spi_set_drvdata(spi, dev);
 
 	retval = mic_init(dev);
 	if (retval) {
-		exi_set_drvdata(exi_device, NULL);
-		exi_device_put(exi_device);
-		dev->exi_device = NULL;
+		spi_set_drvdata(spi, NULL);
 		kfree(dev);
 	}
 
@@ -771,40 +749,30 @@ static int mic_probe(struct exi_device *exi_device)
 /*
  *
  */
-static void mic_remove(struct exi_device *exi_device)
+static void mic_remove(struct spi_device *spi)
 {
-	struct mic_device *dev = exi_get_drvdata(exi_device);
+	struct mic_device *dev = spi_get_drvdata(spi);
 
 	DBG("Microphone removed\n");
 
 	if (dev) {
 		mic_exit(dev);
-		if (dev->exi_device)
-			exi_device_put(dev->exi_device);
-		dev->exi_device = NULL;
 		kfree(dev);
 	}
-	exi_set_drvdata(exi_device, NULL);
+	spi_set_drvdata(spi, NULL);
 }
 
-static struct exi_device_id mic_eid_table[] = {
-	[0] = {
-	       .channel = MIC_SLOTA_CHANNEL,
-	       .device = MIC_SLOTA_DEVICE,
-	       .id = MIC_EXI_ID,
-	       },
-	[1] = {
-	       .channel = MIC_SLOTB_CHANNEL,
-	       .device = MIC_SLOTB_DEVICE,
-	       .id = MIC_EXI_ID,
-	       },
-	{.id = 0}
+static const struct spi_device_id mic_id_table[] = {
+	{ "gamecube-microphone" },
+	{ }
 };
+MODULE_DEVICE_TABLE(spi, mic_id_table);
 
-static struct exi_driver mic_driver = {
-	.name = DRV_MODULE_NAME,
-	.eid_table = mic_eid_table,
-	.frequency = MIC_SPI_CLK_IDX,
+static struct spi_driver mic_driver = {
+	.driver = {
+		.name = DRV_MODULE_NAME,
+	},
+	.id_table = mic_id_table,
 	.probe = mic_probe,
 	.remove = mic_remove,
 };
@@ -816,14 +784,14 @@ static int __init mic_init_module(void)
 	mic_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
 		  mic_driver_version);
 
-	retval = exi_driver_register(&mic_driver);
+	retval = spi_register_driver(&mic_driver);
 
 	return retval;
 }
 
 static void __exit mic_exit_module(void)
 {
-	exi_driver_unregister(&mic_driver);
+	spi_unregister_driver(&mic_driver);
 }
 
 module_init(mic_init_module);
