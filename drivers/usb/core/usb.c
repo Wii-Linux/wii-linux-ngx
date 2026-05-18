@@ -1006,14 +1006,9 @@ EXPORT_SYMBOL_GPL(__usb_get_extra_descriptor);
 void *usb_alloc_coherent(struct usb_device *dev, size_t size, gfp_t mem_flags,
 			 dma_addr_t *dma)
 {
-	void *ret;
-	printk("# usb_alloc_coherent dev=%px size=%zu mem_flags=%pGg dma=%pad\n",
-		dev, size, &mem_flags, dma);
 	if (!dev || !dev->bus)
 		return NULL;
-	ret = hcd_buffer_alloc(dev->bus, size, mem_flags, dma);
-	printk("#  hcd_buffer_alloc -> ret=%px dma=%pad\n", ret, dma);
-	return ret;
+	return hcd_buffer_alloc(dev->bus, size, mem_flags, dma);
 }
 EXPORT_SYMBOL_GPL(usb_alloc_coherent);
 
@@ -1031,15 +1026,11 @@ EXPORT_SYMBOL_GPL(usb_alloc_coherent);
 void usb_free_coherent(struct usb_device *dev, size_t size, void *addr,
 		       dma_addr_t dma)
 {
-	printk("# usb_free_coherent dev=%px size=%zu addr=%px dma=%pad\n",
-		dev, size, addr, &dma);
 	if (!dev || !dev->bus)
 		return;
 	if (!addr)
 		return;
-	print_hex_dump("", "#  addr: ", DUMP_PREFIX_ADDRESS, 16, 1, addr, size, true);
 	hcd_buffer_free(dev->bus, size, addr, dma);
-	printk("#  hcd_buffer_free\n");
 }
 EXPORT_SYMBOL_GPL(usb_free_coherent);
 
