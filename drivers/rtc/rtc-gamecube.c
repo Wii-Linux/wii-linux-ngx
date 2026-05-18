@@ -82,7 +82,7 @@ static int rtc_reg_read(void *context, u32 reg, u32 *data)
 static int rtc_reg_write(void *context, u32 reg, u32 data)
 {
 	int err;
-	__be32 cmd = cpu_to_be32(reg << 8);
+	__be32 cmd = cpu_to_be32((reg << 8) | BIT(31));
 	struct priv *d = (struct priv *)context;
 	struct spi_transfer xfers[2] = {
 		{ .tx_buf = &cmd, .rx_buf = NULL, .len = 4 },
