@@ -52,6 +52,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/interrupt.h>
@@ -61,8 +62,8 @@
 #include <linux/io.h>
 #include <linux/mmc/mmc.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/workqueue.h>
-
 
 /*
  * Hardware registers
@@ -119,6 +120,9 @@ struct exi_regs {
 #define EXI_SD_R1_IDLE       BIT(0)
 #define EXI_SD_R1_BUSY       BIT(7)
 
+#define EXI_DMA_ALIGN        0x1f
+#define EXI_DMA_MIN_LEN      (EXI_DMA_ALIGN + 1)
+
 enum exi_cs_mode {
 	EXI_CS_NORMAL,
 	EXI_CS_SD,
@@ -134,6 +138,7 @@ struct exi_channel {
 	struct exi_spi *exi;
 	struct spi_controller *ctlr;
 	struct exi_channel_regs __iomem *regs;
+	spinlock_t io_lock;
 	struct spi_device *devices[3];
 	bool selected[3];
 	bool clock_only[3];
@@ -247,7 +252,47 @@ static u32 exi_preserved_csr(struct exi_channel *channel)
 
 static void exi_clear_ext(struct exi_channel *channel)
 {
-	out_be32(&channel->regs->csr, exi_preserved_csr(channel) | EXI_CSR_EXTINT);
+	unsigned long flags;
+
+	spin_lock_irqsave(&channel->io_lock, flags);
+	out_be32(&channel->regs->csr,
+		 in_be32(&channel->regs->csr) | EXI_CSR_EXTINT);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+}
+
+static void exi_clear_exiint(struct exi_channel *channel)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&channel->io_lock, flags);
+	out_be32(&channel->regs->csr,
+		 in_be32(&channel->regs->csr) | EXI_CSR_EXIINT);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+}
+
+static void exi_set_exiint_mask(struct exi_channel *channel, bool enabled)
+{
+	unsigned long flags;
+	u32 csr;
+
+	spin_lock_irqsave(&channel->io_lock, flags);
+	csr = in_be32(&channel->regs->csr) | EXI_CSR_EXIINT;
+	if (enabled)
+		csr |= EXI_CSR_EXIINTMASK;
+	else
+		csr &= ~EXI_CSR_EXIINTMASK;
+
+	out_be32(&channel->regs->csr, csr);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+}
+
+static void exi_set_device_irq(struct exi_spi *exi, unsigned int channel,
+			       const char *modalias, bool enabled)
+{
+	if (!strcmp(modalias, "gamecube-bba"))
+		exi_set_exiint_mask(&exi->channels[2], enabled);
+	else if (!strcmp(modalias, "gamecube-microphone"))
+		exi_set_exiint_mask(&exi->channels[channel], enabled);
 }
 
 /*
@@ -264,6 +309,7 @@ static void exi_select(struct exi_channel *channel,
 {
 	u32 csr;
 	struct exi_spi *exi;
+	unsigned long flags;
 
 	if (WARN_ON(!channel))
 		return;
@@ -276,11 +322,13 @@ static void exi_select(struct exi_channel *channel,
 		channel->num, cs, (1 << (clk >> EXI_CSR_CLK_SHIFT)),
 		&channel->regs->csr);
 
+	spin_lock_irqsave(&channel->io_lock, flags);
 	csr = exi_preserved_csr(channel);
 	csr |= (1 << (EXI_CSR_CS_SHIFT + cs)); /* set the appropriate CS bit */
 	csr |= clk;                            /* set the appropriate CLK bits */
 	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
+	spin_unlock_irqrestore(&channel->io_lock, flags);
 }
 
 /*
@@ -290,6 +338,7 @@ static void exi_select_clock(struct exi_channel *channel, unsigned int clk)
 {
 	u32 csr;
 	struct exi_spi *exi;
+	unsigned long flags;
 
 	if (WARN_ON(!channel))
 		return;
@@ -301,9 +350,11 @@ static void exi_select_clock(struct exi_channel *channel, unsigned int clk)
 	dev_dbg(exi->dev, "Channel %d, selecting clock %dMHz without CS\n",
 		channel->num, (1 << (clk >> EXI_CSR_CLK_SHIFT)));
 
+	spin_lock_irqsave(&channel->io_lock, flags);
 	csr = exi_preserved_csr(channel);
 	csr |= clk;
 	out_be32(&channel->regs->csr, csr);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
 }
 
 /*
@@ -314,14 +365,17 @@ static void exi_deselect(struct exi_channel *channel)
 {
 	u32 csr;
 	struct exi_spi *exi;
+	unsigned long flags;
 
 	if (WARN_ON(!channel))
 		return;
 
 	exi = channel->exi;
+	spin_lock_irqsave(&channel->io_lock, flags);
 	csr = exi_preserved_csr(channel);
 	dev_dbg(exi->dev, "Writing CSR=0x%08x\n", csr);
 	out_be32(&channel->regs->csr, csr);    /* write CSR back */
+	spin_unlock_irqrestore(&channel->io_lock, flags);
 }
 
 static void exi_select_for_device(struct exi_channel *channel,
@@ -463,6 +517,174 @@ static int exi_xfer_imm(struct exi_channel *channel,
 #define exi_write_imm(channel, len, in)     exi_xfer_imm(channel, len, MODE_WRITE, in, NULL)
 #define exi_rdwr_imm(channel, len, in, out) exi_xfer_imm(channel, len, MODE_READ | MODE_WRITE, in, out)
 
+static bool exi_dma_aligned(const void *buf)
+{
+	return !((unsigned long)buf & EXI_DMA_ALIGN);
+}
+
+static unsigned long exi_dma_align_next_addr(const void *buf)
+{
+	return ((unsigned long)buf + EXI_DMA_ALIGN) & ~((unsigned long)EXI_DMA_ALIGN);
+}
+
+static unsigned long exi_dma_align_prev_addr(const void *buf)
+{
+	return (unsigned long)buf & ~((unsigned long)EXI_DMA_ALIGN);
+}
+
+static int exi_xfer_imm_buf(struct exi_channel *channel, const u8 **tx,
+			    u8 **rx, size_t len)
+{
+	int ret = 0;
+
+	while (len) {
+		unsigned int xfer_len = len >= 4 ? 4 : len;
+
+		if (*rx && *tx)
+			ret = exi_rdwr_imm(channel, xfer_len, *tx, *rx);
+		else if (*rx)
+			ret = exi_read_imm(channel, xfer_len, *rx);
+		else if (*tx)
+			ret = exi_write_imm(channel, xfer_len, *tx);
+		else
+			return -EINVAL;
+
+		if (ret)
+			return ret;
+
+		if (*tx)
+			*tx += xfer_len;
+		if (*rx)
+			*rx += xfer_len;
+		len -= xfer_len;
+	}
+
+	return 0;
+}
+
+static int exi_xfer_dma_addr(struct exi_channel *channel, dma_addr_t dma_addr,
+			     size_t len, enum dma_data_direction dir)
+{
+	struct exi_spi *exi = channel->exi;
+	u32 cr;
+	unsigned long deadline;
+	unsigned long flags;
+	int ret = 0;
+
+	if (WARN_ON(dma_addr & EXI_DMA_ALIGN) || WARN_ON(len & EXI_DMA_ALIGN))
+		return -EINVAL;
+
+	out_be32(&channel->regs->data, ~0);
+	out_be32(&channel->regs->mar, dma_addr);
+	out_be32(&channel->regs->length, len);
+	spin_lock_irqsave(&channel->io_lock, flags);
+	out_be32(&channel->regs->csr,
+		 in_be32(&channel->regs->csr) | EXI_CSR_TCINTMASK);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+
+	cr = EXI_CR_TSTART | EXI_CR_DMA;
+	if (dir == DMA_FROM_DEVICE)
+		cr |= EXI_CR_RW_RD;
+	else
+		cr |= EXI_CR_RW_WR;
+
+	out_be32(&channel->regs->cr, cr);
+	spin_lock_irqsave(&channel->io_lock, flags);
+	out_be32(&channel->regs->csr,
+		 in_be32(&channel->regs->csr) & ~EXI_CSR_TCINTMASK);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+
+	deadline = jiffies + 2 * HZ;
+	while (in_be32(&channel->regs->cr) & EXI_CR_TSTART) {
+		cpu_relax();
+		if (time_after(jiffies, deadline)) {
+			dev_err(exi->dev, "Channel %d DMA transfer timed out\n",
+				channel->num);
+			ret = -ETIMEDOUT;
+			break;
+		}
+	}
+
+	spin_lock_irqsave(&channel->io_lock, flags);
+	out_be32(&channel->regs->csr,
+		 in_be32(&channel->regs->csr) | EXI_CSR_TCINT);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
+
+	return ret;
+}
+
+static int exi_xfer_dma(struct exi_channel *channel, struct device *dma_dev,
+			const void *buf, size_t len,
+			enum dma_data_direction dir)
+{
+	dma_addr_t dma_addr;
+	int ret;
+
+	if (WARN_ON(!exi_dma_aligned(buf)) || WARN_ON(len & EXI_DMA_ALIGN))
+		return -EINVAL;
+
+	dma_addr = dma_map_single(dma_dev, (void *)buf, len, dir);
+	if (dma_mapping_error(dma_dev, dma_addr))
+		return -EIO;
+
+	if (dma_addr & EXI_DMA_ALIGN) {
+		dma_unmap_single(dma_dev, dma_addr, len, dir);
+		return -EADDRNOTAVAIL;
+	}
+
+	ret = exi_xfer_dma_addr(channel, dma_addr, len, dir);
+	dma_unmap_single(dma_dev, dma_addr, len, dir);
+
+	return ret;
+}
+
+static int exi_xfer_half_duplex(struct exi_channel *channel, const u8 **tx,
+				u8 **rx, size_t len, struct device *dma_dev)
+{
+	const void *buf = *tx ?: *rx;
+	enum dma_data_direction dir = *rx ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
+	size_t pre_len, dma_len, post_len;
+	unsigned long dma_start, dma_end, buf_start, buf_end;
+	bool used_dma = true;
+	int ret;
+
+	if (len < EXI_DMA_MIN_LEN)
+		return exi_xfer_imm_buf(channel, tx, rx, len);
+
+	buf_start = (unsigned long)buf;
+	buf_end = buf_start + len;
+	dma_start = exi_dma_align_next_addr(buf);
+	dma_end = exi_dma_align_prev_addr((void *)buf_end);
+
+	if (dma_end <= dma_start)
+		return exi_xfer_imm_buf(channel, tx, rx, len);
+
+	pre_len = dma_start - buf_start;
+	dma_len = dma_end - dma_start;
+	post_len = buf_end - dma_end;
+
+	ret = exi_xfer_imm_buf(channel, tx, rx, pre_len);
+	if (ret)
+		return ret;
+
+	ret = exi_xfer_dma(channel, dma_dev, *tx ?: *rx, dma_len, dir);
+	if (ret == -EADDRNOTAVAIL) {
+		used_dma = false;
+		ret = exi_xfer_imm_buf(channel, tx, rx, dma_len);
+	}
+	if (ret)
+		return ret;
+
+	if (used_dma) {
+		if (*tx)
+			*tx += dma_len;
+		if (*rx)
+			*rx += dma_len;
+	}
+
+	return exi_xfer_imm_buf(channel, tx, rx, post_len);
+}
+
 static void exi_deselect_for_device(struct exi_channel *channel,
 				    unsigned int cs, unsigned int speed)
 {
@@ -527,10 +749,10 @@ static struct exi_id_entry exi_id_table[] = {
 	{ 0x01020000, "NPDP GDEV", "" },
 	{ 0x02020000, "Modem", "" },
 	{ 0x03010000, "Marlin?", "" },
-	{ 0x04020200, "BroadBand Adapter (DOL-015)", "gamecube-bba" },
+	{ 0x04020200, "BroadBand Adapter (DOL-015)", "gamecube-bba", EXI_CSR_CLK_32MHZ },
 	{ 0x04120000, "AD16", "" },
 	{ 0x05070000, "IS Viewer", "" },
-	{ 0x0a000000, "Microphone (DOL-022)", "gamecube-microphone" },
+	{ 0x0a000000, "Microphone (DOL-022)", "gamecube-microphone", EXI_CSR_CLK_16MHZ },
 	{ 0, NULL, NULL }
 };
 
@@ -704,6 +926,7 @@ static int exi_probe(struct exi_spi *exi,
 	u32 speed = EXI_CSR_CLK_8MHZ, id = exi_read_id(exi, channel, cs);
 	struct exi_id_entry *ent = exi_id_to_entry(id);
 	struct spi_controller *ctlr = exi->channels[channel].ctlr;
+	int ret;
 
 	if (exi->channels[channel].devices[cs])
 		return 0;
@@ -741,6 +964,7 @@ static int exi_probe(struct exi_spi *exi,
 	info.chip_select = cs;
 	info.max_speed_hz = exi_speed_exi_to_spi(speed);
 	info.controller_data = ctlr;
+	info.irq = exi->irq;
 	exi_set_device_mode(exi, channel, cs, modalias);
 
 	/* create it */
@@ -750,8 +974,13 @@ static int exi_probe(struct exi_spi *exi,
 		dev_err(exi->dev, "[%d:%d]: spi_new_device failed\n", channel, cs);
 		return -ENOMEM;
 	}
+	ret = dma_coerce_mask_and_coherent(&device->dev, DMA_BIT_MASK(32));
+	if (ret)
+		dev_warn(exi->dev, "[%d:%d]: failed to set device DMA mask: %d\n",
+			 channel, cs, ret);
 
 	exi->channels[channel].devices[cs] = device;
+	exi_set_device_irq(exi, channel, modalias, true);
 	dev_info(exi->dev, "[%d:%d]: successfully added device\n", channel, cs);
 
 	return 0;
@@ -768,6 +997,8 @@ static void exi_remove_device(struct exi_spi *exi,
 
 	exi_lock(ch);
 	device = ch->devices[cs];
+	if (device)
+		exi_set_device_irq(exi, channel, device->modalias, false);
 	ch->devices[cs] = NULL;
 	ch->selected[cs] = false;
 	ch->clock_only[cs] = false;
@@ -829,20 +1060,37 @@ static irqreturn_t exi_irq(int irq, void *data)
 	struct exi_spi *exi = data;
 	unsigned int channel;
 	bool handled = false;
+	bool hotplug = false;
 
 	for (channel = 0; channel < 3; channel++) {
 		struct exi_channel *ch = &exi->channels[channel];
 		u32 csr = in_be32(&ch->regs->csr);
+
+		if (csr & EXI_CSR_EXIINT) {
+			exi_clear_exiint(ch);
+			handled = true;
+		}
+
+		if (csr & EXI_CSR_TCINT) {
+			unsigned long flags;
+
+			spin_lock_irqsave(&ch->io_lock, flags);
+			out_be32(&ch->regs->csr,
+				 in_be32(&ch->regs->csr) | EXI_CSR_TCINT);
+			spin_unlock_irqrestore(&ch->io_lock, flags);
+			handled = true;
+		}
 
 		if (!(csr & EXI_CSR_EXTINT))
 			continue;
 
 		exi_clear_ext(ch);
 		set_bit(channel, &exi->pending_hotplug);
+		hotplug = true;
 		handled = true;
 	}
 
-	if (handled)
+	if (hotplug)
 		schedule_work(&exi->hotplug_work);
 
 	return handled ? IRQ_HANDLED : IRQ_NONE;
@@ -882,36 +1130,11 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 			exi_select_for_device(channel, cs, speed);
 	}
 
-	while (len) {
-		unsigned int xferLen;
+	if (rx && tx)
+		ret = exi_xfer_imm_buf(channel, &tx, &rx, len);
+	else
+		ret = exi_xfer_half_duplex(channel, &tx, &rx, len, &spi->dev);
 
-		/* TODO: DMA for half-duplex transfers >= 32B */
-		if (len >= 4) {
-			xferLen = 4;
-			len -= 4;
-		} else { /* short / end of transfer */
-			xferLen = len;
-			len = 0;
-		}
-
-		if (rx && tx)
-			ret = exi_rdwr_imm(channel, xferLen, tx, rx);
-		else if (rx)
-			ret = exi_read_imm(channel, xferLen, rx);
-		else if (tx)
-			ret = exi_write_imm(channel, xferLen, tx);
-
-		if (ret)
-			break;
-
-		if (tx)
-			tx += xferLen;
-		if (rx)
-			rx += xferLen;
-	}
-
-	if (!ret)
-		spi_finalize_current_transfer(ctlr);
 	exi_unlock(channel);
 
 	return ret;
@@ -946,7 +1169,7 @@ static void exi_spi_set_cs(struct spi_device *spi, bool enable)
 
 static void exi_init_channel(struct exi_channel *channel)
 {
-	u32 csr = EXI_CSR_EXTINTMASK | EXI_CSR_EXTINT;
+	u32 csr = EXI_CSR_EXIINT | EXI_CSR_EXTINTMASK | EXI_CSR_EXTINT;
 
 	if (channel->num == 0)
 		csr |= EXI_CSR_ROMDIS;
@@ -980,6 +1203,10 @@ static int exi_spi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, exi);
 
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Failed to set DMA mask\n");
+
 	/* Memory-mapped IO region */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	exi->regs = devm_ioremap_resource(&pdev->dev, res);
@@ -999,6 +1226,7 @@ static int exi_spi_probe(struct platform_device *pdev)
 		exi->channels[i].regs = &exi->regs->channels[i];
 		exi->channels[i].num = i;
 		mutex_init(&exi->channels[i].lock);
+		spin_lock_init(&exi->channels[i].io_lock);
 
 		/* controller info */
 		ctlr->bus_num = i;
@@ -1025,7 +1253,7 @@ static int exi_spi_probe(struct platform_device *pdev)
 	if (exi->irq < 0)
 		return exi->irq;
 
-	ret = devm_request_irq(&pdev->dev, exi->irq, exi_irq, 0,
+	ret = devm_request_irq(&pdev->dev, exi->irq, exi_irq, IRQF_SHARED,
 			       dev_name(&pdev->dev), exi);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Failed to request EXI IRQ\n");
