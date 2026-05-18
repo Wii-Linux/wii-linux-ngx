@@ -115,25 +115,19 @@ td_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 	struct td	*td;
 	struct usb_hcd	*hcd = ohci_to_hcd(hc);
 
-	if (hcd->localmem_pool) {
-		td = gen_pool_dma_zalloc_align(hcd->localmem_pool,
-				sizeof(*td), &dma, 32);
-		if (!td)
-			goto err_td;
+	if (hcd->localmem_pool)
+		hw = gen_pool_dma_zalloc_align(hcd->localmem_pool,
+				sizeof(*hw), &dma, 32);
+	else
+		hw = dma_pool_zalloc(hc->td_hw_cache, mem_flags, &dma);
+	if (!hw)
+		goto err_hw;
+	td = kmem_cache_zalloc(hc->td_cache, mem_flags);
+	if (!td)
+		goto err_td;
+	if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
+		ohci_warn(hc, "td %p %p %pad in MEM1\n", td, hw, &dma);
 	}
-	else {
-
-		hw = dma_pool_zalloc (hc->td_hw_cache, mem_flags, &dma);
-		if (!hw)
-			goto err_hw;
-		td = kmem_cache_zalloc (hc->td_cache, mem_flags);
-		if (!td)
-			goto err_td;
-		if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
-			ohci_warn(hc, "td %p %p %pad in MEM1\n", td, hw, &dma);
-		}
-	}
-
 	/* in case hc fetches it, make it look dead */
 	hw->hwNextTD = cpu_to_hc32 (hc, dma);
 	td->hw = hw;
@@ -141,7 +135,10 @@ td_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 	/* hashed in td_fill */
 	return td;
 err_td:
-	dma_pool_free (hc->td_hw_cache, hw, dma);
+	if (hcd->localmem_pool)
+		gen_pool_free(hcd->localmem_pool, (unsigned long)hw, sizeof(*hw));
+	else
+		dma_pool_free(hc->td_hw_cache, hw, dma);
 err_hw:
 	return NULL;
 }
@@ -160,12 +157,11 @@ td_free (struct ohci_hcd *hc, struct td *td)
 		ohci_dbg (hc, "no hash for td %p\n", td);
 
 	if (hcd->localmem_pool)
-		gen_pool_free(hcd->localmem_pool, (unsigned long)td,
-			      sizeof(*td));
-	else {
-		dma_pool_free (hc->td_hw_cache, td->hw, td->td_dma);
-		kmem_cache_free (hc->td_cache, td);
-	}
+		gen_pool_free(hcd->localmem_pool, (unsigned long)td->hw,
+			      sizeof(*td->hw));
+	else
+		dma_pool_free(hc->td_hw_cache, td->hw, td->td_dma);
+	kmem_cache_free(hc->td_cache, td);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -180,27 +176,28 @@ ed_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 	struct usb_hcd	*hcd = ohci_to_hcd(hc);
 
 	if (hcd->localmem_pool)
-		ed = gen_pool_dma_zalloc_align(hcd->localmem_pool,
-				sizeof(*ed), &dma, 16);
-	else {
-		hw = dma_pool_zalloc (hc->ed_hw_cache, mem_flags, &dma);
-		if (!hw)
-			goto err_hw;
-		ed = kmem_cache_zalloc (hc->ed_cache, mem_flags);
-		if (!ed)
-			goto err_ed;
-		if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
-			ohci_warn(hc, "ed %p %pad in MEM1\n", ed, &dma);
-		}
-		ed->hw = hw;
+		hw = gen_pool_dma_zalloc_align(hcd->localmem_pool,
+				sizeof(*hw), &dma, 16);
+	else
+		hw = dma_pool_zalloc(hc->ed_hw_cache, mem_flags, &dma);
+	if (!hw)
+		goto err_hw;
+	ed = kmem_cache_zalloc(hc->ed_cache, mem_flags);
+	if (!ed)
+		goto err_ed;
+	if (IS_ENABLED(CONFIG_WII) && dma < 0x10000000) {
+		ohci_warn(hc, "ed %p %pad in MEM1\n", ed, &dma);
 	}
-
+	ed->hw = hw;
 	ed->dma = dma;
 	INIT_LIST_HEAD (&ed->td_list);
 	return ed;
 
 err_ed:
-	dma_pool_free (hc->ed_hw_cache, hw, dma);
+	if (hcd->localmem_pool)
+		gen_pool_free(hcd->localmem_pool, (unsigned long)hw, sizeof(*hw));
+	else
+		dma_pool_free(hc->ed_hw_cache, hw, dma);
 err_hw:
 	return NULL;
 }
@@ -211,11 +208,10 @@ ed_free (struct ohci_hcd *hc, struct ed *ed)
 	struct usb_hcd	*hcd = ohci_to_hcd(hc);
 
 	if (hcd->localmem_pool)
-		gen_pool_free(hcd->localmem_pool, (unsigned long)ed,
-			      sizeof(*ed));
-	else {
-		dma_pool_free (hc->ed_hw_cache, ed->hw, ed->dma);
-		kmem_cache_free (hc->ed_cache, ed);
-	}
+		gen_pool_free(hcd->localmem_pool, (unsigned long)ed->hw,
+			      sizeof(*ed->hw));
+	else
+		dma_pool_free(hc->ed_hw_cache, ed->hw, ed->dma);
+	kmem_cache_free(hc->ed_cache, ed);
 }
 

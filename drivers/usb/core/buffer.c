@@ -16,7 +16,6 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
-#include <linux/dma-map-ops.h>
 #include <linux/genalloc.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -71,7 +70,7 @@ int hcd_buffer_create(struct usb_hcd *hcd)
 	if (hcd->driver->flags & HCD_NO_COHERENT_MEM)
 		return 0;
 
-	if (hcd->localmem_pool || !hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev))
+	if (hcd->localmem_pool || !hcd_uses_dma(hcd))
 		return 0;
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
@@ -156,20 +155,16 @@ void *hcd_buffer_alloc(
 		return gen_pool_dma_alloc(hcd->localmem_pool, size, dma);
 
 	/* some USB hosts just use PIO */
-	if (!hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev)) {
+	if (!hcd_uses_dma(hcd)) {
 		*dma = ~(dma_addr_t) 0;
-		ret = kmalloc(size, mem_flags);
-		return ret;
+		return kmalloc(size, mem_flags);
 	}
 
 	for (i = 0; i < HCD_BUFFER_POOLS; i++) {
-		if (size <= pool_max[i]) {
-			ret = dma_pool_alloc(hcd->pool[i], mem_flags, dma);
-			return ret;
-		}
+		if (size <= pool_max[i])
+			return dma_pool_alloc(hcd->pool[i], mem_flags, dma);
 	}
-	ret = dma_alloc_coherent(hcd->self.sysdev, size, dma, mem_flags);
-	return ret;
+	return dma_alloc_coherent(hcd->self.sysdev, size, dma, mem_flags);
 }
 
 void hcd_buffer_free(
@@ -185,20 +180,20 @@ void hcd_buffer_free(
 	if (!addr)
 		return;
 
-	if (hcd->localmem_pool ) {
-		gen_pool_free(hcd->localmem_pool, (unsigned long)addr, size);
-		return;
-	}
-
 	if (hcd->driver->flags & HCD_NO_COHERENT_MEM) {
 		size = ALIGN(size, dma_get_cache_alignment());
 		BUG_ON(!IS_ALIGNED(size, ARCH_DMA_MINALIGN));
-		dma_unmap_single(hcd->self.sysdev, dma, size, DMA_TO_DEVICE);
+		dma_unmap_single(hcd->self.sysdev, dma, size, DMA_BIDIRECTIONAL);
 		kfree(addr);
 		return;
 	}
 
-	if (!hcd_uses_dma(hcd) || !dev_is_dma_coherent(hcd->self.sysdev)) {
+	if (hcd->localmem_pool) {
+		gen_pool_free(hcd->localmem_pool, (unsigned long)addr, size);
+		return;
+	}
+
+	if (!hcd_uses_dma(hcd)) {
 		kfree(addr);
 		return;
 	}
@@ -215,8 +210,29 @@ void hcd_buffer_free(
 void *hcd_buffer_alloc_pages(struct usb_hcd *hcd,
 		size_t size, gfp_t mem_flags, dma_addr_t *dma)
 {
+	void *ret;
+
 	if (size == 0)
 		return NULL;
+
+	if (hcd->driver->flags & HCD_NO_COHERENT_MEM) {
+		size = ALIGN(size, dma_get_cache_alignment());
+		BUG_ON(!IS_ALIGNED(size, ARCH_DMA_MINALIGN));
+		ret = kzalloc(size, mem_flags);
+		if (!ret) {
+			return NULL;
+		}
+		if (!IS_ALIGNED((size_t)ret, dma_get_cache_alignment())) {
+			kfree(ret);
+			return NULL;
+		}
+		*dma = dma_map_single(hcd->self.sysdev, ret, size, DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(hcd->self.sysdev, *dma)) {
+			kfree(ret);
+			return NULL;
+		}
+		return ret;
+	}
 
 	if (hcd->localmem_pool)
 		return gen_pool_dma_alloc_align(hcd->localmem_pool,
@@ -238,6 +254,14 @@ void hcd_buffer_free_pages(struct usb_hcd *hcd,
 {
 	if (!addr)
 		return;
+
+	if (hcd->driver->flags & HCD_NO_COHERENT_MEM) {
+		size = ALIGN(size, dma_get_cache_alignment());
+		BUG_ON(!IS_ALIGNED(size, ARCH_DMA_MINALIGN));
+		dma_unmap_single(hcd->self.sysdev, dma, size, DMA_BIDIRECTIONAL);
+		kfree(addr);
+		return;
+	}
 
 	if (hcd->localmem_pool) {
 		gen_pool_free(hcd->localmem_pool,
