@@ -18,6 +18,7 @@ obj-$(CONFIG_PS3_VRAM)		+= ps3vram.o
 obj-$(CONFIG_ATARI_FLOPPY)	+= ataflop.o
 obj-$(CONFIG_AMIGA_Z2RAM)	+= z2ram.o
 obj-$(CONFIG_N64CART)		+= n64cart.o
+obj-$(CONFIG_BLK_DEV_GCN_ARAM)	+= gcn-aram.o
 obj-$(CONFIG_BLK_DEV_HLWD_DI)	+= hlwd-di.o
 obj-$(CONFIG_BLK_DEV_RAM)	+= brd.o
 obj-$(CONFIG_BLK_DEV_LOOP)	+= loop.o
