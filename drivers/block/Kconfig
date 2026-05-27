@@ -89,6 +89,16 @@ config N64CART
 	help
 	  Support for the N64 cart.
 
+config BLK_DEV_GCN_ARAM
+	tristate "Nintendo GameCube Auxiliary RAM (ARAM) block device"
+	depends on GAMECUBE && OF
+	help
+	  This enables support for using the 16 MiB of Auxiliary RAM found
+	  in the Nintendo GameCube as a block device.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gcn-aram.
+
 config BLK_DEV_HLWD_DI
 	tristate "Nintendo Hollywood Drive Interface support"
 	depends on WII || GAMECUBE
