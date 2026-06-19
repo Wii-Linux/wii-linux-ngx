@@ -84,7 +84,6 @@ struct snd_gcn {
 	struct snd_pcm_substream	*playback_substream;
 	struct snd_pcm_substream	*capture_substream;
 
-	int		start_play;
 	int		stop_play;
 
 	dma_addr_t	dma_addr;
@@ -113,6 +112,21 @@ static void ai_dsp_load_sample(void __iomem *dsp_base,
 	out_be16(dsp_base + AI_DSP_DMA_CTLLEN,
 		 (in_be16(dsp_base + AI_DSP_DMA_CTLLEN) & AI_CTLLEN_PLAY) |
 		 size >> 5);
+}
+
+/*
+ * Update only the DMA start address registers.
+ *
+ * The AI DMA auto-reloads ADDR/LEN into the active transfer when the block
+ * counter (LEFT) reaches zero, continuing seamlessly and raising AIDINT. So
+ * writing the *next* period's address here, while the current period is still
+ * playing, queues it for a gapless hand-off at the wrap point. The length is
+ * constant across periods, so it never needs to be rewritten.
+ */
+static void ai_dsp_set_next_addr(void __iomem *dsp_base, dma_addr_t dma)
+{
+	out_be16(dsp_base + AI_DSP_DMA_ADDRH, dma >> 16);
+	out_be16(dsp_base + AI_DSP_DMA_ADDRL, dma & 0xffff);
 }
 
 static void ai_dsp_start_sample(void __iomem *dsp_base)
@@ -184,7 +198,16 @@ static struct snd_pcm_hardware snd_gcn_playback = {
 	.buffer_bytes_max = 32768,
 	.period_bytes_min = 4096,
 	.period_bytes_max = 32768,
-	.periods_min = 2,
+	/*
+	 * At least 3 periods are required: the DMA auto-reloads the next
+	 * period the instant the current one finishes, so to keep the
+	 * (noncoherent) buffer coherent we must write back each period one
+	 * reload *ahead* of when the hardware reads it. With only 2 periods
+	 * there is no safe window between userspace refilling a period and the
+	 * DMA reloading it, so we would flush stale data. Three periods give a
+	 * full period of slack for the writeback.
+	 */
+	.periods_min = 3,
 	.periods_max = 1024,
 };
 
@@ -255,22 +278,33 @@ static int snd_gcn_trigger(struct snd_pcm_substream *substream, int cmd)
 	case SNDRV_PCM_TRIGGER_START:
 		/* do something to start the PCM engine */
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			dma_addr_t base = runtime->dma_addr;
+
 			chip->period_size = snd_pcm_lib_period_bytes(substream);
 			chip->nperiods = snd_pcm_lib_buffer_bytes(substream) /
 					 chip->period_size;
 			chip->cur_period = 0;
 			chip->stop_play = 0;
-			chip->start_play = 1;
+			chip->dma_addr = base;
 
-			chip->dma_addr = runtime->dma_addr;
+			/*
+			 * The whole buffer is already filled by userspace at
+			 * start. Write back the period we are about to play and
+			 * the one the hardware will auto-reload first, then let
+			 * the DMA run continuously: period 0 plays now, period 1
+			 * is queued for a gapless hand-off when period 0 wraps.
+			 */
+			dma_sync_single_for_device(chip->dev, base,
+				chip->period_size, DMA_TO_DEVICE);
 			dma_sync_single_for_device(chip->dev,
-				chip->dma_addr,
-				chip->period_size,
-				DMA_TO_DEVICE);
+				base + chip->period_size,
+				chip->period_size, DMA_TO_DEVICE);
 
-			ai_dsp_load_sample(chip->dsp_base, chip->dma_addr,
+			ai_dsp_load_sample(chip->dsp_base, base,
 					   chip->period_size);
 			ai_dsp_start_sample(chip->dsp_base);
+			ai_dsp_set_next_addr(chip->dsp_base,
+					     base + chip->period_size);
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
@@ -308,33 +342,39 @@ static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
 	if (!(csr & AI_CSR_AIDINT))
 		return IRQ_NONE;
 
-	if (chip->start_play) {
-		chip->start_play = 0;
-	} else {
-		/* stop current sample */
+	if (chip->stop_play) {
+		/* drain done: halt the DMA */
 		ai_dsp_stop_sample(chip->dsp_base);
+	} else {
+		dma_addr_t base = chip->playback_substream->runtime->dma_addr;
+		int next;
 
-		/* load next sample if we are not stopping */
-		if (!chip->stop_play) {
-			if (chip->cur_period < (chip->nperiods - 1))
-				chip->cur_period++;
-			else
-				chip->cur_period = 0;
+		/*
+		 * The period we queued last time has just been auto-reloaded
+		 * and is now playing, so advance to it. The DMA is never
+		 * stopped here, so playback stays gapless.
+		 */
+		if (chip->cur_period < (chip->nperiods - 1))
+			chip->cur_period++;
+		else
+			chip->cur_period = 0;
 
-			chip->dma_addr = chip->playback_substream->runtime->dma_addr
-				   + (chip->cur_period * chip->period_size);
+		/*
+		 * Queue the following period for the next seamless reload. It
+		 * is one reload (~one period) away, which gives us time to
+		 * write it back here, out of the audio path, rather than in
+		 * the critical hand-off window.
+		 */
+		next = chip->cur_period + 1;
+		if (next >= chip->nperiods)
+			next = 0;
+		chip->dma_addr = base + (next * chip->period_size);
 
-		 	dma_sync_single_for_device(chip->dev,
-			   	chip->dma_addr,
-			   	chip->period_size,
-			   	DMA_TO_DEVICE);
+		dma_sync_single_for_device(chip->dev, chip->dma_addr,
+					   chip->period_size, DMA_TO_DEVICE);
+		ai_dsp_set_next_addr(chip->dsp_base, chip->dma_addr);
 
-			ai_dsp_load_sample(chip->dsp_base, chip->dma_addr,
-					   chip->period_size);
-			ai_dsp_start_sample(chip->dsp_base);
-
-			snd_pcm_period_elapsed(chip->playback_substream);
-		}
+		snd_pcm_period_elapsed(chip->playback_substream);
 	}
 	/*
 	 * Ack the AI DMA interrupt, going through lengths to only ack
@@ -547,6 +587,7 @@ static const struct of_device_id ai_resets_match[] = {
 static int ai_of_probe(struct platform_device *odev)
 {
 	struct resource dsp, ai, resets;
+	struct resource *resets_p = NULL;
 	struct device_node *dsp_np, *resets_np;
 	int retval;
 
@@ -581,15 +622,17 @@ static int ai_of_probe(struct platform_device *odev)
 		retval = of_address_to_resource(resets_np, 0, &resets);
 		if (retval) {
 			dev_err(&odev->dev, "no resets io memory range found\n");
+			of_node_put(resets_np);
 			return -ENODEV;
 		}
+		/* only pass the resets resource down once it's valid */
+		resets_p = &resets;
+		of_node_put(resets_np);
 	}
-
-	of_node_put(resets_np);
 
 	of_reserved_mem_device_init(&odev->dev);
 
-	return ai_do_probe(&odev->dev, &dsp, &ai, &resets,
+	return ai_do_probe(&odev->dev, &dsp, &ai, resets_p,
 			   irq_of_parse_and_map(odev->dev.of_node, 0));
 }
 
