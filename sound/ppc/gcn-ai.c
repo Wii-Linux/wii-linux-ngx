@@ -88,6 +88,7 @@ struct snd_gcn {
 
 	dma_addr_t	dma_addr;
 	size_t		period_size;
+	size_t		remainder;	/* buffer_size % period_size */
 	int		nperiods;
 	int		cur_period;
 
@@ -104,6 +105,16 @@ struct snd_gcn {
  *
  */
 
+/*
+ * Program the DMA start address and length.
+ *
+ * The AI DMA auto-reloads ADDR/LEN into the active transfer when the block
+ * counter (LEFT) reaches zero, continuing seamlessly and raising AIDINT. So
+ * calling this while a period is still playing queues the *next* period for a
+ * gapless hand-off at the wrap point (the registers are the reload source, not
+ * the live counters). Used both to start the first period and to queue each
+ * following one. The PLAY bit is preserved.
+ */
 static void ai_dsp_load_sample(void __iomem *dsp_base,
 			       dma_addr_t dma, size_t size)
 {
@@ -112,21 +123,6 @@ static void ai_dsp_load_sample(void __iomem *dsp_base,
 	out_be16(dsp_base + AI_DSP_DMA_CTLLEN,
 		 (in_be16(dsp_base + AI_DSP_DMA_CTLLEN) & AI_CTLLEN_PLAY) |
 		 size >> 5);
-}
-
-/*
- * Update only the DMA start address registers.
- *
- * The AI DMA auto-reloads ADDR/LEN into the active transfer when the block
- * counter (LEFT) reaches zero, continuing seamlessly and raising AIDINT. So
- * writing the *next* period's address here, while the current period is still
- * playing, queues it for a gapless hand-off at the wrap point. The length is
- * constant across periods, so it never needs to be rewritten.
- */
-static void ai_dsp_set_next_addr(void __iomem *dsp_base, dma_addr_t dma)
-{
-	out_be16(dsp_base + AI_DSP_DMA_ADDRH, dma >> 16);
-	out_be16(dsp_base + AI_DSP_DMA_ADDRL, dma & 0xffff);
 }
 
 static void ai_dsp_start_sample(void __iomem *dsp_base)
@@ -180,6 +176,25 @@ static void ai_set_rate(void __iomem *ai_base, int fortyeight)
 			 in_be32(ai_base + AI_AICR) | AI_AICR_RATE);
 }
 
+
+/*
+ * Length in bytes of a given period.
+ *
+ * ALSA does not guarantee buffer_size is an exact multiple of period_size
+ * (e.g. speaker-test). We drive the buffer as nperiods fixed-size periods and
+ * fold the leftover bytes (remainder) into the last period, so the DMA
+ * consumes the whole buffer per lap and the reported pointer reaches the true
+ * buffer end. When buffer_size is a clean multiple, remainder is 0 and every
+ * period is period_size.
+ */
+static size_t ai_period_len(struct snd_gcn *chip, int period)
+{
+	size_t len = chip->period_size;
+
+	if (period == chip->nperiods - 1)
+		len += chip->remainder;
+	return len;
+}
 
 static int index = SNDRV_DEFAULT_IDX1;	/* index 0-MAX */
 static char *id = SNDRV_DEFAULT_STR1;	/* ID for this card */
@@ -280,9 +295,12 @@ static int snd_gcn_trigger(struct snd_pcm_substream *substream, int cmd)
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 			dma_addr_t base = runtime->dma_addr;
 
+			unsigned int buf_bytes =
+				snd_pcm_lib_buffer_bytes(substream);
+
 			chip->period_size = snd_pcm_lib_period_bytes(substream);
-			chip->nperiods = snd_pcm_lib_buffer_bytes(substream) /
-					 chip->period_size;
+			chip->nperiods = buf_bytes / chip->period_size;
+			chip->remainder = buf_bytes % chip->period_size;
 			chip->cur_period = 0;
 			chip->stop_play = 0;
 			chip->dma_addr = base;
@@ -293,18 +311,21 @@ static int snd_gcn_trigger(struct snd_pcm_substream *substream, int cmd)
 			 * the one the hardware will auto-reload first, then let
 			 * the DMA run continuously: period 0 plays now, period 1
 			 * is queued for a gapless hand-off when period 0 wraps.
+			 * (With periods_min >= 3, periods 0 and 1 are never the
+			 * remainder-extended last period.)
 			 */
 			dma_sync_single_for_device(chip->dev, base,
-				chip->period_size, DMA_TO_DEVICE);
+				ai_period_len(chip, 0), DMA_TO_DEVICE);
 			dma_sync_single_for_device(chip->dev,
 				base + chip->period_size,
-				chip->period_size, DMA_TO_DEVICE);
+				ai_period_len(chip, 1), DMA_TO_DEVICE);
 
 			ai_dsp_load_sample(chip->dsp_base, base,
-					   chip->period_size);
+					   ai_period_len(chip, 0));
 			ai_dsp_start_sample(chip->dsp_base);
-			ai_dsp_set_next_addr(chip->dsp_base,
-					     base + chip->period_size);
+			ai_dsp_load_sample(chip->dsp_base,
+					   base + chip->period_size,
+					   ai_period_len(chip, 1));
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
@@ -322,11 +343,26 @@ static snd_pcm_uframes_t snd_gcn_pointer(struct snd_pcm_substream *substream)
 	struct snd_gcn *chip = snd_pcm_substream_chip(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int left, bytes;
+	snd_pcm_uframes_t pos;
 
 	left = ai_dsp_get_remaining_byte_count(chip->dsp_base);
-	bytes = chip->period_size * (chip->cur_period + 1);
+	/*
+	 * Bytes consumed so far this lap: all completed periods (each
+	 * period_size) plus how far into the current period we are. The last
+	 * period may be remainder-extended, so use its real length.
+	 */
+	bytes = chip->period_size * chip->cur_period +
+		ai_period_len(chip, chip->cur_period);
 
-	return bytes_to_frames(runtime, bytes - left);
+	pos = bytes_to_frames(runtime, bytes - left);
+	/*
+	 * At the instant the last period drains (left == 0) this equals
+	 * buffer_size; the pointer must stay within [0, buffer_size).
+	 */
+	if (pos >= runtime->buffer_size)
+		pos -= runtime->buffer_size;
+
+	return pos;
 }
 
 static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
@@ -371,8 +407,10 @@ static irqreturn_t snd_gcn_interrupt(int irq, void *dev)
 		chip->dma_addr = base + (next * chip->period_size);
 
 		dma_sync_single_for_device(chip->dev, chip->dma_addr,
-					   chip->period_size, DMA_TO_DEVICE);
-		ai_dsp_set_next_addr(chip->dsp_base, chip->dma_addr);
+					   ai_period_len(chip, next),
+					   DMA_TO_DEVICE);
+		ai_dsp_load_sample(chip->dsp_base, chip->dma_addr,
+				   ai_period_len(chip, next));
 
 		snd_pcm_period_elapsed(chip->playback_substream);
 	}
