@@ -451,10 +451,10 @@ static int snd_gcn_new_pcm(struct snd_gcn *chip)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
 			&snd_gcn_playback_ops);
 
-	/* preallocate 64k buffer */
+	/* preallocate 32k buffer */
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_NONCOHERENT, chip->dev,
-					      64 * 1024,
-					      64 * 1024);
+					      32 * 1024,
+					      32 * 1024);
 
 	pcm->info_flags = 0;
 	pcm->private_data = chip;
