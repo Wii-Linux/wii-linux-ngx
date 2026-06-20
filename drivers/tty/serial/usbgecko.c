@@ -8,8 +8,6 @@
  * Copyright (C) 2024-2026 Michael "Techflash" Garofalo
  */
 
-#define UG_DEBUG
-
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/module.h>
