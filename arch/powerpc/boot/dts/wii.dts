@@ -44,6 +44,16 @@
 			alloc-ranges = <0x10000000 0x04000000>; /* MEM2 */
 		};
 
+		/*
+		 * Cached MEM2 arena for bouncing MEM1-resident IN buffers.
+		 * NOT no-map: it must stay in the kernel linear map so it is
+		 * cacheable and phys_to_virt() is valid. Fixed address so the
+		 * dynamic usb-dma allocation routes around it.
+		 */
+		USB_BOUNCE: usb-bounce@13c00000 {
+			reg = <0x13c00000 0x00200000>; /* 2 MiB, MEM2 */
+		};
+
 		EFB: efb@8000000 {
 			reg = <0x08000000 0x00300000>;
 			no-map;
@@ -159,7 +169,7 @@
 			big-endian-regs;
 			interrupts = <4>;
 			interrupt-parent = <&PIC1>;
-			memory-region = <&USB_DMA>;
+			memory-region = <&USB_DMA &USB_BOUNCE>;
 		};
 
 		usb@d050000 {
@@ -168,7 +178,7 @@
 			big-endian-regs;
 			interrupts = <5>;
 			interrupt-parent = <&PIC1>;
-			memory-region = <&USB_DMA>;
+			memory-region = <&USB_DMA &USB_BOUNCE>;
 		};
 
 		usb@d060000 {
@@ -177,7 +187,7 @@
 			big-endian-regs;
 			interrupts = <6>;
 			interrupt-parent = <&PIC1>;
-			memory-region = <&USB_DMA>;
+			memory-region = <&USB_DMA &USB_BOUNCE>;
 		};
 
 		sd@d070000 {
