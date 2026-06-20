@@ -15,7 +15,7 @@
  *
  */
 
-#define BBA_DEBUG
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -46,16 +46,6 @@
 
 static char bba_driver_version[] = "1.4i";
 
-
-#define bba_printk(level, format, arg...) \
-	 printk(level DRV_MODULE_NAME ": " format , ## arg)
-
-#ifdef BBA_DEBUG
-#  define DBG(fmt, args...) \
-	   printk(KERN_ERR "%s: " fmt, __func__ , ## args)
-#else
-#  define DBG(fmt, args...)
-#endif
 
 #define BBA_CMD_IR_MASKALL  0x00
 #define BBA_CMD_IR_MASKNONE 0xf8
@@ -364,7 +354,6 @@ struct bba_private {
 	struct mutex		io_mutex;
 
 	struct net_device	*dev;
-	struct net_device_stats	stats;
 
 	struct spi_device	*spi_device;
 };
@@ -389,7 +378,7 @@ static int bba_open(struct net_device *dev)
 	int retval;
 
 	if (!priv->spi_device->irq) {
-		bba_printk(KERN_ERR, "no IRQ configured\n");
+		dev_err(&priv->spi_device->dev, "no IRQ configured\n");
 		return -ENXIO;
 	}
 
@@ -397,8 +386,8 @@ static int bba_open(struct net_device *dev)
 				      bba_irq_thread, IRQF_SHARED,
 				      dev_name(&priv->spi_device->dev), dev);
 	if (retval) {
-		bba_printk(KERN_ERR, "unable to register IRQ %d\n",
-			   priv->spi_device->irq);
+		dev_err(&priv->spi_device->dev, "unable to register IRQ %d\n",
+			priv->spi_device->irq);
 		goto out;
 	}
 
@@ -447,16 +436,6 @@ static int bba_close(struct net_device *dev)
 }
 
 /*
- * Returns the network device statistics.
- */
-static struct net_device_stats *bba_get_stats(struct net_device *dev)
-{
-	struct bba_private *priv = netdev_priv(dev);
-
-	return &priv->stats;
-}
-
-/*
  * Starts transmission for a packet.
  * We can't do real hardware i/o here.
  */
@@ -469,7 +448,7 @@ static int bba_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* we are not able to send packets greater than this */
 	if (skb->len > BBA_TX_MAX_PACKET_SIZE) {
 		dev_kfree_skb(skb);
-		priv->stats.tx_dropped++;
+		dev->stats.tx_dropped++;
 		/* silently drop the package */
 		goto out;
 	}
@@ -504,35 +483,34 @@ out:
 static int bba_tx_err(u8 status, struct net_device *dev)
 {
 	struct bba_private *priv = netdev_priv(dev);
-	int last_tx_errors = priv->stats.tx_errors;
+	int last_tx_errors = dev->stats.tx_errors;
 
 	if (status & BBA_TX_STATUS_TERR) {
 		if (status & BBA_TX_STATUS_CCMASK) {
-			priv->stats.collisions +=
+			dev->stats.collisions +=
 			    (status & BBA_TX_STATUS_CCMASK);
-			priv->stats.tx_errors++;
+			dev->stats.tx_errors++;
 		}
 		if (status & BBA_TX_STATUS_CRSLOST) {
-			priv->stats.tx_carrier_errors++;
-			priv->stats.tx_errors++;
+			dev->stats.tx_carrier_errors++;
+			dev->stats.tx_errors++;
 		}
 		if (status & BBA_TX_STATUS_UF) {
-			priv->stats.tx_fifo_errors++;
-			priv->stats.tx_errors++;
+			dev->stats.tx_fifo_errors++;
+			dev->stats.tx_errors++;
 		}
 		if (status & BBA_TX_STATUS_OWC) {
-			priv->stats.tx_window_errors++;
-			priv->stats.tx_errors++;
+			dev->stats.tx_window_errors++;
+			dev->stats.tx_errors++;
 		}
 	}
 
-	if (last_tx_errors != priv->stats.tx_errors) {
-		if (netif_msg_tx_err(priv)) {
-			bba_printk(KERN_DEBUG, "tx errors, status %8.8x.\n",
-				   status);
-		}
+	if (last_tx_errors != dev->stats.tx_errors) {
+		if (netif_msg_tx_err(priv))
+			dev_dbg(&priv->spi_device->dev,
+				"tx errors, status %8.8x.\n", status);
 	}
-	return priv->stats.tx_errors;
+	return dev->stats.tx_errors;
 }
 
 /*
@@ -581,8 +559,8 @@ static int bba_tx(struct net_device *dev)
 	bba_out8(BBA_NCRA, (bba_in8(BBA_NCRA) | BBA_NCRA_ST1) & ~BBA_NCRA_ST0);
 
 	/* update statistics */
-	priv->stats.tx_bytes += skb->len;
-	priv->stats.tx_packets++;
+	dev->stats.tx_bytes += skb->len;
+	dev->stats.tx_packets++;
 
 	/* free this packet and remove it from our transmission "queue" */
 	dev_kfree_skb(skb);
@@ -598,47 +576,46 @@ out:
 static int bba_rx_err(u8 status, struct net_device *dev)
 {
 	struct bba_private *priv = netdev_priv(dev);
-	int last_rx_errors = priv->stats.rx_errors;
+	int last_rx_errors = dev->stats.rx_errors;
 
 	if (status == 0xff) {
-		priv->stats.rx_over_errors++;
-		priv->stats.rx_errors++;
+		dev->stats.rx_over_errors++;
+		dev->stats.rx_errors++;
 	} else {
 		if (status & BBA_RX_STATUS_RERR) {
 			if (status & BBA_RX_STATUS_CRC) {
-				priv->stats.rx_crc_errors++;
-				priv->stats.rx_errors++;
+				dev->stats.rx_crc_errors++;
+				dev->stats.rx_errors++;
 			}
 			if (status & BBA_RX_STATUS_FO) {
-				priv->stats.rx_fifo_errors++;
-				priv->stats.rx_errors++;
+				dev->stats.rx_fifo_errors++;
+				dev->stats.rx_errors++;
 			}
 			if (status & BBA_RX_STATUS_RW) {
-				priv->stats.rx_length_errors++;
-				priv->stats.rx_errors++;
+				dev->stats.rx_length_errors++;
+				dev->stats.rx_errors++;
 			}
 			if (status & BBA_RX_STATUS_BF) {
-				priv->stats.rx_over_errors++;
-				priv->stats.rx_errors++;
+				dev->stats.rx_over_errors++;
+				dev->stats.rx_errors++;
 			}
 			if (status & BBA_RX_STATUS_RF) {
-				priv->stats.rx_length_errors++;
-				priv->stats.rx_errors++;
+				dev->stats.rx_length_errors++;
+				dev->stats.rx_errors++;
 			}
 		}
 		if (status & BBA_RX_STATUS_FAE) {
-			priv->stats.rx_frame_errors++;
-			priv->stats.rx_errors++;
+			dev->stats.rx_frame_errors++;
+			dev->stats.rx_errors++;
 		}
 	}
 
-	if (last_rx_errors != priv->stats.rx_errors) {
-		if (netif_msg_rx_err(priv)) {
-			bba_printk(KERN_DEBUG, "rx errors, status %8.8x.\n",
-				   status);
-		}
+	if (last_rx_errors != dev->stats.rx_errors) {
+		if (netif_msg_rx_err(priv))
+			dev_dbg(&priv->spi_device->dev,
+				"rx errors, status %8.8x.\n", status);
 	}
-	return priv->stats.rx_errors;
+	return dev->stats.rx_errors;
 }
 
 /*
@@ -669,12 +646,14 @@ static int bba_rx(struct net_device *dev, int budget)
 
 		/* abort processing in case of errors */
 		if (size > BBA_RX_MAX_PACKET_SIZE + 4) {
-			DBG("packet too big %d", size);
+			dev_warn(&priv->spi_device->dev, "packet too big %d\n",
+				 size);
 			continue;
 		}
 
 		if ((lrps & (BBA_RX_STATUS_RERR | BBA_RX_STATUS_FAE))) {
-			DBG("error %x on received packet\n", lrps);
+			dev_dbg(&priv->spi_device->dev,
+				"error %x on received packet\n", lrps);
 			bba_rx_err(lrps, dev);
 			rwp = bba_in12(BBA_RWP);
 			rrp = bba_in12(BBA_RRP);
@@ -684,7 +663,7 @@ static int bba_rx(struct net_device *dev, int budget)
 		/* allocate a buffer, omitting the CRC (4 bytes) */
 		skb = dev_alloc_skb(size + NET_IP_ALIGN);
 		if (!skb) {
-			priv->stats.rx_dropped++;
+			dev->stats.rx_dropped++;
 			continue;
 		}
 		skb->dev = dev;
@@ -710,8 +689,8 @@ static int bba_rx(struct net_device *dev, int budget)
 		skb->protocol = eth_type_trans(skb, dev);
 
 		//dev->last_rx = jiffies;
-		priv->stats.rx_bytes += size;
-		priv->stats.rx_packets++;
+		dev->stats.rx_bytes += size;
+		dev->stats.rx_packets++;
 
 		netif_rx(skb);
 		received++;
@@ -822,11 +801,11 @@ static void bba_interrupt(struct net_device *dev)
 		}
 
 		if (status & BBA_IR_FIFOEI)
-			DBG("FIFOEI\n");
+			dev_dbg(&priv->spi_device->dev, "FIFOEI\n");
 		if (status & BBA_IR_BUSEI)
-			DBG("BUSEI\n");
+			dev_dbg(&priv->spi_device->dev, "BUSEI\n");
 		if (status & BBA_IR_FRAGI)
-			DBG("FRAGI\n");
+			dev_dbg(&priv->spi_device->dev, "FRAGI\n");
 
 		ir = bba_in8(BBA_IR);
 		imr = bba_in8(BBA_IMR);
@@ -836,7 +815,8 @@ static void bba_interrupt(struct net_device *dev)
 	}
 
 	if (loops > 3)
-		DBG("a lot of interrupt work (%d loops)\n", loops);
+		dev_dbg(&priv->spi_device->dev,
+			"a lot of interrupt work (%d loops)\n", loops);
 
 	/* wake up xmit queue in case transmitter is idle */
 	if ((bba_in8(BBA_NCRA) & (BBA_NCRA_ST0 | BBA_NCRA_ST1)) == 0)
@@ -1014,7 +994,8 @@ static irqreturn_t bba_irq_thread(int irq, void *dev0)
 	/* "killing" interrupt, try to not get one of these! */
 	mask >>= 1;
 	if (status & mask) {
-		DBG("bba: killing interrupt!\n");
+		dev_warn(&priv->spi_device->dev,
+			 "killing interrupt, resetting adapter!\n");
 		/* reset the adapter so that we can continue working */
 		bba_setup_hardware(dev);
 		goto out;
@@ -1045,15 +1026,14 @@ static irqreturn_t bba_irq_thread(int irq, void *dev0)
 	if (status & mask) {
 		/* better get a "1" here ... */
 		u8 result = bba_cmd_in8(0x0b);
-		if (result != 1) {
-			bba_printk(KERN_DEBUG,
-				   "challenge failed! (result=%d)\n", result);
-		}
+		if (result != 1)
+			dev_dbg(&priv->spi_device->dev,
+				"challenge failed! (result=%d)\n", result);
 		goto out;
 	}
 
 	/* should not happen, treat as normal interrupt in any case */
-	DBG("bba: unknown interrupt type = %d\n", status);
+	dev_warn(&priv->spi_device->dev, "unknown interrupt type = %d\n", status);
 
 out:
 	/* assert interrupt */
@@ -1070,7 +1050,6 @@ static const struct net_device_ops bba_netdev_ops = {
 	.ndo_open		= bba_open,
 	.ndo_stop		= bba_close,
 	.ndo_start_xmit		= bba_start_xmit,
-	.ndo_get_stats		= bba_get_stats,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
@@ -1087,7 +1066,7 @@ static int bba_probe(struct spi_device *spi)
 	/* allocate a network device */
 	dev = alloc_etherdev(sizeof(*priv));
 	if (!dev) {
-		bba_printk(KERN_ERR, "unable to allocate net device\n");
+		dev_err(&spi->dev, "unable to allocate net device\n");
 		err = -ENOMEM;
 		goto err_out;
 	}
@@ -1134,7 +1113,7 @@ static int bba_probe(struct spi_device *spi)
 	/* this makes our device available to the kernel */
 	err = register_netdev(dev);
 	if (err) {
-		bba_printk(KERN_ERR, "cannot register net device, aborting.\n");
+		dev_err(&spi->dev, "cannot register net device, aborting.\n");
 		goto err_out_free_dev;
 	}
 
@@ -1194,8 +1173,7 @@ static struct spi_driver bba_driver = {
  */
 static int __init bba_init_module(void)
 {
-	bba_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
-		   bba_driver_version);
+	pr_info("%s - version %s\n", DRV_DESCRIPTION, bba_driver_version);
 
 	return spi_register_driver(&bba_driver);
 }
