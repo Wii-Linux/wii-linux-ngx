@@ -565,7 +565,7 @@ static int force_scan;
 static int force_rate;
 static int force_tv;
 
-static u32 pseudo_palette[17];
+static u32 pseudo_palette[16];
 
 /*
  * Explanation of all the buffering going on here:
@@ -588,7 +588,6 @@ static void *fb_mem, *vfb_mem;
 static unsigned long vfb_len;
 static unsigned int gx_fb_size;
 static int vfb_format;
-#define	vfb_diff	0
 
 /*
  *
@@ -1414,39 +1413,6 @@ static void vi_transcode_RGB565(struct vi_ctl *ctl)
 	}
 }
 
-static void vi_transcode_RGB565_diff(struct vi_ctl *ctl)
-{
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	uint32_t *src = (uint32_t *)info->screen_base;
-	/* address of backup copy of the virtual framebuffer */
-	uint32_t *src_diff;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
-	width = info->fix.line_length >> 2;
-	src_diff = src + width * height;
-
-	while (height--) {
-		int j = width;
-		while (j--) {
-			uint32_t k = *(src + j);
-			if ( k != *(src_diff + j)) {
-				*(src_diff + j) = k;
-				*(dst + j) = rgbrgb16toycbycr(k);
-			}
-		}
-		dst += width;
-		src += width;
-		src_diff += width;
-	}
-}
-
 static void vi_transcode_RGB888(struct vi_ctl *ctl)
 {
 	/* Copy and convert contents of virtual framebuffer,
@@ -1470,39 +1436,6 @@ static void vi_transcode_RGB888(struct vi_ctl *ctl)
 		}
 		dst += width;
 		src += width;
-	}
-}
-
-static void vi_transcode_RGB888_diff(struct vi_ctl *ctl)
-{
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
-	/* address of backup copy of the virtual framebuffer */
-	union double_rgba_pixel_t *src_diff;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
-	
-	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
-	width = info->fix.line_length >> 3;
-	src_diff = src + width * height;
-
-	while (height--) {
-		int j = width;
-		while (j--) {
-			union double_rgba_pixel_t k = *(src + j);
-			if (k.k64 != (*(src_diff + j)).k64) {
-				*(src_diff + j) = k;
-				*(dst + j) = rgb32rgb32toycbycr(k);
-			}
-		}
-		dst += width;
-		src += width;
-		src_diff += width;
 	}
 }
 
@@ -1543,17 +1476,11 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 			break;
 			case V4L2_PIX_FMT_RGB565:
 				/* RGB565 -> YUYV */
-				if (vfb_diff)
-					vi_transcode_RGB565_diff(ctl);
-				else
-					vi_transcode_RGB565(ctl);
+				vi_transcode_RGB565(ctl);
 				break;
 			case PIX_FMT_RGB888:
 				/* (RGB32, RGB32) to YUYV */
-				if (vfb_diff)
-					vi_transcode_RGB888_diff(ctl);
-				else
-					vi_transcode_RGB888(ctl);
+				vi_transcode_RGB888(ctl);
 				break;
 			default:
 				BUG();
