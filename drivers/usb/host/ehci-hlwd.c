@@ -180,6 +180,13 @@ static int ehci_hcd_hlwd_probe(struct platform_device *op)
 		dev_warn(&op->dev, "using normal memory\n");
 	}
 
+	/* cached MEM2 arena for bouncing MEM1-resident IN buffers */
+	error = hlwd_bounce_pool_init(dev);
+	if (error) {
+		dev_err(dev, "failed to init MEM2 bounce pool: %d\n", error);
+		goto err_irq;
+	}
+
 	irq = irq_of_parse_and_map(dn, 0);
 	if (!irq) {
 		dev_err(dev, "irq_of_parse_and_map failed\n");
