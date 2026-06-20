@@ -33,7 +33,13 @@
 
 #include <linux/dma-direction.h>
 #include <linux/dma-mapping.h>
+#include <linux/genalloc.h>
+#include <linux/io.h>
+#include <linux/log2.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/scatterlist.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -41,6 +47,94 @@
 #include "hlwd-urb.h"
 
 #define HLWD_URB_MINALIGN 32
+
+/*
+ * Start of MEM2. Anything below this is MEM1.
+ *
+ * The Hollywood USB host controllers silently DROP the final sub-32-bit
+ * (partial-word) burst of a DMA *write* into MEM1, truncating the tail of
+ * any IN transfer whose length is not a multiple of 4. Reads from MEM1 and
+ * all of MEM2 are fine. So IN buffers that live in MEM1 must be bounced
+ * through cached MEM2 memory before the controller writes them.
+ */
+#define HLWD_MEM2_BASE 0x10000000UL
+
+/*
+ * Cached MEM2 arena for bounce buffers, shared by all three HCDs. Seeded
+ * from the second "memory-region" (a plain reserved-memory range in MEM2,
+ * left in the linear map -- i.e. NOT no-map -- so it stays cacheable and
+ * phys_to_virt() is valid). Initialised at probe (process context); the
+ * submit-time fast path only ever calls gen_pool_alloc(), which is atomic.
+ */
+static DEFINE_MUTEX(hlwd_bounce_lock);
+static struct gen_pool *hlwd_bounce_pool;
+
+int hlwd_bounce_pool_init(struct device *dev)
+{
+	struct device_node *np;
+	struct reserved_mem *rmem;
+	struct gen_pool *pool;
+	int ret = 0;
+
+	mutex_lock(&hlwd_bounce_lock);
+	if (hlwd_bounce_pool)
+		goto out; /* another HCD already set it up */
+
+	np = of_parse_phandle(dev->of_node, "memory-region", 1);
+	if (!np) {
+		dev_err(dev, "no MEM2 bounce memory-region (index 1)\n");
+		ret = -ENODEV;
+		goto out;
+	}
+	rmem = of_reserved_mem_lookup(np);
+	of_node_put(np);
+	if (!rmem) {
+		dev_err(dev, "bounce memory-region lookup failed\n");
+		ret = -ENODEV;
+		goto out;
+	}
+	if (rmem->base < HLWD_MEM2_BASE) {
+		dev_err(dev, "bounce region %pa is not in MEM2\n", &rmem->base);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	pool = gen_pool_create(ilog2(HLWD_URB_MINALIGN), -1);
+	if (!pool) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	/* phys_to_virt() is valid because the region is left in the linear map */
+	ret = gen_pool_add_virt(pool, (unsigned long)phys_to_virt(rmem->base),
+				rmem->base, rmem->size, -1);
+	if (ret) {
+		gen_pool_destroy(pool);
+		goto out;
+	}
+	hlwd_bounce_pool = pool;
+	dev_info(dev, "USB MEM2 bounce pool: %pa (%llu KiB)\n",
+		 &rmem->base, (unsigned long long)rmem->size >> 10);
+out:
+	mutex_unlock(&hlwd_bounce_lock);
+	return ret;
+}
+
+/* Allocate a 32-byte-aligned, cached, MEM2-resident bounce buffer. */
+static void *hlwd_bounce_alloc(size_t alloc_size)
+{
+	unsigned long addr;
+
+	if (!hlwd_bounce_pool)
+		return NULL;
+	addr = gen_pool_alloc(hlwd_bounce_pool, alloc_size);
+	return (void *)addr;
+}
+
+static void hlwd_bounce_free(void *buf, size_t alloc_size)
+{
+	if (buf && hlwd_bounce_pool)
+		gen_pool_free(hlwd_bounce_pool, (unsigned long)buf, alloc_size);
+}
 
 /** Print debug messages. */
 static const bool HLWD_URB_DEBUG = false;
@@ -64,16 +158,26 @@ struct hlwd_tmpbuf {
 	struct scatterlist *sg;
 };
 
+/*
+ * The bookkeeping struct is appended after the data, but on its OWN cache
+ * line(s): the data area is rounded up to a full alignment unit first, so the
+ * struct (written by the CPU) never shares a cache line with the tail of the
+ * DMA-mapped data. Without this, the noncoherent sync of the data's final
+ * partial cache line would race the CPU's struct write.
+ */
+#define HLWD_TMPBUF_META ALIGN(sizeof(struct hlwd_tmpbuf), HLWD_URB_MINALIGN)
+
 static size_t hlwd_tmpbuf_size(size_t size, size_t align)
 {
 	BUG_ON(!align || (align & (align - 1))); /* must be power of 2 */
-	return ALIGN(size + sizeof(struct hlwd_tmpbuf), max(align, __alignof__(struct hlwd_tmpbuf)));
+	align = max(align, (size_t)HLWD_URB_MINALIGN);
+	return ALIGN(size, align) + HLWD_TMPBUF_META;
 }
 
 static struct hlwd_tmpbuf *hlwd_tmpbuf_struct(void *buffer, size_t alloc_size)
 {
 	BUG_ON(!buffer);
-	return (struct hlwd_tmpbuf *)(buffer + alloc_size - sizeof(struct hlwd_tmpbuf));
+	return (struct hlwd_tmpbuf *)((char *)buffer + alloc_size - HLWD_TMPBUF_META);
 }
 
 static void hlwd_print_sgs(unsigned char *prefix, struct scatterlist *sg, int num_sgs, size_t print_size)
@@ -142,7 +246,8 @@ static bool hlwd_tmpbuf_map(
 	DEBUG_EXPR(printk(">   size=%zu\n", size));
 	alloc_size = hlwd_tmpbuf_size(size, align);
 	DEBUG_EXPR(printk(">   alloc_size=%zu\n", alloc_size));
-	tmpbuf = kzalloc(alloc_size, mem_flags);
+	/* bounce buffer must be cached and MEM2-resident, not plain kzalloc */
+	tmpbuf = hlwd_bounce_alloc(alloc_size);
 	if (!tmpbuf) {
 		DEBUG_EXPR(printk(">   alloc failed\n"));
 		goto err_alloc;
@@ -183,7 +288,7 @@ static bool hlwd_tmpbuf_map(
 err_map:
 	*self = *hlwd_tmpbuf_struct(tmpbuf, alloc_size);
 err_aligned:
-	kfree(tmpbuf);
+	hlwd_bounce_free(tmpbuf, alloc_size);
 err_alloc:
 	return false;
 }
@@ -197,7 +302,6 @@ static void hlwd_tmpbuf_unmap(
 	size_t alloc_size;
 	unsigned char *tmpbuf;
 	struct hlwd_tmpbuf *original;
-	int num_sgs;
 	size_t sg_size;
 
 	DEBUG_EXPR(printk(">  hlwd_tmpbuf_unmap\n"));
@@ -213,7 +317,7 @@ static void hlwd_tmpbuf_unmap(
 		if (original->num_sgs) {
 			BUG_ON(!original->sg);
 			DEBUG_EXPR(printk(">   copy to sgs\n"));
-			sg_size = sg_copy_from_buffer(original->sg, num_sgs, self->buffer, self->size);
+			sg_size = sg_copy_from_buffer(original->sg, original->num_sgs, self->buffer, self->size);
 			BUG_ON(sg_size != self->size);
 		} else if (original->sg) {
 			DEBUG_EXPR(printk(">   copy to sg\n"));
@@ -224,7 +328,7 @@ static void hlwd_tmpbuf_unmap(
 		}
 	}
 	*self = *original;
-	kfree(tmpbuf);
+	hlwd_bounce_free(tmpbuf, alloc_size);
 }
 
 static bool hlwd_urb_is_aligned(struct urb *urb)
@@ -255,6 +359,31 @@ static bool hlwd_urb_is_aligned(struct urb *urb)
 	}
 	DEBUG_EXPR(printk(">   is_aligned=%d to %d bytes\n", is_aligned, HLWD_URB_MINALIGN));
 	return is_aligned;
+}
+
+/*
+ * True if the transfer buffer (the data the controller will WRITE for an IN
+ * transfer) lives in MEM1. Only meaningful for IN transfers: the MEM1 quirk
+ * drops partial-word writes, but reads from MEM1 (setup packets, OUT data)
+ * are fine, so those never need bouncing on MEM1 grounds.
+ */
+static bool hlwd_urb_data_in_mem1(struct urb *urb)
+{
+	struct scatterlist *sg;
+	int i;
+
+	if (urb->num_sgs) {
+		BUG_ON(!urb->sg);
+		for_each_sg(urb->sg, sg, urb->num_sgs, i)
+			if (sg_phys(sg) < HLWD_MEM2_BASE)
+				return true;
+		return false;
+	} else if (urb->sg) {
+		return sg_phys(urb->sg) < HLWD_MEM2_BASE;
+	} else if (urb->transfer_buffer) {
+		return virt_to_phys(urb->transfer_buffer) < HLWD_MEM2_BASE;
+	}
+	return false;
 }
 
 /** Function for `struct hc_driver.map_urb_for_dma`.
@@ -306,7 +435,14 @@ int hlwd_map_urb_for_dma(
 		printk(">  urb->transfer_flags=0x%x\n", urb->transfer_flags);
 		DEBUG_STACK(); /* see where the data came from to fix alignment */
 	});
-	if (hcd->self.uses_pio_for_control || hlwd_urb_is_aligned(urb)) {
+	/*
+	 * The default in-place path is only safe when the buffer is both
+	 * 32-byte aligned AND, for IN transfers, not in MEM1 (where the
+	 * controller would drop the final partial-word write). Otherwise bounce.
+	 */
+	if (hcd->self.uses_pio_for_control ||
+	    (hlwd_urb_is_aligned(urb) &&
+	     !(usb_urb_dir_in(urb) && hlwd_urb_data_in_mem1(urb)))) {
 		DEBUG_EXPR(printk(">   default\n"));
 		ret = usb_hcd_map_urb_for_dma(hcd, urb, mem_flags);
 		if (ret == 0)
