@@ -59,21 +59,25 @@ _GLOBAL(__setup_cpu_750cx)
 	mtlr	r5
 	blr
 _GLOBAL(__setup_cpu_gekko)
-	mflr	r5
+	mflr	r12
 	bl	__init_fpu_registers
 	bl	setup_gekko_paired_singles
 	bl	setup_common_caches
 	bl	setup_750_7400_hid0
 	bl	setup_750cx
-	mtlr	r5
+	bl	setup_gekko_l2_hid
+	bl	setup_gekko_broadway_l2
+	mtlr	r12
 	blr
 _GLOBAL(__setup_cpu_750cl)
-	mflr	r5
+	mflr	r12
 	bl	__init_fpu_registers
 	bl	setup_750cl_paired_singles
 	bl	setup_common_caches
 	bl	setup_750_7400_hid0
-	mtlr	r5
+	bl	setup_broadway_l2_hid
+	bl	setup_gekko_broadway_l2
+	mtlr	r12
 	blr
 _GLOBAL(__setup_cpu_750fx)
 	mflr	r5
@@ -300,6 +304,58 @@ SYM_FUNC_START_LOCAL(setup_gekko_paired_singles)
 
 	blr
 SYM_FUNC_END(setup_gekko_paired_singles)
+
+SYM_FUNC_START_LOCAL(setup_gekko_l2_hid)
+	mfspr	r8,SPRN_HID0
+	li	r9,HID0_BHTE | HID0_BTIC | HID0_DCFA | HID0_SPD
+	andc	r8,r8,r9
+	lis	r9,HID0_DPM@h
+	andc	r8,r8,r9
+	oris	r8,r8,HID0_NHR@h
+	sync
+	mtspr	SPRN_HID0,r8
+	sync
+	isync
+
+	mfspr	r8,SPRN_HID2_GEKKO
+	lis	r9,HID2_WPE@h
+	andc	r8,r8,r9
+	sync
+	mtspr	SPRN_HID2_GEKKO,r8
+	sync
+	isync
+	blr
+SYM_FUNC_END(setup_gekko_l2_hid)
+
+SYM_FUNC_START_LOCAL(setup_broadway_l2_hid)
+	mflr	r10
+	bl	setup_gekko_l2_hid
+	mtlr	r10
+
+	mfspr	r8,SPRN_HID4_GEKKO
+	lis	r9,(HID4_GEKKO_L2FM_MASK | HID4_GEKKO_BPD_MASK | \
+		HID4_GEKKO_ST0 | HID4_GEKKO_LPE | HID4_GEKKO_PS2_CTL)@h
+	andc	r8,r8,r9
+	lis	r9,(HID4_GEKKO_L2FM_64B | HID4_GEKKO_BCO | \
+		HID4_GEKKO_SBE | HID4_GEKKO_L2MUM | HID4_GEKKO_L2_CCFI)@h
+	or	r8,r8,r9
+	sync
+	mtspr	SPRN_HID4_GEKKO,r8
+	sync
+	isync
+	blr
+SYM_FUNC_END(setup_broadway_l2_hid)
+
+/* Gekko/Broadway have an internal L2 cache. */
+SYM_FUNC_START_LOCAL(setup_gekko_broadway_l2)
+	mflr	r10
+	li	r3,0
+	bl	_set_L2CR
+	lis	r3,L2CR_L2E@h
+	bl	_set_L2CR
+	mtlr	r10
+	blr
+SYM_FUNC_END(setup_gekko_broadway_l2)
 
 
 /* 750cx specific

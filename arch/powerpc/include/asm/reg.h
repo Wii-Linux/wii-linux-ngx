@@ -616,6 +616,7 @@
 #define SPRN_HID2_G2_LE	0x3F3		/* G2_LE HID2 Register */
 #define  HID2_G2_LE_HBE	(1<<18)		/* High BAT Enable (G2_LE) */
 #define HID2_LSQE	(1<<31)		/* Gekko HID2 Load/Store Quantized Enable (unconfirmed name) */
+#define HID2_WPE	(1<<30)		/* Gekko Write Gather Pipe Enable */
 #define HID2_PSE	(1<<29)		/* Gekko HID2 Paired Singles Enable */
 #define SPRN_IABR	0x3F2	/* Instruction Address Breakpoint Register */
 #define SPRN_IABR2	0x3FA		/* 83xx */
@@ -631,6 +632,16 @@
 #define  HID4_RMLS0_SH	 (63 - 58)	/* Real mode limit top bit */
 #define	 HID4_LPID1_SH	 0		/* partition ID top 2 bits */
 #define SPRN_HID4_GEKKO	0x3F3		/* Gekko HID4 */
+#define HID4_GEKKO_L2FM_MASK	(3<<29)		/* L2 fetch mode */
+#define HID4_GEKKO_L2FM_64B	(1<<29)		/* L2 fetch mode 64 bytes */
+#define HID4_GEKKO_BPD_MASK	(3<<27)		/* Bus pipeline depth */
+#define HID4_GEKKO_BCO		(1<<26)		/* L2 second beat cache operation */
+#define HID4_GEKKO_SBE		(1<<25)		/* Secondary BAT enable */
+#define HID4_GEKKO_ST0		(1<<24)		/* Store gathering stream 0 */
+#define HID4_GEKKO_LPE		(1<<23)		/* Locked cache parity enable */
+#define HID4_GEKKO_L2MUM	(1<<21)		/* L2 2-deep miss-under-miss */
+#define HID4_GEKKO_L2_CCFI	(1<<20)		/* L2 castout class flush invalidate */
+#define HID4_GEKKO_PS2_CTL	(1<<19)		/* Paired singles control 2 */
 #define SPRN_HID5	0x3F6		/* 970 HID5 */
 #define SPRN_HID6	0x3F9	/* BE HID 6 */
 #define   HID6_LB	(0x0F<<12) /* Concurrent Large Page Modes */
