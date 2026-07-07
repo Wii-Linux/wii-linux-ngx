@@ -1918,3 +1918,87 @@ macro_rules! io_write {
 }
 #[doc(inline)]
 pub use crate::io_write;
+
+/// [`Mmio`] wrapper using big-endian accessors.
+///
+/// This type provides an implementation of [`Io`] that uses big-endian I/O MMIO operands instead of
+/// the regular little-endian ones.
+///
+/// See [`Mmio::big_endian`] for a usage example.
+#[repr(transparent)]
+pub struct BigEndianMmio<'a, T: ?Sized>(Mmio<'a, T>);
+
+impl<T: ?Sized> Copy for BigEndianMmio<'_, T> {}
+impl<T: ?Sized> Clone for BigEndianMmio<'_, T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// I/O Backend for memory-mapped I/O, with relaxed access semantics.
+pub struct BigEndianMmioBackend;
+
+impl IoBackend for BigEndianMmioBackend {
+    type View<'a, T: ?Sized + KnownSize> = BigEndianMmio<'a, T>;
+
+    #[inline]
+    fn as_ptr<'a, T: ?Sized + KnownSize>(view: Self::View<'a, T>) -> *mut T {
+        MmioBackend::as_ptr(view.0)
+    }
+
+    #[inline]
+    unsafe fn project_view<'a, T: ?Sized + KnownSize, U: ?Sized + KnownSize>(
+        view: Self::View<'a, T>,
+        ptr: *mut U,
+    ) -> Self::View<'a, U> {
+        // SAFETY: Per safety requirement.
+        BigEndianMmio(unsafe { MmioBackend::project_view(view.0, ptr) })
+    }
+}
+
+impl<'a, T: ?Sized + KnownSize> IoBase<'a> for BigEndianMmio<'a, T> {
+    type Backend = BigEndianMmioBackend;
+    type Target = T;
+
+    #[inline]
+    fn as_view(self) -> BigEndianMmio<'a, T> {
+        self
+    }
+}
+
+impl<'a, T: ?Sized> Mmio<'a, T> {
+    /// Returns a [`BigEndianMmio`] reference that performs big-endian I/O operations.
+    ///
+    /// Big-endian makes no change to 8-bit accesses, but will invert the bytes of 16-, 32- and
+    /// 64-bit accesses, to ensure numbers will be read in their correct order.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kernel::io::{
+    ///     Io,
+    ///     Mmio,
+    ///     Region,
+    ///     BigEndianMmio,
+    /// };
+    ///
+    /// fn do_io(io: Mmio<'_, Region<0x100>>) {
+    ///     // The access is performed using `ioread32be` instead of `readl`.
+    ///     let v = io.big_endian().read32(0x10);
+    /// }
+    ///
+    /// ```
+    #[inline]
+    pub fn big_endian(self) -> BigEndianMmio<'a, T> {
+        BigEndianMmio(self)
+    }
+}
+
+// MMIO regions support 8, 16, and 32-bit accesses.
+impl_mmio_io_capable!(BigEndianMmioBackend, u8, readb, writeb);
+impl_mmio_io_capable!(BigEndianMmioBackend, u16, ioread16be, iowrite16be);
+impl_mmio_io_capable!(BigEndianMmioBackend, u32, ioread32be, iowrite32be);
+// MMIO regions on 64-bit systems also support 64-bit accesses.
+#[cfg(CONFIG_64BIT)]
+impl_mmio_io_capable!(BigEndianMmioBackend, u64, ioread64be, iowrite64be);
