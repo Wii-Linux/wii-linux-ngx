@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Nintendo Hollywood/Flipper Drive Interface block driver.
+ * Nintendo Flipper/Hollywood Drive Interface block driver.
  *
  * Copyright (C) 2026 Michael "Techflash" Garofalo
  */
