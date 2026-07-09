@@ -10,6 +10,7 @@
 #include <linux/bitops.h>
 #include <linux/blk-mq.h>
 #include <linux/blkdev.h>
+#include <linux/cdrom.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -84,6 +85,7 @@
 #define DI_MEDIA_SETTLE_MS		1500
 #define DI_MEDIA_POLL_MS		200
 #define DI_MEDIA_RETRY_MS		250
+#define DI_EJECT_PULSE_MS		100
 #define WII_SL_DISC_SIZE		4699979776ULL
 
 #define HW_CTRL_COMPATIBLE		"nintendo,hollywood-control"
@@ -122,6 +124,7 @@ struct hlwd_di {
 	void __iomem *regs;
 	void __iomem *ctrl;
 	struct gpio_desc *di_spin_gpio;
+	struct gpio_desc *eject_gpio;
 
 	struct mutex lock; /* serializes DI commands and media state */
 	struct delayed_work media_work;
@@ -764,6 +767,9 @@ static int hlwd_di_open(struct gendisk *disk, blk_mode_t mode)
 
 	if (mode & BLK_OPEN_WRITE)
 		return -EROFS;
+	/* needed to support eject */
+	if (mode & BLK_OPEN_NDELAY)
+		return 0;
 
 	mutex_lock(&di->lock);
 	if (!di->media_present && !(di_read(di, DI_CVR) & DI_CVR_CVR))
@@ -775,6 +781,48 @@ static int hlwd_di_open(struct gendisk *disk, blk_mode_t mode)
 	mutex_unlock(&di->lock);
 
 	return ret;
+}
+
+static int hlwd_di_eject_locked(struct hlwd_di *di)
+{
+	if (!di->eject_gpio) {
+		dev_err_ratelimited(di->dev, "eject requested without eject GPIO\n");
+		return -ENODEV;
+	}
+
+	gpiod_set_value_cansleep(di->eject_gpio, 1);
+	msleep(DI_EJECT_PULSE_MS);
+	gpiod_set_value_cansleep(di->eject_gpio, 0);
+
+	di_clear_media_locked(di);
+	di->media_changed = true;
+	disk_force_media_change(di->disk);
+
+	return 0;
+}
+
+static int hlwd_di_ioctl(struct block_device *bdev, blk_mode_t mode,
+			 unsigned int cmd, unsigned long arg)
+{
+	struct hlwd_di *di = bdev->bd_disk->private_data;
+	int ret;
+
+	switch (cmd) {
+	case CDROMEJECT:
+		mutex_lock(&di->lock);
+		ret = hlwd_di_eject_locked(di);
+		mutex_unlock(&di->lock);
+		return ret;
+	case CDROMCLOSETRAY:
+		return -ENOSYS;
+	case CDROMEJECT_SW:
+	case CDROM_LOCKDOOR:
+		return 0;
+	/* TODO: other Linux CDROM drivers don't have a default case here...  is this right? */
+	default:
+		dev_dbg(di->dev, "unsupported ioctl cmd=%08x\n", cmd);
+		return -ENOSYS;
+	}
 }
 
 static unsigned int hlwd_di_check_events(struct gendisk *disk,
@@ -797,6 +845,8 @@ static unsigned int hlwd_di_check_events(struct gendisk *disk,
 static const struct block_device_operations hlwd_di_fops = {
 	.owner		= THIS_MODULE,
 	.open		= hlwd_di_open,
+	.ioctl		= hlwd_di_ioctl,
+	.compat_ioctl	= blkdev_compat_ptr_ioctl,
 	.check_events	= hlwd_di_check_events,
 };
 
@@ -886,6 +936,13 @@ static int hlwd_di_probe(struct platform_device *pdev)
 						   GPIOD_OUT_LOW);
 	if (IS_ERR(di->di_spin_gpio)) {
 		ret = PTR_ERR(di->di_spin_gpio);
+		goto err_iounmap_ctrl;
+	}
+
+	di->eject_gpio = devm_gpiod_get(dev, "eject", GPIOD_OUT_LOW);
+	if (IS_ERR(di->eject_gpio)) {
+		ret = PTR_ERR(di->eject_gpio);
+		ret = dev_err_probe(dev, ret, "failed to get eject GPIO\n");
 		goto err_iounmap_ctrl;
 	}
 
