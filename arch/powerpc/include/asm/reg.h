@@ -636,6 +636,7 @@
 #define HID4_GEKKO_L2FM_64B	(1<<29)		/* L2 fetch mode 64 bytes */
 #define HID4_GEKKO_BPD_MASK	(3<<27)		/* Bus pipeline depth */
 #define HID4_GEKKO_BCO		(1<<26)		/* L2 second beat cache operation */
+#define HID4_GEKKO_SBE		(1<<25)		/* Secondary BAT enable */
 #define HID4_GEKKO_ST0		(1<<24)		/* Store gathering stream 0 */
 #define HID4_GEKKO_LPE		(1<<23)		/* Locked cache parity enable */
 #define HID4_GEKKO_L2MUM	(1<<21)		/* L2 2-deep miss-under-miss */
