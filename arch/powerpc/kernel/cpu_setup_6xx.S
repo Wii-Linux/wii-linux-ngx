@@ -258,11 +258,7 @@ SYM_FUNC_START_LOCAL(setup_750cl_paired_singles)
 	sync
 	isync
 
-#ifdef CONFIG_PPC_SBE
 	lis r8, 0xb3b8 // 64B fetch, depth 4, SBE, ST0, LPE, L2MUM, L2CFI, PS1_CTL & PS2_CTL
-#else
-	lis r8, 0xb1b8 // 64B fetch, depth 4, ST0, LPE, L2MUM, L2CFI, PS1_CTL & PS2_CTL
-#endif
 	mtspr SPRN_HID4_GEKKO, r8
 	sync
 
@@ -341,7 +337,7 @@ SYM_FUNC_START_LOCAL(setup_broadway_l2_hid)
 		HID4_GEKKO_ST0 | HID4_GEKKO_LPE | HID4_GEKKO_PS2_CTL)@h
 	andc	r8,r8,r9
 	lis	r9,(HID4_GEKKO_L2FM_64B | HID4_GEKKO_BCO | \
-		HID4_GEKKO_L2MUM | HID4_GEKKO_L2_CCFI)@h
+		HID4_GEKKO_SBE | HID4_GEKKO_L2MUM | HID4_GEKKO_L2_CCFI)@h
 	or	r8,r8,r9
 	sync
 	mtspr	SPRN_HID4_GEKKO,r8
