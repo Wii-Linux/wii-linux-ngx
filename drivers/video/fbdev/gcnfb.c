@@ -648,22 +648,9 @@ static inline uint32_t rgbrgb16toycbycr(uint32_t rgb1rgb2)
 
 	/* RGB565 */
 
-	// XXX: HACK HACK HACK!!!
-	// PROGRESSIVE HACK:
-	//
-	// For some reason in progressive scan only, red and blue get swapped somewhere.
-	// I don't have enough time to figure out where, so just reverse them
-	// intentionally here, such that when they get reversed unintentionally
-	// elsewhere, it all ends up working out in the end.
-	if (force_scan == VI_SCAN_PROGRESSIVE) {
-		r1 = ((rgb1 >> 0) & 0x1f);
-		g1 = ((rgb1 >> 5) & 0x3f);
-		b1 = ((rgb1 >> 11) & 0x1f);
-	} else {
-		r1 = ((rgb1 >> 11) & 0x1f);
-		g1 = ((rgb1 >> 5) & 0x3f);
-		b1 = ((rgb1 >> 0) & 0x1f);
-	}
+	r1 = ((rgb1 >> 11) & 0x1f);
+	g1 = ((rgb1 >> 5) & 0x3f);
+	b1 = ((rgb1 >> 0) & 0x1f);
 
 	/* fast (approximated) scaling to 8 bits, thanks to Masken */
 	r1 = (r1 << 3) | (r1 >> 2);
@@ -680,15 +667,10 @@ static inline uint32_t rgbrgb16toycbycr(uint32_t rgb1rgb2)
 		b = b1;
 	} else {
 		/* same as we did for r1 before */
-		if (force_scan == VI_SCAN_PROGRESSIVE) {
-			r2 = ((rgb2 >> 0) & 0x1f);
-			g2 = ((rgb2 >> 5) & 0x3f);
-			b2 = ((rgb2 >> 11) & 0x1f);
-		} else {
-			r2 = ((rgb2 >> 11) & 0x1f);
-			g2 = ((rgb2 >> 5) & 0x3f);
-			b2 = ((rgb2 >> 0) & 0x1f);
-		}
+		r2 = ((rgb2 >> 11) & 0x1f);
+		g2 = ((rgb2 >> 5) & 0x3f);
+		b2 = ((rgb2 >> 0) & 0x1f);
+
 		r2 = (r2 << 3) | (r2 >> 2);
 		g2 = (g2 << 2) | (g2 >> 4);
 		b2 = (b2 << 3) | (b2 >> 2);
@@ -728,23 +710,9 @@ static inline uint32_t rgb32rgb32toycbycr(union double_rgba_pixel_t k)
 
 	/* RGB888 */
 
-	// XXX: HACK HACK HACK!!!
-	// PROGRESSIVE HACK:
-	//
-	// For some reason in progressive scan only, red and blue get swapped somewhere.
-	// I don't have enough time to figure out where, so just reverse them
-	// intentionally here, such that when they get reversed unintentionally
-	// elsewhere, it all ends up working out in the end.
-	if (force_scan == VI_SCAN_PROGRESSIVE) {
-		r1 = ((k.k32.left >> 0) & 0xff);
-		g1 = ((k.k32.left >> 8) & 0xff);
-		b1 = ((k.k32.left >> 16) & 0xff);
-	} else {
-		r1 = ((k.k32.left >> 16) & 0xff);
-		g1 = ((k.k32.left >> 8) & 0xff);
-		b1 = ((k.k32.left >> 0) & 0xff);
-	}
-
+	r1 = ((k.k32.left >> 16) & 0xff);
+	g1 = ((k.k32.left >> 8) & 0xff);
+	b1 = ((k.k32.left >> 0) & 0xff);
 
 	Y1 = clamp(((Yr * r1 + Yg * g1 + Yb * b1) >> RGB2YUV_SHIFT)
 		   + RGB2YUV_LUMA, 16, 235);
