@@ -2331,7 +2331,7 @@ static int vifb_do_remove(struct device *dev)
 }
 
 /* clean up reserved pages of the virtual framebuffer */
-static void vifb_release_virtual_fb() {
+static void vifb_release_virtual_fb(void) {
 	unsigned long size;
 	unsigned long adr = (unsigned long)vfb_mem;
 	
