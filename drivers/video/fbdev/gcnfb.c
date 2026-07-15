@@ -2120,6 +2120,7 @@ struct fb_ops vifb_ops = {
 	.fb_fillrect = cfb_fillrect,
 	.fb_copyarea = cfb_copyarea,
 	.fb_imageblit = cfb_imageblit,
+	__FB_DEFAULT_SYSMEM_OPS_RDWR
 };
 
 /*
