@@ -80,8 +80,17 @@ struct loader_info {
 };
 extern struct loader_info loader_info;
 
+struct fdt_mapped_range {
+	unsigned long start;
+	unsigned long size;
+};
+
 void start(void);
 void fdt_init(void *blob);
+void fdt_init_from_loader(unsigned long r3, unsigned long r4,
+			  unsigned long r5,
+			  const struct fdt_mapped_range *ranges,
+			  unsigned int nranges);
 int serial_console_init(void);
 int ns16550_console_init(void *devp, struct serial_console_data *scdp);
 int cpm_console_init(void *devp, struct serial_console_data *scdp);
