@@ -50,6 +50,7 @@ pie=
 format=
 notext=
 rodynamic=
+norelro=
 
 # cross-compilation prefix
 CROSS=
@@ -178,6 +179,21 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+# binutils, set a reasonable default if unset
+if [ "$LLVM" = 1 ]; then
+    BIN_OBJDUMP="${OBJDUMP:-${CROSS}llvm-objdump}"
+    BIN_OBJCOPY="${OBJCOPY:-${CROSS}llvm-objcopy}"
+    BIN_NM="${NM:-${CROSS}llvm-nm}"
+    BIN_LD="${LD:-${CROSS}ld.lld}"
+    BIN_STRINGS="${STRINGS:-${CROSS}llvm-strings}"
+else
+    BIN_OBJDUMP="${OBJDUMP:-${CROSS}objdump}"
+    BIN_OBJCOPY="${OBJCOPY:-${CROSS}objcopy}"
+    BIN_NM="${NM:-${CROSS}nm}"
+    BIN_LD="${LD:-${CROSS}ld}"
+    BIN_STRINGS="${STRINGS:-${CROSS}strings}"
+fi
+
 
 if [ -n "$dts" ]; then
     if [ ! -r "$dts" -a -r "$object/dts/$dts" ]; then
@@ -193,7 +209,7 @@ if [ -z "$kernel" ]; then
     kernel=vmlinux
 fi
 
-LC_ALL=C elfformat="`${CROSS}objdump -p "$kernel" | grep 'file format' | awk '{print $4}'`"
+LC_ALL=C elfformat="`${BIN_OBJDUMP} -p "$kernel" | grep 'file format' | awk '{print $4}'`"
 case "$elfformat" in
     elf64-powerpcle)	format=elf64lppc	;;
     elf64-powerpc)	format=elf32ppc	;;
@@ -221,7 +237,7 @@ ld_version()
 
 ld_is_lld()
 {
-	${CROSS}ld -V 2>&1 | grep -q LLD
+	${BIN_LD} -V 2>&1 | grep -q LLD
 }
 
 # Do not include PT_INTERP segment when linking pie. Non-pie linking
@@ -230,7 +246,7 @@ nodl="--no-dynamic-linker"
 
 # suppress some warnings in recent ld versions
 nowarn="-z noexecstack"
-if "${CROSS}ld" -v --no-warn-rwx-segments >/dev/null 2>&1; then
+if "${BIN_LD}" -v --no-warn-rwx-segments >/dev/null 2>&1; then
 	nowarn="$nowarn --no-warn-rwx-segments"
 fi
 
@@ -244,7 +260,7 @@ isection=.kernel:initrd
 esection=.kernel:esm_blob
 link_address='0x400000'
 make_space=y
-
+norelro=$(if ld_is_lld; then echo "-z norelro"; fi)
 
 if [ -n "$esm_blob" -a "$platform" != "pseries" ]; then
     echo "ESM blob not support on non-pseries platforms" >&2
@@ -370,7 +386,7 @@ epapr)
     link_address='0x20000000'
     pie=-pie
     notext='-z notext'
-    rodynamic=$(if ${CROSS}ld -V 2>&1 | grep -q LLD ; then echo "-z rodynamic"; fi)
+    rodynamic=$(if ld_is_lld; then echo "-z rodynamic"; fi)
     ;;
 mvme5100)
     platformo="$object/fixed-head.o $object/mvme5100.o"
@@ -386,7 +402,9 @@ esac
 vmz="$tmpdir/`basename \"$kernel\"`.$ext"
 
 # Calculate the vmlinux.strip size
-${CROSS}objcopy $objflags "$kernel" "$vmz.$$"
+
+${BIN_OBJCOPY} $objflags "$kernel" "$vmz.$$"
+
 strip_size=$(${CONFIG_SHELL} "${srctree}/scripts/file-size.sh" "$vmz.$$")
 
 if [ -z "$cacheit" -o ! -f "$vmz$compression" -o "$vmz$compression" -ot "$kernel" ]; then
@@ -439,14 +457,14 @@ fi
 
 # Extract kernel version information, some platforms want to include
 # it in the image header
-version=`${CROSS}strings "$kernel" | grep '^Linux version [-0-9.]' | \
+version=`${BIN_STRINGS} "$kernel" | grep '^Linux version [-0-9.]' | \
     head -n1 | cut -d' ' -f3`
 if [ -n "$version" ]; then
     uboot_version="-n Linux-$version"
 fi
 
 # physical offset of kernel image
-membase=`${CROSS}objdump -p "$kernel" | grep -m 1 LOAD | awk '{print $7}'`
+membase=`${BIN_OBJDUMP} -p "$kernel" | grep -m 1 LOAD | awk '{print $7}'`
 
 case "$platform" in
 uboot)
@@ -461,7 +479,7 @@ uboot)
 esac
 
 addsec() {
-    ${CROSS}objcopy $4 $1 \
+    ${BIN_OBJCOPY} $4 $1 \
 	--add-section=$3="$2" \
 	--set-section-flags=$3=contents,alloc,load,readonly,data
 }
@@ -491,18 +509,18 @@ if [ "$platform" != "miboot" ]; then
         text_start="-Ttext $link_address"
     fi
 #link everything
-    ${CROSS}ld -m $format -T $lds $text_start $pie $nodl $nowarn $rodynamic $notext -o "$ofile" $map \
+    ${BIN_LD} -m $format -T $lds $text_start $pie $nodl $nowarn $rodynamic $norelro $notext -o "$ofile" $map \
 	$platformo $tmp $object/wrapper.a
     rm $tmp
 fi
 
 # Some platforms need the zImage's entry point and base address
-base=0x`${CROSS}nm "$ofile" | grep ' _start$' | cut -d' ' -f1`
-entry=`${CROSS}objdump -f "$ofile" | grep '^start address ' | cut -d' ' -f3`
+base=0x`${BIN_NM} "$ofile" | grep ' _start$' | cut -d' ' -f1`
+entry=`${BIN_OBJDUMP} -f "$ofile" | grep '^start address ' | cut -d' ' -f3`
 
 if [ -n "$binary" ]; then
     mv "$ofile" "$ofile".elf
-    ${CROSS}objcopy -O binary "$ofile".elf "$ofile"
+    ${BIN_OBJCOPY} -O binary "$ofile".elf "$ofile"
 fi
 
 # post-processing needed for some platforms
@@ -511,7 +529,7 @@ pseries|chrp)
     $objbin/addnote "$ofile"
     ;;
 coff)
-    ${CROSS}objcopy -O aixcoff-rs6000 --set-start "$entry" "$ofile"
+    ${BIN_OBJCOPY} -O aixcoff-rs6000 --set-start "$entry" "$ofile"
     $objbin/hack-coff "$ofile"
     ;;
 cuboot*)
@@ -539,18 +557,18 @@ ps3)
     # copied to offset 0x100.  At runtime the bootwrapper program copies
     # the data at __system_reset_kernel back to addr 0x100.
 
-    system_reset_overlay=0x`${CROSS}nm "$ofile" \
+    system_reset_overlay=0x`${BIN_NM} "$ofile" \
         | grep ' __system_reset_overlay$'       \
         | cut -d' ' -f1`
     system_reset_overlay=`printf "%d" $system_reset_overlay`
-    system_reset_kernel=0x`${CROSS}nm "$ofile" \
+    system_reset_kernel=0x`${BIN_NM} "$ofile" \
         | grep ' __system_reset_kernel$'       \
         | cut -d' ' -f1`
     system_reset_kernel=`printf "%d" $system_reset_kernel`
     overlay_dest="256"
     overlay_size="512"
 
-    ${CROSS}objcopy -O binary "$ofile" "$ofile.bin"
+    ${BIN_OBJCOPY} -O binary "$ofile" "$ofile.bin"
 
     run_cmd dd if="$ofile.bin" of="$ofile.bin" conv=notrunc   \
         skip=$overlay_dest seek=$system_reset_kernel          \
@@ -568,7 +586,7 @@ ps3)
     # reached, then enter the system reset vector of the partially decompressed
     # image.  No warning is issued.
     rm -f "$odir"/{otheros,otheros-too-big}.bld
-    size=$(${CROSS}nm --no-sort --radix=d "$ofile" | grep -E ' _end$' | cut -d' ' -f1)
+    size=$(${BIN_NM} --no-sort --radix=d "$ofile" | grep -E ' _end$' | cut -d' ' -f1)
     bld="otheros.bld"
     if [ $size -gt $((0x1000000)) ]; then
         bld="otheros-too-big.bld"
