@@ -215,13 +215,17 @@ out:
 
 void platform_init(unsigned long r3, unsigned long r4, unsigned long r5)
 {
+	static const struct fdt_mapped_range mapped_ram[] = {
+		{ 0, MEM1_TOP },
+		{ 0x10000000, MEM2_TOP - 0x10000000 },
+	};
 	u32 heapsize = mem_heapsize();
 
 	if (!heapsize)
 		fatal("no heap\n");
 
 	simple_alloc_init(_end, heapsize, 32, 64);
-	fdt_init(_dtb_start);
+	fdt_init_from_loader(r3, r4, r5, mapped_ram, ARRAY_SIZE(mapped_ram));
 
 	/*
 	 * 'mini' boots the Broadway processor with EXI disabled.
@@ -234,4 +238,3 @@ void platform_init(unsigned long r3, unsigned long r4, unsigned long r5)
 
 	platform_ops.fixups = platform_fixups;
 }
-

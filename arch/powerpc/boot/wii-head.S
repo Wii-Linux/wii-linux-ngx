@@ -109,11 +109,6 @@ _mmu_off:
 	mtspr	0x3f0, 8	/* HID0 */
 	isync
 
-	/* initialize arguments */
-	li	3, 0
-	li	4, 0
-	li	5, 0
-
 	/* turn the MMU on */
 	bcl	20, 31, 1f
 1:
