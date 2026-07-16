@@ -12,6 +12,7 @@
 #include "types.h"
 #include "io.h"
 #include "ops.h"
+#include <libfdt.h>
 
 #include "ugecon.h"
 
@@ -36,6 +37,9 @@ BSS_STACK(8192);
 #define VI_BFBL		0x24 /* u32 */
 #define SCREEN_WIDTH		640
 #define COLOR_BLACK		0x10801080 /* YUYV */
+
+static fdt32_t loader_initrd_start;
+static fdt32_t loader_initrd_end;
 
 struct mipc_infohdr {
 	char magic[3];
@@ -122,6 +126,105 @@ static bool mem_overlaps(u32 addr1, u32 size1, u32 addr2, u32 size2)
 	return (addr1 > addr2 ?
 		addr1 - addr2 < size2 :
 		addr2 - addr1 < size1);
+}
+
+static bool mem_contains(u32 addr, u32 size, u32 start, u32 end)
+{
+	return addr >= start && addr < end && size <= end - addr;
+}
+
+static bool valid_loader_fdt(unsigned long r3, unsigned long r4,
+			     unsigned long r5)
+{
+	const void *fdt = (const void *)r3;
+	u32 size;
+
+	/*
+	 * The 32-bit PowerPC direct boot protocol passes the FDT in r3, the
+	 * kernel physical start in r4, and zero in r5.  r4 is intentionally
+	 * unconstrained here since the wrapper may be loaded independently
+	 * of the kernel image it contains.
+	 */
+	if (!r3 || r5 || (r3 & 7))
+		return false;
+
+	/* Do not dereference a header unless it is wholly in mapped RAM. */
+	if (!mem_contains(r3, sizeof(struct fdt_header), 0, MEM1_TOP) &&
+	    !mem_contains(r3, sizeof(struct fdt_header), 0x10000000, MEM2_TOP))
+		return false;
+
+	if (fdt_check_header(fdt))
+		return false;
+
+	size = fdt_totalsize(fdt);
+	return mem_contains(r3, size, 0, MEM1_TOP) ||
+	       mem_contains(r3, size, 0x10000000, MEM2_TOP);
+}
+
+static bool save_loader_initrd(const void *fdt)
+{
+	const fdt32_t *prop;
+	u64 start = 0, end = 0;
+	int chosen, len, i;
+
+	chosen = fdt_path_offset(fdt, "/chosen");
+	if (chosen < 0)
+		return false;
+
+	prop = fdt_getprop(fdt, chosen, "linux,initrd-start", &len);
+	if (!prop || len <= 0 || len > sizeof(start) || len % sizeof(*prop))
+		return false;
+	for (i = 0; i < len / sizeof(*prop); i++)
+		start = (start << 32) | fdt32_to_cpu(prop[i]);
+
+	prop = fdt_getprop(fdt, chosen, "linux,initrd-end", &len);
+	if (!prop || len <= 0 || len > sizeof(end) || len % sizeof(*prop))
+		return false;
+	for (i = 0; i < len / sizeof(*prop); i++)
+		end = (end << 32) | fdt32_to_cpu(prop[i]);
+
+	if (start >= end || start > 0xffffffff || end > 0xffffffff)
+		return false;
+
+	/*
+	 * Wii RAM is 32-bit addressed.  Saving these as single cells also
+	 * lets wii_kentry restore them in-place after the tree is packed.
+	 */
+	loader_initrd_start = cpu_to_fdt32(start);
+	loader_initrd_end = cpu_to_fdt32(end);
+	return true;
+}
+
+static void wii_kentry(unsigned long fdt_addr, void *vmlinux_addr)
+{
+	void *fdt = (void *)fdt_addr;
+	int chosen, err;
+
+	/*
+	 * main.c gives an attached initramfs priority over loader-provided
+	 * data.  Restore the bootloader's properties immediately before
+	 * entering the kernel, as the attached initramfs is not preferred here.
+	 */
+	chosen = fdt_path_offset(fdt, "/chosen");
+	if (chosen < 0)
+		fatal("Can't find /chosen in loader device tree\n");
+
+	err = fdt_setprop_inplace(fdt, chosen, "linux,initrd-start",
+				  &loader_initrd_start,
+				  sizeof(loader_initrd_start));
+	if (err)
+		fatal("Can't restore linux,initrd-start: %s\n",
+		      fdt_strerror(err));
+
+	err = fdt_setprop_inplace(fdt, chosen, "linux,initrd-end",
+				  &loader_initrd_end,
+				  sizeof(loader_initrd_end));
+	if (err)
+		fatal("Can't restore linux,initrd-end: %s\n",
+		      fdt_strerror(err));
+
+	flush_cache(fdt, fdt_totalsize(fdt));
+	((kernel_entry_t)vmlinux_addr)(fdt_addr, 0, NULL);
 }
 
 static void vi_fixups(void)
@@ -216,12 +319,19 @@ out:
 void platform_init(unsigned long r3, unsigned long r4, unsigned long r5)
 {
 	u32 heapsize = mem_heapsize();
+	void *fdt = _dtb_start;
 
 	if (!heapsize)
 		fatal("no heap\n");
 
 	simple_alloc_init(_end, heapsize, 32, 64);
-	fdt_init(_dtb_start);
+
+	if (valid_loader_fdt(r3, r4, r5)) {
+		fdt = (void *)r3;
+		if (&_initrd_end > &_initrd_start && save_loader_initrd(fdt))
+			platform_ops.kentry = wii_kentry;
+	}
+	fdt_init(fdt);
 
 	/*
 	 * 'mini' boots the Broadway processor with EXI disabled.
