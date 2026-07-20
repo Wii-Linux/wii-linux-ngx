@@ -260,7 +260,7 @@ isection=.kernel:initrd
 esection=.kernel:esm_blob
 link_address='0x400000'
 make_space=y
-
+norelro=$(if ld_is_lld; then echo "-z norelro"; fi)
 
 if [ -n "$esm_blob" -a "$platform" != "pseries" ]; then
     echo "ESM blob not support on non-pseries platforms" >&2
@@ -365,7 +365,6 @@ xpedite52*)
 gamecube|wii)
     link_address='0x600000'
     platformo="$object/$platform-head.o $object/$platform.o"
-    norelro=$(if ld_is_lld; then echo "-z norelro"; fi)
     ;;
 microwatt)
     link_address='0x500000'
