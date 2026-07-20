@@ -464,14 +464,6 @@ static int ug_tty_init(void)
 static void ug_tty_exit(void)
 {
 	struct tty_driver *driver = ug_tty_driver;
-	tty_port_destroy(driver->ports[0]);
-	tty_port_destroy(driver->ports[1]);
-
-	kfree(driver->ports[0]);
-	kfree(driver->ports[1]);
-
-	driver->ports[0] = NULL;
-	driver->ports[1] = NULL;
 
 	ug_tty_driver = NULL;
 	if (driver) {
@@ -514,7 +506,6 @@ static int ug_probe(struct spi_device *spi_device)
 		return -ENODEV;
 	}
 
-	ug_tty_init();
 	slot = spi_device->controller->bus_num;
 	console = &ug_consoles[slot];
 	adapter = console->data;
@@ -612,15 +603,26 @@ static struct spi_driver ug_spi_driver = {
 
 static int __init ug_init_module(void)
 {
+	int retval;
+
 	pr_info("%s - version %s\n", DRV_DESCRIPTION,
 		   ug_driver_version);
 
-	return spi_register_driver(&ug_spi_driver);
+	retval = ug_tty_init();
+	if (retval)
+		return retval;
+
+	retval = spi_register_driver(&ug_spi_driver);
+	if (retval)
+		ug_tty_exit();
+
+	return retval;
 }
 
 static void __exit ug_exit_module(void)
 {
 	spi_unregister_driver(&ug_spi_driver);
+	ug_tty_exit();
 }
 
 module_init(ug_init_module);
