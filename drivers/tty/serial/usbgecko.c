@@ -96,7 +96,8 @@ static int ug_check_adapter(struct spi_device *spi_device)
 /*
  *
  */
-static int ug_is_txfifo_empty(struct ug_adapter *adapter)
+#ifdef CONFIG_CONSOLE_POLL
+static int ug_tx_ready(struct ug_adapter *adapter)
 {
 	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
@@ -111,7 +112,7 @@ static int ug_is_txfifo_empty(struct ug_adapter *adapter)
 /*
  *
  */
-static int ug_is_rxfifo_empty(struct ug_adapter *adapter)
+static int ug_rx_ready(struct ug_adapter *adapter)
 {
 	struct spi_device *spi_device = adapter->spi_device;
 	u16 data;
@@ -122,6 +123,7 @@ static int ug_is_rxfifo_empty(struct ug_adapter *adapter)
 	ug_spi_io_transaction(spi_device, 0xD000, &data);
 	return data & 0x0400;
 }
+#endif
 
 #if 0
 /*
@@ -398,22 +400,26 @@ static int ug_poll_init(struct tty_driver *driver, int line, char *options)
 	return 0;
 }
 
-static int ug_poll_get_char(struct tty_driver *driver, int line) {
+static int ug_poll_get_char(struct tty_driver *driver, int line)
+{
 	struct tty_struct *tty = driver->ttys[line];
 	struct ug_adapter *adapter = tty->driver_data;
 	char ch;
-	while(!ug_is_rxfifo_empty(adapter))
-		barrier();
+
+	while (!ug_rx_ready(adapter))
+		cpu_relax();
 	ug_safe_getc(adapter, &ch);
 	return ch;
 }
 
-static void ug_poll_put_char(struct tty_driver *driver, int line, char c) {
+static void ug_poll_put_char(struct tty_driver *driver, int line, char c)
+{
 	struct tty_struct *tty = driver->ttys[line];
 	struct ug_adapter *adapter = tty->driver_data;
-	while (!ug_is_txfifo_empty(adapter)) {
-		ug_safe_putc(adapter, c);
-	}
+
+	while (!ug_tx_ready(adapter))
+		cpu_relax();
+	ug_safe_putc(adapter, c);
 }
 #endif
 
