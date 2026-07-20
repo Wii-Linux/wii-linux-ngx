@@ -3,7 +3,7 @@
  * arch/powerpc/platforms/embedded6xx/hlwd-ipc-mini.h
  *
  * Nintendo Wii "Hollywood" IPC support for the "mini" custom firmware.
- * Copyright (C) 2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
+ * Copyright (C) 2025-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Derived from BootMii ppcskel's 'ipc.h':
  * Copyright (C) 2008, 2009	Haxx Enterprises <bushing@gmail.com>
@@ -17,6 +17,7 @@
 #define __HLWD_IPC_MINI_H
 #include <linux/types.h>
 #include <linux/stdarg.h>
+#include "hlwd-ipc.h"
 
 /*
  * IPC codes
