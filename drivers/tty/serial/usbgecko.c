@@ -159,7 +159,7 @@ static int ug_getc(struct ug_adapter *adapter, char *c)
 	}
 	return 0;
 }
-#endif 
+#endif
 /*
  *
  */
@@ -631,4 +631,3 @@ module_exit(ug_exit_module);
 MODULE_AUTHOR(DRV_AUTHOR);
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
 MODULE_LICENSE("GPL");
-
