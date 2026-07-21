@@ -375,6 +375,7 @@ int ipc_exchange_mini(struct ipc_request_mini *req, u32 code, int max_recv_attem
 	/* increment our tag */
 	state->cur_tag++;
 
+	va_end(args);
 	return 0;
 
 out:
