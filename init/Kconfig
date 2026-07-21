@@ -1874,16 +1874,6 @@ config EVENTFD
 
 	  If unsure, say Y.
 
-# syscall, maps, verifier
-config BPF_SYSCALL
-       bool "Enable bpf() system call"
-       select ANON_INODES
-       select BPF
-        default n
-        help
-         Enable the bpf() system call that allows to manipulate eBPF
-         programs and maps via file descriptors.
-
 config FB_MODEDB
 	default n
 	bool "Configure a preferrable framebuffer mode" if EXPERT
