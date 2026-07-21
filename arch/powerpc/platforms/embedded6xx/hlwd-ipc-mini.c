@@ -3,7 +3,7 @@
  * arch/powerpc/platforms/embedded6xx/hlwd-ipc-mini.h
  *
  * Nintendo Wii "Hollywood" IPC support for fail0verflow's "mini" custom firmware.
- * Copyright (C) 2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
+ * Copyright (C) 2025-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Derived from BootMii ppcskel's 'ipc.c':
  * Copyright (C) 2008, 2009	Hector Martin "marcan" <marcan@marcansoft.com>
@@ -147,15 +147,15 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 
 	state->cur_tag = 1;
 
-	pr_err("initial in tail: %d, out head: %d\n", state->in_tail, state->out_head);
+	pr_info("initial in tail: %d, out head: %d\n", state->in_tail, state->out_head);
 
-	pr_err("running trivial tests:\n");
+	pr_info("running trivial tests:\n");
 	ret = ipc_exchange_mini(&req, IPC_MINI_CODE_PING, 3, 1, 0);
-	pr_err(" * fast ping: %d\n", ret);
+	pr_info(" * fast ping: %d\n", ret);
 	ret = ipc_exchange_mini(&req, IPC_MINI_CODE_SLWPING, 3, 1, 0);
-	pr_err(" * slow ping: %d\n", ret);
+	pr_info(" * slow ping: %d\n", ret);
 	ret = ipc_exchange_mini(&req, IPC_MINI_CODE_GETVERS, 3, 1, 0);
-	pr_err(" * getvers: %d (version: 0x%08x)\n", ret, req.args[0]);
+	pr_info(" * getvers: %d (version: 0x%08x)\n", ret, req.args[0]);
 	return 0;
 
 
