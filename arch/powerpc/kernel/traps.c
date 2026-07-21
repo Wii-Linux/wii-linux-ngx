@@ -1421,8 +1421,8 @@ static int emulate_instruction(struct pt_regs *regs)
 			rd = (instword >> 21) & 0x1f;
 			gqr = (instword >> 16) & 7;
 			/* If the current thread is using the FPU, read from the true GQRs. */
-			if ((regs->msr & MSR_FP) 
-			#ifdef CONFIG_PPC_PEDANTIC_PSE 
+			if ((regs->msr & MSR_FP)
+			#ifdef CONFIG_PPC_PEDANTIC_PSE
 			&& (mfspr(SPRN_HID2_GEKKO) & HID2_PSE)
 			#endif
 			) {
@@ -1468,8 +1468,8 @@ static int emulate_instruction(struct pt_regs *regs)
 			rd = (instword >> 21) & 0x1f;
 			gqr = (instword >> 16) & 7;
 			/* If the current thread is using the FPU, write to the true GQRs. */
-			if ((regs->msr & MSR_FP) 
-			#ifdef CONFIG_PPC_PEDANTIC_PSE 
+			if ((regs->msr & MSR_FP)
+			#ifdef CONFIG_PPC_PEDANTIC_PSE
 			&& (mfspr(SPRN_HID2_GEKKO) & HID2_PSE)
 			#endif
 			) {

@@ -118,7 +118,7 @@
 #define REST_8VRS(n,b,base)	REST_4VRS(n,b,base); REST_4VRS(n+4,b,base)
 #define REST_16VRS(n,b,base)	REST_8VRS(n,b,base); REST_8VRS(n+8,b,base)
 #define REST_32VRS(n,b,base)	REST_16VRS(n,b,base); REST_16VRS(n+16,b,base)
- 
+
 #ifdef CONFIG_PPC_BOOK3S_750CL
 /*
  * Using lwz and stw here because the only platforms that need this code
