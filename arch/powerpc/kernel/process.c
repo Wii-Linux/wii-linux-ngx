@@ -1974,7 +1974,7 @@ void start_thread(struct pt_regs *regs, unsigned long start, unsigned long sp)
 #ifdef CONFIG_PPC_FPU_REGS
 	memset(&current->thread.fp_state, 0, sizeof(current->thread.fp_state));
 	current->thread.fp_save_area = NULL;
-#ifdef CONFIG_PPC_BOOKS3S_750CL
+#ifdef CONFIG_PPC_BOOK3S_750CL
 	memset(&current->thread.gqr_state, 0, sizeof(current->thread.gqr_state));
 	current->thread.gqr_save_area = NULL;
 #endif
