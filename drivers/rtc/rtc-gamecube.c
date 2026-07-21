@@ -170,7 +170,7 @@ static int gamecube_rtc_read_time(struct device *dev, struct rtc_time *t)
 		return ret;
 
 	/* Add the counter and the bias to obtain the timestamp */
-	timestamp = (time64_t)d->rtc_bias + counter;
+	timestamp = (time64_t)(s32)d->rtc_bias + counter;
 	rtc_time64_to_tm(timestamp, t);
 
 	return 0;
@@ -183,7 +183,7 @@ static int gamecube_rtc_set_time(struct device *dev, struct rtc_time *t)
 
 	/* Subtract the timestamp and the bias to obtain the counter value */
 	timestamp = rtc_tm_to_time64(t);
-	return regmap_write(d->regmap, RTC_COUNTER, timestamp - d->rtc_bias);
+	return regmap_write(d->regmap, RTC_COUNTER, timestamp - (s32)d->rtc_bias);
 }
 
 static int gamecube_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
