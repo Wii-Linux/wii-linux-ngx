@@ -2280,7 +2280,7 @@ static int vifb_do_probe(struct device *dev,
 	return 0;
 
 err_register_framebuffer:
-	free_irq(ctl->irq, 0);
+	free_irq(ctl->irq, dev);
 err_check_var:
 err_request_irq:
 	fb_dealloc_cmap(&info->cmap);
