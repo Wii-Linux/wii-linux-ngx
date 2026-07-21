@@ -160,7 +160,7 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 
 
 out_ioremap_out:
-	memunmap((void *)state->in_queue);
+	iounmap((void *)state->in_queue);
 out_ioremap_in:
 	memunmap(infohdr);
 	kfree(state);
