@@ -569,7 +569,7 @@ static u32 pseudo_palette[16];
 
 /*
  * Explanation of all the buffering going on here:
- * 
+ *
  * 0 - this is the hardware, Hollywood/Flipper GPU, it shares memory with CPU as instructed via ioctls and renders what finds there
  * 1 - gx_fb_start: this is the physical memory address (a.k.a. xfb-start) for the video card
  * 2 - fb_mem: this is the iomapped virtual address for the physical address, same size as physical memory used by video card
@@ -577,7 +577,7 @@ static u32 pseudo_palette[16];
  * 3 - info->fix.smem_start: this is the virtual framebuffer, VM'allocated, with format specified by 'vfb_format'
  * 4 - userland has its own memory buffers and can mmap into previous virtual framebuffer,
  *     or otherwise write there via file/memory operations.
- * 
+ *
  * gx_fb_size: size of the physical framebuffer
  * vfb_mem: pointer to the virtual framebuffer, used only in RGB88 or RGB565 modes
  * vfb_len: size of the virtual framebuffer, used only in RGB88 or RGB565 modes
@@ -1366,7 +1366,7 @@ static void vi_transcode_RGB565(struct vi_ctl *ctl)
 	uint32_t *src = (uint32_t *)info->screen_base;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
 	width = info->fix.line_length >> 2;
 
@@ -1392,7 +1392,7 @@ static void vi_transcode_RGB888(struct vi_ctl *ctl)
 	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
 	/* address of the memory-mapped physical framebuffer */
 	uint32_t *dst = fb_mem;
-	
+
 	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
 	width = info->fix.line_length >> 3;
 
@@ -1437,7 +1437,7 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	val = in_be32(io_base + VI_DI1);
 	if (vi_dix_get_irq(val)) {
 		ctl->in_vtrace = 1;
-		
+
 		switch (vfb_format) {
 			case V4L2_PIX_FMT_YUYV:
 				/* do nothing */
@@ -1454,7 +1454,7 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 				BUG();
 				break;
 		}
-			
+
 		vi_dispatch_vtrace(ctl);
 
 		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
@@ -1869,13 +1869,13 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		dev_err(info->device, "Non-zero x/y offsets are not supported\n");
 		return -EINVAL;
 	}
-	
+
 	if (vifb_format_is_fourcc(var)) {
 		/* only the native YUYV format is supported */
 		if (var->grayscale != V4L2_PIX_FMT_YUYV) {
 			return -EINVAL;
 		}
-		
+
 		/* YUYV a.k.a. YUY2 */
 		var->bits_per_pixel = 16;
 		var->colorspace = V4L2_PIX_FMT_YUYV; /* only for FOURCC-based modes */
@@ -2062,7 +2062,7 @@ static int vifb_set_par(struct fb_info *info)
 		info->fix.xpanstep = 0;
 		info->fix.ypanstep = 0;
 	}
-	
+
 	/* always clear framebuffer and screen when changing modes */
 	vifb_clear_all();
 
@@ -2180,7 +2180,7 @@ static int vifb_do_probe(struct device *dev,
 		 (void *)xfb_start, fb_mem, xfb_size / 1024);
 
 
-	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions 
+	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions
 	 * always as big as the largest mode supported
 	 * TODO: reallocate framebuffer as needed
 	 */
@@ -2234,7 +2234,7 @@ static int vifb_do_probe(struct device *dev,
 
 	ctl->visible_page = 0;
 	ctl->flip_pending = 0;
-	
+
 	video_cmap_len = 16;
 	info->pseudo_palette = pseudo_palette;
 	if (fb_alloc_cmap(&info->cmap, video_cmap_len, 0)) {
@@ -2334,7 +2334,7 @@ static int vifb_do_remove(struct device *dev)
 static void vifb_release_virtual_fb(void) {
 	unsigned long size;
 	unsigned long adr = (unsigned long)vfb_mem;
-	
+
 	/* release the virtual framebuffer's reserved pages */
 	size = PAGE_ALIGN(vfb_len);
 	while ((long) size > 0) {
