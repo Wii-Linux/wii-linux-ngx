@@ -116,7 +116,7 @@ static int gamecube_rtc_read_time(struct device *dev, struct rtc_time *t)
 		return ret;
 
 	/* Add the counter and the bias to obtain the timestamp */
-	timestamp = (time64_t)d->rtc_bias + counter;
+	timestamp = (time64_t)(s32)d->rtc_bias + counter;
 	rtc_time64_to_tm(timestamp, t);
 
 	return 0;
