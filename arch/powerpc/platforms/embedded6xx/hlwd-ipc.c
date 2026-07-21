@@ -67,7 +67,7 @@ static int ipc_probe(struct platform_device *odev)
 	io_base = ioremap(mem.start, io_size);
 	if (!io_base)
 		return -ENOMEM;
-	
+
 	ipc = kzalloc(sizeof(struct hlwd_ipc), GFP_KERNEL);
 	if (!ipc)
 		return -ENOMEM;

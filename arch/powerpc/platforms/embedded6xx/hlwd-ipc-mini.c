@@ -358,7 +358,7 @@ int ipc_exchange_mini(struct ipc_request_mini *req, u32 code, int max_recv_attem
 		return -EINVAL;
 
 	state = (struct mini_state *)ipc->flavor_state;
-	
+
 	if (num_args > 0)
 		va_start(args, num_args);
 
@@ -384,4 +384,3 @@ out:
 
 	return error;
 }
-
