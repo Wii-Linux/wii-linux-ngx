@@ -44,11 +44,6 @@
 			alloc-ranges = <0x10000000 0x04000000>; /* MEM2 */
 		};
 
-		XFB: xfb@1774000 {
-			reg = <0x01774000 0x0008c000>;
-			no-map;
-		};
-
 		EFB: efb@8000000 {
 			reg = <0x08000000 0x00300000>;
 			no-map;
@@ -105,8 +100,6 @@
 			interrupts = <8>;
 			efb-start = <0x08000000>;
 			efb-size = <0x00300000>;
-			xfb-start = <0x01774000>; /* end-of-mem1 - xfb-size */
-			xfb-size = <0x8c000>;     /* 640x448x2 bytes */
 		};
 
 		processor-interface@c003000 {
@@ -300,10 +293,17 @@
 		compatible = "i2c-gpio";
 
 		clock-frequency = <250000>;
-		i2c-gpio,scl-delay-us = <2>;
-		i2c-gpio,sda-open-drain;
+		i2c-gpio,delay-us = <2>;
+
+		/*
+		 * Hollywood's GPIO controller doesn't allow changing the
+		 * properties to open drain via the GPIO flags.  SDA has an
+		 * external pull-up, so let gpiolib emulate open drain by
+		 * switching it between output-low and input.  SCL has no
+		 * external pull-up and must remain a push-pull output.
+		 */
 		i2c-gpio,scl-open-drain;
-		sda-enforce-dir;
+
 		sda-gpios = <&GPIO 15 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&GPIO 14 GPIO_ACTIVE_HIGH>;
 
