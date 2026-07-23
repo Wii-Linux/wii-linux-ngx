@@ -300,10 +300,17 @@
 		compatible = "i2c-gpio";
 
 		clock-frequency = <250000>;
-		i2c-gpio,scl-delay-us = <2>;
-		i2c-gpio,sda-open-drain;
+		i2c-gpio,delay-us = <2>;
+
+		/*
+		 * Hollywood's GPIO controller doesn't allow changing the
+		 * properties to open drain via the GPIO flags.  SDA has an
+		 * external pull-up, so let gpiolib emulate open drain by
+		 * switching it between output-low and input.  SCL has no
+		 * external pull-up and must remain a push-pull output.
+		 */
 		i2c-gpio,scl-open-drain;
-		sda-enforce-dir;
+
 		sda-gpios = <&GPIO 15 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&GPIO 14 GPIO_ACTIVE_HIGH>;
 
