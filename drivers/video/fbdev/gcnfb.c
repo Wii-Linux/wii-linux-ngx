@@ -595,7 +595,7 @@ static int vfb_format;
  */
 
 #ifdef CONFIG_WII_AVE_RVL
-static void vi_ave_setup(struct vi_ctl *ctl);
+static int vi_ave_setup(struct vi_ctl *ctl);
 static int vi_ave_get_video_format(struct vi_ctl *ctl,
 				   enum vi_video_format *fmt);
 #endif
@@ -1512,10 +1512,16 @@ static int vi_ave_outs(struct i2c_client *client, u8 reg,
 	result = i2c_transfer(adap, msg, 1);
 	if (result < 0)
 		error = result;
-	else if (result == 1)
+	else if (result == 1) {
+		/*
+		 * The AVE needs a short interval to process a write before
+		 * accepting the next transaction.
+		 */
+		udelay(2);
 		error = 0;
-	else
+	} else {
 		error = -EIO;
+	}
 
 err_out:
 	if (error)
@@ -1619,20 +1625,26 @@ static struct i2c_client *first_vi_ave = NULL;
 /*
  * Initialize the audio/video encoder.
  */
-static void vi_ave_setup(struct vi_ctl *ctl)
+static int vi_ave_setup(struct vi_ctl *ctl)
 {
 	struct i2c_client *client;
 	u8 macrovision[26];
 	u8 component, format, pal60;
+	int error;
+
+#define ave_write(_call)			\
+	do {					\
+		error = (_call);		\
+		if (error)			\
+			return error;		\
+	} while (0)
 
 	client = ctl->i2c_client;
 	if (!client && first_vi_ave)
 		client = first_vi_ave;
 
-	if (!client) {
-		dev_err(ctl->dev, "trying to set up AVE with no client?");
-		return;
-	}
+	if (!client)
+		return -ENODEV;
 
 	memset(macrovision, 0, sizeof(macrovision));
 
@@ -1640,8 +1652,8 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	 * Magic initialization sequence borrowed from libogc.
 	 */
 
-	vi_ave_out8(client, 0x6a, 1);
-	vi_ave_out8(client, 0x65, 1);
+	ave_write(vi_ave_out8(client, 0x6a, 1));
+	ave_write(vi_ave_out8(client, 0x65, 1));
 
 	/*
 	 * NOTE
@@ -1653,32 +1665,37 @@ static void vi_ave_setup(struct vi_ctl *ctl)
 	if ((ctl->mode->flags & VI_VMF_PAL_COLOR) != 0)
 		format = 2;	/* PAL */
 	component = (ctl->has_component_cable) ? 1<<5 : 0;
-	vi_ave_out8(client, 0x01, component | format);
+	ave_write(vi_ave_out8(client, 0x01, component | format));
 
-	vi_ave_out8(client, 0x00, 0);
-	vi_ave_out16(client, 0x71, 0x8e8e);
-	vi_ave_out8(client, 0x02, 7);
-	vi_ave_out16(client, 0x05, 0x0000);
-	vi_ave_out16(client, 0x08, 0x0000);
-	vi_ave_out32(client, 0x7a, 0x00000000);
-	vi_ave_outs(client, 0x40, macrovision, sizeof(macrovision));
-	vi_ave_out8(client, 0x0a, 0);
-	vi_ave_out8(client, 0x03, 1);
-	vi_ave_outs(client, 0x10, vi_ave_gamma, sizeof(vi_ave_gamma));
-	vi_ave_out8(client, 0x04, 1);
+	ave_write(vi_ave_out8(client, 0x00, 0));
+	ave_write(vi_ave_out16(client, 0x71, 0x8e8e));
+	ave_write(vi_ave_out8(client, 0x02, 7));
+	ave_write(vi_ave_out16(client, 0x05, 0x0000));
+	ave_write(vi_ave_out16(client, 0x08, 0x0000));
+	ave_write(vi_ave_out32(client, 0x7a, 0x00000000));
+	ave_write(vi_ave_outs(client, 0x40, macrovision,
+			      sizeof(macrovision)));
+	ave_write(vi_ave_out8(client, 0x0a, 0));
+	ave_write(vi_ave_out8(client, 0x03, 1));
+	ave_write(vi_ave_outs(client, 0x10, vi_ave_gamma,
+			      sizeof(vi_ave_gamma)));
+	ave_write(vi_ave_out8(client, 0x04, 1));
 
-	vi_ave_out32(client, 0x7a, 0x00000000);
-	vi_ave_out16(client, 0x08, 0x0000);
+	ave_write(vi_ave_out32(client, 0x7a, 0x00000000));
+	ave_write(vi_ave_out16(client, 0x08, 0x0000));
 
-	vi_ave_out8(client, 0x03, 1);
+	ave_write(vi_ave_out8(client, 0x03, 1));
 
 	/* clear bit 1 otherwise red and blue get swapped  */
 	if (ctl->has_component_cable)
-		vi_ave_out8(client, 0x62, 0);
+		ave_write(vi_ave_out8(client, 0x62, 0));
 
 	/* PAL 480i/60 supposedly needs a "filter" */
 	pal60 = !!(format == 2 && ctl->mode->lines == 525);
-	vi_ave_out8(client, 0x6e, pal60);
+	ave_write(vi_ave_out8(client, 0x6e, pal60));
+
+#undef ave_write
+	return 0;
 }
 
 static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
@@ -1720,6 +1737,10 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 static int vi_ave_probe(struct i2c_client *client)
 {
 	int error;
+
+	if (!first_vi_ctl)
+		return -EPROBE_DEFER;
+
 	if (first_vi_ave) {
 		dev_dbg(&client->dev, "vi_ave_probe(): skipping further probes\n");
 		return 0;
@@ -1733,13 +1754,22 @@ static int vi_ave_probe(struct i2c_client *client)
 	}
 
 	first_vi_ave = client;
-	dev_info(&client->dev, "vi_ave_probe(): AVE attached successfully\n");
-#ifdef CONFIG_WII_AVE_RVL
-	vi_ave_setup(first_vi_ctl);
-#endif
+	error = vi_ave_setup(first_vi_ctl);
+	if (error)
+		goto err_detach;
 
 	/* setup again the video mode using the a/v encoder */
-	return vi_setup_tv_mode(first_vi_ctl, true);
+	error = vi_setup_tv_mode(first_vi_ctl, true);
+	if (error)
+		goto err_detach;
+
+	dev_info(&client->dev, "vi_ave_probe(): AVE attached successfully\n");
+	return 0;
+
+err_detach:
+	first_vi_ave = NULL;
+	vi_dettach_ave(first_vi_ctl);
+	return error;
 }
 
 static void vi_ave_remove(struct i2c_client *client)
@@ -2009,6 +2039,9 @@ static int vifb_set_par(struct fb_info *info)
 	struct fb_var_screeninfo *var = &info->var;
 	unsigned long flags;
 	int gx_ll;
+#ifdef CONFIG_WII_AVE_RVL
+	int error;
+#endif
 
 	/* horizontal line in bytes, refers to virtual framebuffer */
 	info->fix.line_length = var->xres_virtual * (var->bits_per_pixel / 8);
@@ -2068,7 +2101,11 @@ static int vifb_set_par(struct fb_info *info)
 
 	vi_setup_tv_mode(ctl, false);
 #ifdef CONFIG_WII_AVE_RVL
-	vi_ave_setup(ctl);
+	if (ctl->i2c_client) {
+		error = vi_ave_setup(ctl);
+		if (error)
+			return error;
+	}
 #endif
 
 	/* enable the video retrace handling */
@@ -2221,12 +2258,14 @@ static int vifb_do_probe(struct device *dev,
 	if (!first_vi_ctl)
 		first_vi_ctl = ctl;
 
-	/* try to attach the a/v encoder now */
-	error = vi_attach_ave(ctl, first_vi_ave);
-	if (error)
-		dev_err(dev, "unable to attach AVE: error %d\n", error);
-	else
-		dev_info(dev, "AVE attached successfully\n");
+	/* Try to attach an encoder that probed before the framebuffer. */
+	if (first_vi_ave) {
+		error = vi_attach_ave(ctl, first_vi_ave);
+		if (error)
+			dev_err(dev, "unable to attach AVE: error %d\n", error);
+		else
+			dev_info(dev, "AVE attached successfully\n");
+	}
 #endif
 
 	info->var.xres = ctl->mode->width;
