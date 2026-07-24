@@ -74,6 +74,7 @@
                 ranges = <0x0c000000 0x0c000000 0x01000000
 			  0x0d000000 0x0d000000 0x00800000
 			  0x0d800000 0x0d800000 0x00800000>;
+		clock-frequency = <243000000>; /* 243MHz */
 		interrupt-parent = <&PIC0>;
 		dma-ranges;
 		dma-noncoherent;

@@ -56,6 +56,7 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "nintendo,flipper";
+		clock-frequency = <162000000>; /* 162MHz */
 		ranges = <0x0c000000 0x0c000000 0x00010000>;
 		interrupt-parent = <&PIC>;
 		dma-ranges;
