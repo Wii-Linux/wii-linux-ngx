@@ -35,6 +35,17 @@
 		       0x10000000 0x04000000>;	/* MEM2 64MB GDDR3 */
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		XFB: xfb@1774000 {
+			reg = <0x01774000 0x0008c000>;
+			no-map;
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -67,6 +78,8 @@
 					"nintendo,flipper-vi";
 			reg = <0x0c002000 0x100>;
 			interrupts = <8>;
+			xfb-start = <0x01774000>; /* end-of-mem1 - xfb-size */
+			xfb-size = <0x8c000>;     /* 640x448x2 bytes */
 		};
 
 		processor-interface@c003000 {
