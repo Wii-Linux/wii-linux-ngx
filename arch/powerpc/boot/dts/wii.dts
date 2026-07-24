@@ -84,6 +84,7 @@
                 ranges = <0x0c000000 0x0c000000 0x01000000
 			  0x0d000000 0x0d000000 0x00800000
 			  0x0d800000 0x0d800000 0x00800000>;
+		clock-frequency = <243000000>; /* 243MHz */
 		interrupt-parent = <&PIC0>;
 		dma-ranges;
 		dma-noncoherent;
@@ -132,7 +133,6 @@
 			reg = <0x0d006400 0x100>;
 			interrupts = <3>;
 		};
-
 
 		audio@c006c00 {
 			compatible = "nintendo,hollywood-ai",

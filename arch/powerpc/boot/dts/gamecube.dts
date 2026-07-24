@@ -55,7 +55,6 @@
 	flipper {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		model = "flipper";
 		compatible = "nintendo,flipper";
 		clock-frequency = <162000000>; /* 162MHz */
 		ranges = <0x0c000000 0x0c000000 0x00010000>;
