@@ -32,22 +32,20 @@
 
 #define DRV_MODULE_NAME "gcn-mic"
 #define DRV_DESCRIPTION "Nintendo Microphone (DOL-022) driver"
-#define DRV_AUTHOR      "Albert Herranz"
+#define DRV_AUTHOR      "Albert Herranz, " \
+			"Michael \"Techflash\" Garofalo"
 
 MODULE_AUTHOR(DRV_AUTHOR);
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
 MODULE_LICENSE("GPL");
 
-static char mic_driver_version[] = "0.1i";
-
-#define mic_printk(level, format, arg...) \
-	printk(level DRV_MODULE_NAME ": " format , ## arg)
+static char mic_driver_version[] = "0.2t";
 
 #ifdef MIC_DEBUG
-#  define DBG(fmt, args...) \
-	   printk(KERN_ERR "%s: " fmt, __func__ , ## args)
+#  define DBG(dev, fmt, args...) \
+	   dev_dbg(dev, "%s: " fmt, __func__ , ## args)
 #else
-#  define DBG(fmt, args...)
+#  define DBG(dev, fmt, args...)
 #endif
 
 
@@ -65,7 +63,7 @@ struct mic_device {
 #define MIC_CTL_PERIOD_32	(0x0<<13)
 #define MIC_CTL_PERIOD_64	(0x1<<13)
 #define MIC_CTL_PERIOD_128	(0x2<<13)
-#define MIC_CTL_START_SAMPLING	(1<<15)
+#define MIC_CTL_START_SAMPLING	BIT(15)
 
 	struct task_struct      *io_thread;
 	wait_queue_head_t       io_waitq;
@@ -128,7 +126,7 @@ static void mic_control(struct mic_device *dev)
 	cmd[1] = dev->control >> 8;
 	cmd[2] = dev->control & 0xff;
 
-	DBG("control 0x80%02x%02x\n", cmd[1], cmd[2]);
+	DBG(&dev->spi_device->dev, "control 0x80%02x%02x\n", cmd[1], cmd[2]);
 
 	spi_write(dev->spi_device, cmd, sizeof(cmd));
 
@@ -147,7 +145,7 @@ static void mic_read_period(struct mic_device *dev, void *buf, size_t len)
 
 	spi_sync_transfer(dev->spi_device, xfers, ARRAY_SIZE(xfers));
 
-/*	DBG("mic cmd 0x20\n"); */
+/*	DBG(&dev->spi_device->dev, "mic cmd 0x20\n"); */
 }
 
 /*
@@ -179,7 +177,7 @@ static int mic_set_sample_rate(struct mic_device *dev, int rate)
 		control = MIC_CTL_RATE_44100;
 		break;
 	default:
-		mic_printk(KERN_ERR, "unsupported rate: %d\n", rate);
+		dev_err(&dev->spi_device->dev, "unsupported rate: %d\n", rate);
 		return -EINVAL;
 	}
 	dev->control &= ~MIC_CTL_RATE_MASK;
@@ -205,7 +203,7 @@ static int mic_set_period(struct mic_device *dev, int period_bytes)
 		control = MIC_CTL_PERIOD_128;
 		break;
 	default:
-		mic_printk(KERN_ERR, "unsupported period: %d bytes\n",
+		dev_err(&dev->spi_device->dev, "unsupported period: %d bytes\n",
 			   period_bytes);
 		return -EINVAL;
 	}
@@ -213,28 +211,6 @@ static int mic_set_period(struct mic_device *dev, int period_bytes)
 	dev->control |= control;
 	return 0;
 }
-
-/*
- * /proc support
- *
- */
-
-/*
- *
- */
-static int mic_init_proc(struct mic_device *dev)
-{
-	return 0;
-}
-
-/*
- *
- */
-static void mic_exit_proc(struct mic_device *dev)
-{
-}
-
-
 
 /*
  * Driver
@@ -340,7 +316,7 @@ static int mic_io_thread(void *param)
 			snd_pcm_period_elapsed(substream);
 
 			if (status & 0x0200) {
-				DBG("0x0200\n");
+				DBG(&dev->spi_device->dev, "0x0200\n");
 				mic_hey(dev);
 				mic_enable_sampling(dev, 1);
 				mic_control(dev);
@@ -378,8 +354,9 @@ static int hw_rule_period_bytes_by_rate(struct snd_pcm_hw_params *params,
 		hw_param_interval(params, SNDRV_PCM_HW_PARAM_PERIOD_BYTES);
 	struct snd_interval *rate =
 		hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
+	struct mic_device *dev = rule->private;
 
-	DBG("rate: min %d, max %d\n", rate->min, rate->max);
+	DBG(&dev->spi_device->dev, "rate: min %d, max %d\n", rate->min, rate->max);
 
 	if (rate->min == rate->max) {
 		if (rate->min >= 44100) {
@@ -415,7 +392,7 @@ static int mic_snd_pcm_capture_open(struct snd_pcm_substream *substream)
 	unsigned long flags;
 	int retval;
 
-	DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	spin_lock_irqsave(&dev->lock, flags);
 	dev->running = 0;
@@ -434,7 +411,7 @@ static int mic_snd_pcm_capture_open(struct snd_pcm_substream *substream)
 #endif
 	snd_pcm_hw_rule_add(runtime, 0,
 			    SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
-			    hw_rule_period_bytes_by_rate, 0,
+			    hw_rule_period_bytes_by_rate, dev,
 			    SNDRV_PCM_HW_PARAM_RATE, -1);
 
 	/* align to 32 bytes */
@@ -450,7 +427,7 @@ static int mic_snd_pcm_capture_close(struct snd_pcm_substream *substream)
 	struct mic_device *dev = snd_pcm_substream_chip(substream);
 	unsigned long flags;
 
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	spin_lock_irqsave(&dev->lock, flags);
 	dev->running = 0;
@@ -465,7 +442,9 @@ DBG("enter\n");
 static int mic_snd_pcm_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *hw_params)
 {
-DBG("enter\n");
+	struct mic_device *dev = snd_pcm_substream_chip(substream);
+
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	return snd_pcm_lib_malloc_pages(substream,
 					params_buffer_bytes(hw_params));
@@ -473,7 +452,9 @@ DBG("enter\n");
 
 static int mic_snd_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-DBG("enter\n");
+	struct mic_device *dev = snd_pcm_substream_chip(substream);
+
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	snd_pcm_lib_free_pages(substream);
 	return 0;
@@ -486,14 +467,14 @@ static int mic_snd_pcm_prepare(struct snd_pcm_substream *substream)
 	unsigned long flags;
 	int retval;
 
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
-	mic_printk(KERN_INFO, "rate=%d, channels=%d, sample_bits=%d\n",
+	dev_info(&dev->spi_device->dev, "rate=%d, channels=%d, sample_bits=%d\n",
 			runtime->rate, runtime->channels,
 			runtime->sample_bits);
-	mic_printk(KERN_INFO, "format=%d, access=%d\n",
+	dev_info(&dev->spi_device->dev, "format=%d, access=%d\n",
 			runtime->format, runtime->access);
-	mic_printk(KERN_INFO, "buffer_bytes=%d, period_bytes=%d\n",
+	dev_info(&dev->spi_device->dev, "buffer_bytes=%d, period_bytes=%d\n",
 			snd_pcm_lib_buffer_bytes(substream),
 			snd_pcm_lib_period_bytes(substream));
 
@@ -518,7 +499,7 @@ static int mic_snd_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		if (!dev->running) {
-			DBG("trigger start\n");
+			DBG(&dev->spi_device->dev, "trigger start\n");
 			dev->running = 1;
 			mic_hey(dev);
 			mic_enable_sampling(dev, 1);
@@ -526,7 +507,7 @@ static int mic_snd_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		DBG("trigger stop\n");
+		DBG(&dev->spi_device->dev, "trigger stop\n");
 		dev->running = 0;
 		break;
 	}
@@ -566,7 +547,7 @@ static int mic_snd_new_pcm(struct mic_device *dev)
 	struct snd_pcm *pcm;
 	int retval;
 
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	retval = snd_pcm_new(dev->card, dev->card->shortname, 0, 0, 1, &pcm);
 	if (retval < 0)
@@ -592,11 +573,11 @@ static int mic_init_snd(struct mic_device *dev)
 	struct snd_card *card;
 	int retval = -ENOMEM;
 
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	retval = snd_card_new(NULL, index, id, THIS_MODULE, 0, &card);
 	if (retval < 0) {
-		mic_printk(KERN_ERR, "unable to create sound card\n");
+		dev_err(&dev->spi_device->dev, "unable to create sound card\n");
 		goto err_card;
 	}
 
@@ -612,7 +593,7 @@ DBG("enter\n");
 
 	retval = snd_card_register(card);
 	if (retval) {
-		mic_printk(KERN_ERR, "unable to register sound card\n");
+		dev_err(&dev->spi_device->dev, "unable to register sound card\n");
 		goto err_card_register;
 	}
 
@@ -631,7 +612,7 @@ err_card:
  */
 static void mic_exit_snd(struct mic_device *dev)
 {
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "enter\n");
 
 	if (dev->card) {
 		snd_card_disconnect(dev->card);
@@ -646,12 +627,19 @@ DBG("enter\n");
 /*
  *
  */
-static int mic_init(struct mic_device *dev)
+static int mic_probe(struct spi_device *spi)
 {
-	int channel;
-	int retval = -ENOMEM;
+	struct mic_device *dev;
+	int retval, channel;
 
-DBG("enter\n");
+	DBG(&dev->spi_device->dev, "Microphone inserted\n");
+
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	if (!dev)
+		return -ENOMEM;
+
+	dev->spi_device = spi;
+	spi_set_drvdata(spi, dev);
 
 	spin_lock_init(&dev->lock);
 
@@ -665,12 +653,12 @@ DBG("enter\n");
 	channel = dev->spi_device->controller->bus_num;
 	dev->io_thread = kthread_run(mic_io_thread, dev, "kmicd/%d", channel);
 	if (IS_ERR(dev->io_thread)) {
-		mic_printk(KERN_ERR, "error creating io thread\n");
+		dev_err(&dev->spi_device->dev, "error creating io thread\n");
 		goto err_io_thread;
 	}
 
 	if (!dev->spi_device->irq) {
-		mic_printk(KERN_ERR, "no IRQ configured\n");
+		dev_err(&dev->spi_device->dev, "no IRQ configured\n");
 		retval = -ENXIO;
 		goto err_event_register;
 	}
@@ -679,69 +667,19 @@ DBG("enter\n");
 				      mic_irq_thread, IRQF_SHARED,
 				      dev_name(&dev->spi_device->dev), dev);
 	if (retval) {
-		mic_printk(KERN_ERR, "error registering IRQ\n");
+		dev_err(&dev->spi_device->dev, "error registering IRQ\n");
 		goto err_event_register;
 	}
 
-	retval = mic_init_proc(dev);
-	if (retval)
-		goto err_init_proc;
-
 	return 0;
 
-err_init_proc:
-	free_irq(dev->spi_device->irq, dev);
 err_event_register:
 	mic_stop_io_thread(dev);
 err_io_thread:
 	mic_exit_snd(dev);
 err_init_snd:
-	return retval;
-
-}
-
-/*
- *
- */
-static void mic_exit(struct mic_device *dev)
-{
-DBG("enter\n");
-
-	dev->running = 0;
-
-	mic_exit_proc(dev);
-
-	if (dev->spi_device->irq)
-		free_irq(dev->spi_device->irq, dev);
-
-	if (!IS_ERR(dev->io_thread))
-		mic_stop_io_thread(dev);
-
-	mic_exit_snd(dev);
-}
-
-/*
- *
- */
-static int mic_probe(struct spi_device *spi)
-{
-	struct mic_device *dev;
-	int retval;
-
-	DBG("Microphone inserted\n");
-
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
-		return -ENOMEM;
-
-	dev->spi_device = spi;
-	spi_set_drvdata(spi, dev);
-
-	retval = mic_init(dev);
-	if (retval) {
-		spi_set_drvdata(spi, NULL);
-		kfree(dev);
-	}
+	spi_set_drvdata(spi, NULL);
+	kfree(dev);
 
 	return retval;
 }
@@ -753,12 +691,23 @@ static void mic_remove(struct spi_device *spi)
 {
 	struct mic_device *dev = spi_get_drvdata(spi);
 
-	DBG("Microphone removed\n");
+	DBG(&dev->spi_device->dev, "Microphone removed\n");
 
-	if (dev) {
-		mic_exit(dev);
-		kfree(dev);
+	if (!dev) {
+		spi_set_drvdata(spi, NULL);
+		return;
 	}
+
+	dev->running = 0;
+
+	if (dev->spi_device->irq)
+		free_irq(dev->spi_device->irq, dev);
+
+	if (!IS_ERR(dev->io_thread))
+		mic_stop_io_thread(dev);
+
+	mic_exit_snd(dev);
+	kfree(dev);
 	spi_set_drvdata(spi, NULL);
 }
 
@@ -781,8 +730,7 @@ static int __init mic_init_module(void)
 {
 	int retval = 0;
 
-	mic_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
-		  mic_driver_version);
+	pr_info("%s - version %s\n", DRV_DESCRIPTION, mic_driver_version);
 
 	retval = spi_register_driver(&mic_driver);
 
