@@ -75,6 +75,8 @@
 			  0x0d000000 0x0d000000 0x00800000
 			  0x0d800000 0x0d800000 0x00800000>;
 		interrupt-parent = <&PIC0>;
+		dma-ranges;
+		dma-noncoherent;
 
 		video@c002000 {
 			compatible = "nintendo,hollywood-vi",

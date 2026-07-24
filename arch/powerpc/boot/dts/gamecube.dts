@@ -58,6 +58,8 @@
 		compatible = "nintendo,flipper";
 		ranges = <0x0c000000 0x0c000000 0x00010000>;
 		interrupt-parent = <&PIC>;
+		dma-ranges;
+		dma-noncoherent;
 
 		video@c002000 {
 			compatible = "nintendo,flipper-vi";
