@@ -892,14 +892,32 @@ static void si_hotplug_work(struct work_struct *work)
  *
  */
 
-static int si_init(struct si_drvdata *drvdata, struct resource *mem)
+static int si_of_probe(struct platform_device *odev)
 {
+	void __iomem *io_base;
+	struct device *dev;
+	struct si_drvdata *drvdata;
 	struct si_port *port;
 	int index;
 
-	drvdata->io_base = ioremap(mem->start, mem->end - mem->start + 1);
-	if (!drvdata->io_base)
+	dev = &odev->dev;
+
+	io_base = of_iomap(dev->of_node, 0);
+	if (!io_base) {
+		dev_err(dev, "no io memory range found\n");
+		return -ENODEV;
+	}
+
+	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
+	if (!drvdata) {
+		dev_err(dev, "failed to allocate si_drvdata\n");
+		dev_set_drvdata(dev, NULL);
+		kfree(drvdata);
 		return -ENOMEM;
+	}
+	dev_set_drvdata(dev, drvdata);
+	drvdata->dev = dev;
+	drvdata->io_base = io_base;
 
 	INIT_DELAYED_WORK(&drvdata->hotplug_work, si_hotplug_work);
 	si_reset_all(drvdata->io_base);
@@ -921,68 +939,35 @@ static int si_init(struct si_drvdata *drvdata, struct resource *mem)
 	return 0;
 }
 
-static void si_exit(struct si_drvdata *drvdata)
+static void si_of_remove(struct platform_device *odev)
 {
+	struct si_drvdata *drvdata = dev_get_drvdata(&odev->dev);
 	struct si_port *port;
 	int index;
 
-	drvdata->flags |= SI_QUIESCE;
-	cancel_delayed_work_sync(&drvdata->hotplug_work);
-
-	for (index = 0; index < SI_MAX_PORTS; ++index) {
-		port = &drvdata->ports[index];
-		si_unregister_port(port);
-	}
-
-	if (drvdata->io_base) {
-		si_reset_all(drvdata->io_base);
-		iounmap(drvdata->io_base);
-		drvdata->io_base = NULL;
-	}
-}
-
-/*
- * Driver model helper routines.
- *
- */
-
-static int si_do_probe(struct device *dev, struct resource *mem)
-{
-	struct si_drvdata *drvdata;
-	int retval;
-
-	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
-	if (!drvdata) {
-		dev_err(dev, "failed to allocate si_drvdata\n");
-		return -ENOMEM;
-	}
-	dev_set_drvdata(dev, drvdata);
-	drvdata->dev = dev;
-
-	retval = si_init(drvdata, mem);
-	if (retval) {
-		dev_set_drvdata(dev, NULL);
-		kfree(drvdata);
-	}
-	return retval;
-}
-
-static int si_do_remove(struct device *dev)
-{
-	struct si_drvdata *drvdata = dev_get_drvdata(dev);
-
 	if (drvdata) {
-		si_exit(drvdata);
-		dev_set_drvdata(dev, NULL);
+		drvdata->flags |= SI_QUIESCE;
+		cancel_delayed_work_sync(&drvdata->hotplug_work);
+
+		for (index = 0; index < SI_MAX_PORTS; ++index) {
+			port = &drvdata->ports[index];
+			si_unregister_port(port);
+		}
+
+		if (drvdata->io_base) {
+			si_reset_all(drvdata->io_base);
+			iounmap(drvdata->io_base);
+			drvdata->io_base = NULL;
+		}
+
+		dev_set_drvdata(&odev->dev, NULL);
 		kfree(drvdata);
-		return 0;
 	}
-	return -ENODEV;
 }
 
-static int si_do_shutdown(struct device *dev)
+static void si_of_shutdown(struct platform_device *odev)
 {
-	struct si_drvdata *drvdata = dev_get_drvdata(dev);
+	struct si_drvdata *drvdata = dev_get_drvdata(&odev->dev);
 	int i;
 
 	if (drvdata) {
@@ -992,37 +977,6 @@ static int si_do_shutdown(struct device *dev)
 			timer_delete_sync(&drvdata->ports[i].timer);
 		si_reset_all(drvdata->io_base);
 	}
-	return 0;
-}
-
-
-/*
- * OF platform driver hooks.
- *
- */
-
-static int si_of_probe(struct platform_device *odev)
-{
-	struct resource mem;
-	int retval;
-
-	retval = of_address_to_resource(odev->dev.of_node, 0, &mem);
-	if (retval) {
-		dev_err(&odev->dev, "no io memory range found\n");
-		return -ENODEV;
-	}
-
-	return si_do_probe(&odev->dev, &mem);
-}
-
-static void si_of_remove(struct platform_device *odev)
-{
-	si_do_remove(&odev->dev);
-}
-
-static void si_of_shutdown(struct platform_device *odev)
-{
-	si_do_shutdown(&odev->dev);
 }
 
 static const struct of_device_id si_of_match[] = {
