@@ -92,6 +92,7 @@
 		processor-interface@c003000 {
 			compatible = "nintendo,flipper-pi";
 			reg = <0x0c003000 0x100>;
+			interrupts = <1>;
 
 			PIC: pic {
 				#interrupt-cells = <1>;
