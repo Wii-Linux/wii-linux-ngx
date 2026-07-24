@@ -82,6 +82,20 @@ config GAMECUBE_COMMON
 	default n
 	bool
 
+config GAMECUBE_UDBG
+	bool "Nintendo GameCube/Wii udbg support"
+	depends on GAMECUBE_COMMON
+	default n
+	help
+	  If you say yes to this option, you will be able to choose between
+	  several udbg drivers available for the Nintendo GameCube/Wii.
+
+	  If in doubt, say N here.
+
+choice
+	prompt "Nintendo GameCube/Wii udbg drivers"
+	depends on GAMECUBE_UDBG
+
 config USBGECKO_UDBG
 	bool "USB Gecko udbg console for the Nintendo GameCube/Wii"
 	depends on GAMECUBE_COMMON
@@ -94,4 +108,16 @@ config USBGECKO_UDBG
 	  This driver bypasses the EXI layer completely.
 
 	  If in doubt, say N here.
+
+config GAMECUBE_VIDEO_UDBG
+	bool "Nintendo GameCube/Wii framebuffer udbg console"
+	select FONTS
+	select FONT_6x10
+	help
+	  If you say yes to this option, support will be included for a
+	  framebuffer based udbg console for the Nintendo GameCube/Wii.
+
+	  If in doubt, say N here.
+
+endchoice
 
