@@ -11,13 +11,8 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 
-/*
- * This is commented-out for now.
- * Until a later patch is merged, the kernel can use only the first
- * contiguous RAM range and will BUG() if the memreserve is outside
- * that range.
- */
-/*/memreserve/ 0x10000000 0x0004000;*/	/* DSP RAM */
+/memreserve/ 0x10000000 0x0004000;	/* DSP RAM */
+/memreserve/ 0x01800000 0xe800000;	/* memory hole */
 
 / {
 	model = "nintendo,wii";
