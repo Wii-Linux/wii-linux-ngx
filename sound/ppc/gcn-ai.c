@@ -3,7 +3,7 @@
  * sound/ppc/gcn-ai.c
  *
  * Nintendo GameCube/Wii Audio Interface (AI) driver
- * Copyright (C) 2025 Michael "Techflash" Garofalo
+ * Copyright (C) 2025-2026 Michael "Techflash" Garofalo
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2007,2008,2009 Albert Herranz
  *
@@ -36,7 +36,7 @@
 			 "Steven Looman, " \
 			 "Albert Herranz"
 
-static char ai_driver_version[] = "1.1t";
+static char ai_driver_version[] = "1.2t";
 
 /*
  * Hardware.
@@ -47,24 +47,24 @@ static char ai_driver_version[] = "1.1t";
  * DSP registers.
  */
 #define AI_DSP_CSR		0x0a	/* 16 bits */
-#define  AI_CSR_RES		(1<<0)
-#define  AI_CSR_PIINT		(1<<1)
-#define  AI_CSR_HALT		(1<<2)
-#define  AI_CSR_AIDINT		(1<<3)
-#define  AI_CSR_AIDINTMASK	(1<<4)
-#define  AI_CSR_ARINT		(1<<5)
-#define  AI_CSR_ARINTMASK	(1<<6)
-#define  AI_CSR_DSPINT		(1<<7)
-#define  AI_CSR_DSPINTMASK	(1<<8)
-#define  AI_CSR_DSPDMA		(1<<9)
-#define  AI_CSR_RESETXXX	(1<<11)
+#define  AI_CSR_RES		BIT(0)
+#define  AI_CSR_PIINT		BIT(1)
+#define  AI_CSR_HALT		BIT(2)
+#define  AI_CSR_AIDINT		BIT(3)
+#define  AI_CSR_AIDINTMASK	BIT(4)
+#define  AI_CSR_ARINT		BIT(5)
+#define  AI_CSR_ARINTMASK	BIT(6)
+#define  AI_CSR_DSPINT		BIT(7)
+#define  AI_CSR_DSPINTMASK	BIT(8)
+#define  AI_CSR_DSPDMA		BIT(9)
+#define  AI_CSR_RESETXXX	BIT(11)
 
 #define AI_DSP_DMA_ADDRH	0x30	/* 16 bits */
 
 #define AI_DSP_DMA_ADDRL	0x32	/* 16 bits */
 
 #define AI_DSP_DMA_CTLLEN	0x36	/* 16 bits */
-#define  AI_CTLLEN_PLAY		(1<<15)
+#define  AI_CTLLEN_PLAY		BIT(15)
 
 #define AI_DSP_DMA_LEFT		0x3a	/* 16 bits */
 
@@ -72,7 +72,7 @@ static char ai_driver_version[] = "1.1t";
  * AI registers.
  */
 #define AI_AICR			0x00	/* 32 bits */
-#define  AI_AICR_RATE       (1<<6)
+#define  AI_AICR_RATE       BIT(6)
 
 
 /*
@@ -465,145 +465,6 @@ static int snd_gcn_new_pcm(struct snd_gcn *chip)
 	return 0;
 }
 
-static void ai_shutdown(struct snd_gcn *chip)
-{
-	ai_dsp_stop_sample(chip->dsp_base);
-	ai_disable_interrupts(chip->dsp_base);
-}
-
-static int ai_init(struct snd_gcn *chip,
-		   struct resource *dsp, struct resource *ai, struct resource *resets,
-		   unsigned int irq)
-{
-	struct snd_card *card;
-	int retval;
-	void __iomem *resets_base;
-	u32 resets_val;
-
-	/* if we have HW_RESETS mapped, pull the DSP out of reset */
-	if (resets) {
-		resets_base = ioremap(resets->start, resets->end - resets->start + 1);
-		/* not fatal, since the DSP probably isn't in reset anyways */
-		if (resets_base) {
-			resets_val = in_be32(resets_base);
-			resets_val |= BIT(22);
-			out_be32(resets_base, resets_val);
-			iounmap(resets_base);
-		}
-	}
-
-	chip->dsp_base = ioremap(dsp->start, dsp->end - dsp->start + 1);
-	chip->ai_base = ioremap(ai->start, ai->end - ai->start + 1);
-	chip->irq = irq;
-
-	chip->stop_play = 1;
-	card = chip->card;
-
-	strcpy(card->driver, DRV_MODULE_NAME);
-	strcpy(card->shortname, card->driver);
-	sprintf(card->longname, "Nintendo GameCube Audio Interface");
-
-	/* PCM */
-	retval = snd_gcn_new_pcm(chip);
-	if (retval < 0)
-		goto err_new_pcm;
-
-	retval = request_irq(chip->irq, snd_gcn_interrupt,
-			     IRQF_SHARED,
-			     card->shortname, chip);
-	if (retval) {
-		dev_err(chip->dev, "unable to request IRQ %d\n", chip->irq);
-		goto err_request_irq;
-	}
-	ai_enable_interrupts(chip->dsp_base);
-
-	gcn_audio = chip;
-	retval = snd_card_register(card);
-	if (retval) {
-		dev_err(chip->dev, "failed to register card\n");
-		goto err_card_register;
-	}
-
-	return 0;
-
-err_card_register:
-	ai_disable_interrupts(chip->dsp_base);
-	free_irq(chip->irq, chip);
-err_request_irq:
-err_new_pcm:
-	iounmap(chip->dsp_base);
-	iounmap(chip->ai_base);
-	return retval;
-}
-
-static void ai_exit(struct snd_gcn *chip)
-{
-	ai_dsp_stop_sample(chip->dsp_base);
-	ai_disable_interrupts(chip->dsp_base);
-
-	free_irq(chip->irq, chip);
-	iounmap(chip->dsp_base);
-	iounmap(chip->ai_base);
-}
-
-
-/*
- * Device interfaces.
- *
- */
-
-static int ai_do_shutdown(struct device *dev)
-{
-	struct snd_gcn *chip;
-
-	chip = dev_get_drvdata(dev);
-	if (chip) {
-		ai_shutdown(chip);
-		return 0;
-	}
-	return -ENODEV;
-}
-
-static int ai_do_probe(struct device *dev,
-		       struct resource *dsp, struct resource *ai, struct resource *resets,
-		       unsigned int irq)
-{
-	struct snd_card *card;
-	struct snd_gcn *chip;
-	int retval;
-
-	retval = snd_card_new(dev, index, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
-	if (retval < 0) {
-		dev_err(dev, "failed to allocate card\n");
-		return -ENOMEM;
-	}
-	chip = (struct snd_gcn *)card->private_data;
-	memset(chip, 0, sizeof(*chip));
-	chip->card = card;
-	dev_set_drvdata(dev, chip);
-	chip->dev = dev;
-
-	retval = ai_init(chip, dsp, ai, resets, irq);
-	if (retval)
-		snd_card_free(card);
-
-	return retval;
-}
-
-static int ai_do_remove(struct device *dev)
-{
-	struct snd_gcn *chip;
-
-	chip = dev_get_drvdata(dev);
-	if (chip) {
-		ai_exit(chip);
-		dev_set_drvdata(dev, NULL);
-		snd_card_free(chip->card);
-		return 0;
-	}
-	return -ENODEV;
-}
-
 /*
  * OF Platform device interfaces.
  *
@@ -624,26 +485,31 @@ static const struct of_device_id ai_resets_match[] = {
 
 static int ai_of_probe(struct platform_device *odev)
 {
-	struct resource dsp, ai, resets;
-	struct resource *resets_p = NULL;
+	void __iomem *ai, __iomem *dsp, __iomem *resets = NULL;
 	struct device_node *dsp_np, *resets_np;
-	int retval;
+	struct device *dev;
+	struct snd_card *card;
+	struct snd_gcn *chip;
+	int retval, irq;
+	u32 resets_val;
 
-	retval = of_address_to_resource(odev->dev.of_node, 0, &ai);
-	if (retval) {
-		dev_err(&odev->dev, "no ai io memory range found\n");
+	dev = &odev->dev;
+
+	ai = of_iomap(dev->of_node, 0);
+	if (!ai) {
+		dev_err(dev, "no ai io memory range found\n");
 		return -ENODEV;
 	}
 
 	dsp_np = of_find_matching_node(NULL, ai_dsp_match);
 	if (!dsp_np) {
-		dev_err(&odev->dev, "failed to find dsp node\n");
+		dev_err(dev, "failed to find dsp node\n");
 		return -ENODEV;
 	}
 
-	retval = of_address_to_resource(dsp_np, 0, &dsp);
-	if (retval) {
-		dev_err(&odev->dev, "no dsp io memory range found\n");
+	dsp = of_iomap(dsp_np, 0);
+	if (!dsp) {
+		dev_err(dev, "no dsp io memory range found\n");
 		return -ENODEV;
 	}
 
@@ -657,31 +523,112 @@ static int ai_of_probe(struct platform_device *odev)
 	 */
 	resets_np = of_find_matching_node(NULL, ai_resets_match);
 	if (resets_np) {
-		retval = of_address_to_resource(resets_np, 0, &resets);
-		if (retval) {
-			dev_err(&odev->dev, "no resets io memory range found\n");
+		resets = of_iomap(resets_np, 0);
+		if (!resets) {
+			dev_err(dev, "no resets io memory range found\n");
 			of_node_put(resets_np);
 			return -ENODEV;
 		}
-		/* only pass the resets resource down once it's valid */
-		resets_p = &resets;
 		of_node_put(resets_np);
 	}
 
-	of_reserved_mem_device_init(&odev->dev);
+	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
 
-	return ai_do_probe(&odev->dev, &dsp, &ai, resets_p,
-			   irq_of_parse_and_map(odev->dev.of_node, 0));
+	of_reserved_mem_device_init(dev);
+
+	retval = snd_card_new(dev, index, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
+	if (retval < 0) {
+		dev_err(dev, "failed to allocate card\n");
+		return -ENOMEM;
+	}
+
+	chip = (struct snd_gcn *)card->private_data;
+	memset(chip, 0, sizeof(*chip));
+	chip->card = card;
+	dev_set_drvdata(dev, chip);
+	chip->dev = dev;
+	chip->dsp_base = dsp;
+	chip->ai_base = ai;
+	chip->irq = irq;
+	chip->stop_play = 1;
+
+	strcpy(card->driver, DRV_MODULE_NAME);
+	strcpy(card->shortname, card->driver);
+	sprintf(card->longname, "Nintendo GameCube Audio Interface");
+
+	/* if we have HW_RESETS mapped, pull the DSP out of reset */
+	if (resets) {
+		resets_val = in_be32(resets);
+		resets_val |= BIT(22);
+		out_be32(resets, resets_val);
+		iounmap(resets);
+	}
+
+	/* PCM */
+	retval = snd_gcn_new_pcm(chip);
+	if (retval < 0)
+		goto err_new_pcm;
+
+	retval = request_irq(irq, snd_gcn_interrupt,
+			     IRQF_SHARED,
+			     card->shortname, chip);
+	if (retval) {
+		dev_err(chip->dev, "unable to request IRQ %d\n", irq);
+		goto err_request_irq;
+	}
+	ai_enable_interrupts(dsp);
+
+	gcn_audio = chip;
+	retval = snd_card_register(card);
+	if (retval) {
+		dev_err(chip->dev, "failed to register card\n");
+		goto err_card_register;
+	}
+
+	return 0;
+
+err_card_register:
+	ai_disable_interrupts(dsp);
+	free_irq(irq, chip);
+err_request_irq:
+err_new_pcm:
+	iounmap(dsp);
+	iounmap(ai);
+
+	snd_card_free(card);
+
+	return retval;
 }
 
 static void ai_of_remove(struct platform_device *odev)
 {
-	ai_do_remove(&odev->dev);
+	struct snd_gcn *chip;
+
+	chip = dev_get_drvdata(&odev->dev);
+	if (!chip)
+		return;
+
+	ai_dsp_stop_sample(chip->dsp_base);
+	ai_disable_interrupts(chip->dsp_base);
+
+	free_irq(chip->irq, chip);
+	iounmap(chip->dsp_base);
+	iounmap(chip->ai_base);
+
+	dev_set_drvdata(&odev->dev, NULL);
+	snd_card_free(chip->card);
 }
 
 static void ai_of_shutdown(struct platform_device *odev)
 {
-	ai_do_shutdown(&odev->dev);
+	struct snd_gcn *chip;
+
+	chip = dev_get_drvdata(&odev->dev);
+	if (!chip)
+		return;
+
+	ai_dsp_stop_sample(chip->dsp_base);
+	ai_disable_interrupts(chip->dsp_base);
 }
 
 
