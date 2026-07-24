@@ -2167,208 +2167,6 @@ struct fb_ops vifb_ops = {
 
 static void vifb_release_virtual_fb(void);
 
-static int vifb_do_probe(struct device *dev,
-			 struct resource *mem, unsigned int irq,
-			 unsigned long xfb_start, unsigned long xfb_size)
-{
-	struct fb_info *info;
-	struct vi_ctl *ctl;
-	int video_cmap_len;
-	int error = -EINVAL;
-	int i;
-	unsigned long adr, size;
-	uint32_t *j;
-
-	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
-	if (!info)
-		return -EINVAL;;
-
-	info->fbops = &vifb_ops;
-	info->var = vifb_var;
-	info->fix = vifb_fix;
-
-	ctl = info->par;
-	ctl->info = info;
-	ctl->irq = irq;
-	ctl->dev = dev;
-
-	/* first things first: remap some video card control ports */
-	ctl->io_base = devm_ioremap_wc(dev, mem->start, mem->end - mem->start + 1);
-	if (!ctl->io_base) {
-		dev_err(dev, "failed to ioremap video card ports at %p (%dk)\n",
-			(void *)mem->start, (int)(mem->end - mem->start + 1));
-		error = -EIO;
-		goto err_nofbmem;
-	}
-
-	fb_mem = devm_ioremap(dev, xfb_start, xfb_size);
-	if (!fb_mem) {
-		dev_err(dev,"failed to ioremap video memory at %p (%ldk)\n",
-			(void *)xfb_start, xfb_size / 1024);
-		error = -EIO;
-		goto err_ioremap;
-	}
-
-	/* store global variables for the physical framebuffer */
-	gx_fb_start = xfb_start;
-	gx_fb_size = xfb_size;
-
-	dev_info(dev, "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
-		 (void *)xfb_start, fb_mem, xfb_size / 1024);
-
-
-	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions
-	 * always as big as the largest mode supported
-	 * TODO: reallocate framebuffer as needed
-	 */
-	vfb_len = xfb_size;
-	info->fix.smem_len = vfb_len;
-	size = PAGE_ALIGN(info->fix.smem_len);
-	vfb_mem = vmalloc_32(size);
-	if (!vfb_mem) {
-		info->fix.smem_len = 0; /* just in case */
-		dev_err(dev, "failed to allocate virtual framebuffer\n");
-		return -ENOMEM;
-	}
-	info->fix.smem_start = (unsigned long)vfb_mem;
-	/*
-	 * Now that the virtual framebuffer has been setup,
-	 * store its location and size.
-	 * All software rendering will be redirected to this virtual framebuffer.
-	 * Normally screen_base would be the physical framebuffer, but here we play on-the-fly colorconversion.
-	 */
-	info->screen_base = (char __iomem *)info->fix.smem_start;
-
-	adr = info->fix.smem_start;
-	while (size > 0) {
-		SetPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
-	}
-	dev_info(dev, "virtual framebuffer at 0x%px, size %ldk\n",
-		   (void *)vfb_mem, PAGE_ALIGN(vfb_len) / 1024);
-
-	spin_lock_init(&ctl->lock);
-	init_waitqueue_head(&ctl->vtrace_waitq);
-
-	vi_reset_video(ctl);
-	vi_detect_tv_mode(ctl);
-
-#ifdef CONFIG_WII_AVE_RVL
-	if (!first_vi_ctl)
-		first_vi_ctl = ctl;
-
-	/* Try to attach an encoder that probed before the framebuffer. */
-	if (first_vi_ave) {
-		error = vi_attach_ave(ctl, first_vi_ave);
-		if (error)
-			dev_err(dev, "unable to attach AVE: error %d\n", error);
-		else
-			dev_info(dev, "AVE attached successfully\n");
-	}
-#endif
-
-	info->var.xres = ctl->mode->width;
-	info->var.yres = ctl->mode->height;
-
-	ctl->visible_page = 0;
-	ctl->flip_pending = 0;
-
-	video_cmap_len = 16;
-	info->pseudo_palette = pseudo_palette;
-	if (fb_alloc_cmap(&info->cmap, video_cmap_len, 0)) {
-		error = -ENOMEM;
-		goto err_alloc_cmap;
-	}
-
-	error = vifb_check_var(&info->var, info);
-	if (error)
-		goto err_check_var;
-
-	dev_info(dev, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
-		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
-
-	/* Clear virtual framebuffer */
-	memset(vfb_mem, 0, vfb_len);
-	/* Clear screen */
-	i = xfb_size >> 2;
-	j = (uint32_t *)fb_mem;
-	while (i--) {
-		*(j++) = 0x10801080;
-	}
-
-	dev_set_drvdata(dev, info);
-
-	vi_enable_interrupts(ctl, 0);
-
-	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
-	if (error) {
-		dev_err(dev, "unable to register IRQ %u\n", ctl->irq);
-		goto err_request_irq;
-	}
-
-	/* now register us */
-	if (register_framebuffer(info) < 0) {
-		error = -EINVAL;
-		goto err_register_framebuffer;
-	}
-
-	printk(KERN_INFO "fb%d: %s frame buffer device\n",
-	       info->node, info->fix.id);
-
-	return 0;
-
-err_register_framebuffer:
-	free_irq(ctl->irq, dev);
-err_check_var:
-err_request_irq:
-	fb_dealloc_cmap(&info->cmap);
-err_alloc_cmap:
-	iounmap(fb_mem);
-err_ioremap:
-	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
-err_nofbmem:
-	/* release the physical framebuffer */
-	vifb_release_virtual_fb();
-
-	dev_set_drvdata(dev, NULL);
-	iounmap(ctl->io_base);
-	framebuffer_release(info);
-
-	return error;
-}
-
-static int vifb_do_remove(struct device *dev)
-{
-	struct vi_ctl *ctl;
-	struct fb_info *info = dev_get_drvdata(dev);
-	if (!info)
-		return -ENODEV;
-	ctl = info->par;
-
-	free_irq(ctl->irq, dev);
-	unregister_framebuffer(info);
-	fb_dealloc_cmap(&info->cmap);
-	iounmap(fb_mem);
-
-	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
-
-	vifb_release_virtual_fb();
-
-	dev_set_drvdata(dev, NULL);
-	iounmap(ctl->io_base);
-
-#ifdef CONFIG_WII_AVE_RVL
-	vi_dettach_ave(ctl);
-	if (first_vi_ctl == ctl)
-		first_vi_ctl = NULL;
-#endif
-	framebuffer_release(info);
-	return 0;
-}
-
 /* clean up reserved pages of the virtual framebuffer */
 static void vifb_release_virtual_fb(void) {
 	unsigned long size;
@@ -2382,19 +2180,6 @@ static void vifb_release_virtual_fb(void) {
 		size -= PAGE_SIZE;
 	}
 	vfree((void *)vfb_mem);
-}
-
-static int vifb_do_shutdown(struct device *dev)
-{
-	struct fb_info *info = dev_get_drvdata(dev);
-	struct vi_ctl *ctl = info->par;
-	void __iomem *io_base = ctl->io_base;
-
-	vi_enable_interrupts(ctl, 0);
-	vi_reset_video(ctl);
-	out_be16(io_base + VI_DCR, vi_dcr_enb(0));
-
-	return 0;
 }
 
 #ifndef MODULE
@@ -2449,44 +2234,231 @@ static int vifb_setup(char *options)
 
 static int vifb_of_probe(struct platform_device *odev)
 {
-	struct resource res;
+	struct device *dev;
 	const unsigned long *prop;
-	unsigned long xfb_start, xfb_size;
-	int retval;
+	unsigned long xfb_start, xfb_size, adr, size;
+	void __iomem *io_base;
+	struct fb_info *info;
+	struct vi_ctl *ctl;
+	int irq, video_cmap_len, error = -EINVAL, i;
+	uint32_t *j;
 
-	retval = of_address_to_resource(odev->dev.of_node, 0, &res);
-	if (retval) {
-		dev_err(&odev->dev, "no io memory range found\n");
+	dev = &odev->dev;
+
+	io_base = of_iomap(dev->of_node, 0);
+	if (!io_base) {
+		dev_err(dev, "no io memory range found\n");
 		return -ENODEV;
 	}
 
-	prop = of_get_property(odev->dev.of_node, "xfb-start", NULL);
+	prop = of_get_property(dev->of_node, "xfb-start", NULL);
 	if (!prop) {
-		dev_err(&odev->dev, "no xfb start found\n");
+		dev_err(dev, "no xfb start found\n");
 		return -ENODEV;
 	}
 	xfb_start = *prop;
 
-	prop = of_get_property(odev->dev.of_node, "xfb-size", NULL);
+	prop = of_get_property(dev->of_node, "xfb-size", NULL);
 	if (!prop) {
 		dev_err(&odev->dev, "no xfb size found\n");
 		return -ENODEV;
 	}
 	xfb_size = *prop;
 
-	return vifb_do_probe(&odev->dev,
-			     &res, irq_of_parse_and_map(odev->dev.of_node, 0),
-			     xfb_start, xfb_size);
+	irq = irq_of_parse_and_map(dev->of_node, 0);
+
+	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
+	if (!info)
+		return -EINVAL;
+
+	info->fbops = &vifb_ops;
+	info->var = vifb_var;
+	info->fix = vifb_fix;
+
+	ctl = info->par;
+	ctl->info = info;
+	ctl->irq = irq;
+	ctl->dev = dev;
+	ctl->io_base = io_base;
+
+	fb_mem = devm_ioremap(dev, xfb_start, xfb_size);
+	if (!fb_mem) {
+		dev_err(dev,"failed to ioremap video memory at %p (%ldk)\n",
+			(void *)xfb_start, xfb_size / 1024);
+		error = -EIO;
+		goto err_ioremap;
+	}
+
+	/* store global variables for the physical framebuffer */
+	gx_fb_start = xfb_start;
+	gx_fb_size = xfb_size;
+
+	dev_info(dev, "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
+		 (void *)xfb_start, fb_mem, xfb_size / 1024);
+
+
+	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions
+	 * always as big as the largest mode supported
+	 * TODO: reallocate framebuffer as needed
+	 */
+	vfb_len = xfb_size;
+	info->fix.smem_len = vfb_len;
+	size = PAGE_ALIGN(info->fix.smem_len);
+	vfb_mem = vmalloc_32(size);
+	if (!vfb_mem) {
+		info->fix.smem_len = 0; /* just in case */
+		dev_err(dev, "failed to allocate virtual framebuffer\n");
+		return -ENOMEM;
+	}
+	info->fix.smem_start = (unsigned long)vfb_mem;
+	/*
+	 * Now that the virtual framebuffer has been setup,
+	 * store its location and size.
+	 * All software rendering will be redirected to this virtual framebuffer.
+	 * Normally screen_base would be the physical framebuffer, but here we play on-the-fly colorconversion.
+	 */
+	info->screen_base = (char __iomem *)info->fix.smem_start;
+
+	adr = info->fix.smem_start;
+	while (size > 0) {
+		SetPageReserved(vmalloc_to_page((void *)adr));
+		adr += PAGE_SIZE;
+		size -= PAGE_SIZE;
+	}
+	dev_info(dev, "virtual framebuffer at 0x%p, size %ldk\n",
+		   (void *)vfb_mem, PAGE_ALIGN(vfb_len) / 1024);
+
+	spin_lock_init(&ctl->lock);
+	init_waitqueue_head(&ctl->vtrace_waitq);
+
+	vi_reset_video(ctl);
+	vi_detect_tv_mode(ctl);
+
+#ifdef CONFIG_WII_AVE_RVL
+	if (!first_vi_ctl)
+		first_vi_ctl = ctl;
+
+	/* Try to attach an encoder that probed before the framebuffer. */
+	if (first_vi_ave) {
+		error = vi_attach_ave(ctl, first_vi_ave);
+		if (error)
+			dev_err(dev, "unable to attach AVE: error %d\n", error);
+		else
+			dev_info(dev, "AVE attached successfully\n");
+	}
+#endif
+
+	info->var.xres = ctl->mode->width;
+	info->var.yres = ctl->mode->height;
+
+	ctl->visible_page = 0;
+	ctl->flip_pending = 0;
+
+	video_cmap_len = 16;
+	info->pseudo_palette = pseudo_palette;
+	if (fb_alloc_cmap(&info->cmap, video_cmap_len, 0)) {
+		error = -ENOMEM;
+		goto err_alloc_cmap;
+	}
+
+	error = vifb_check_var(&info->var, info);
+	if (error)
+		goto err_check_var;
+
+	dev_info(dev, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
+		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
+
+	/* Clear virtual framebuffer */
+	memset(vfb_mem, 0, vfb_len);
+	/* Clear screen */
+	i = xfb_size >> 2;
+	j = (uint32_t *)fb_mem;
+	while (i--)
+		*(j++) = 0x10801080;
+
+	dev_set_drvdata(dev, info);
+
+	vi_enable_interrupts(ctl, 0);
+
+	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
+	if (error) {
+		dev_err(dev, "unable to register IRQ %u\n", ctl->irq);
+		goto err_request_irq;
+	}
+
+	/* now register us */
+	if (register_framebuffer(info) < 0) {
+		error = -EINVAL;
+		goto err_register_framebuffer;
+	}
+
+	pr_info("fb%d: %s frame buffer device\n", info->node, info->fix.id);
+
+	return 0;
+
+err_register_framebuffer:
+	free_irq(ctl->irq, dev);
+err_check_var:
+err_request_irq:
+	fb_dealloc_cmap(&info->cmap);
+err_alloc_cmap:
+	iounmap(fb_mem);
+err_ioremap:
+	/* release memory mapping region */
+	release_mem_region(gx_fb_start, gx_fb_size);
+
+	/* release the physical framebuffer */
+	vifb_release_virtual_fb();
+
+	dev_set_drvdata(dev, NULL);
+	iounmap(ctl->io_base);
+	framebuffer_release(info);
+
+	return error;
 }
 
 static void vifb_of_remove(struct platform_device *odev)
 {
-	vifb_do_remove(&odev->dev);
+	struct vi_ctl *ctl;
+	struct fb_info *info = dev_get_drvdata(&odev->dev);
+
+	if (!info)
+		return;
+
+	ctl = info->par;
+
+	free_irq(ctl->irq, &odev->dev);
+	unregister_framebuffer(info);
+	fb_dealloc_cmap(&info->cmap);
+	iounmap(fb_mem);
+
+	/* release memory mapping region */
+	release_mem_region(gx_fb_start, gx_fb_size);
+
+	vifb_release_virtual_fb();
+
+	dev_set_drvdata(&odev->dev, NULL);
+	iounmap(ctl->io_base);
+
+#ifdef CONFIG_WII_AVE_RVL
+	vi_dettach_ave(ctl);
+	if (first_vi_ctl == ctl)
+		first_vi_ctl = NULL;
+#endif
+	framebuffer_release(info);
 }
 
 static void vifb_of_shutdown(struct platform_device *odev)
 {
-	vifb_do_shutdown(&odev->dev);
+	struct fb_info *info = dev_get_drvdata(&odev->dev);
+	struct vi_ctl *ctl = info->par;
+	void __iomem *io_base = ctl->io_base;
+
+	vi_enable_interrupts(ctl, 0);
+	vi_reset_video(ctl);
+	out_be16(io_base + VI_DCR, vi_dcr_enb(0));
+
+	return;
 }
 
 
