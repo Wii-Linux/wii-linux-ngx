@@ -78,6 +78,8 @@ config MPC10X_BRIDGE
 	select PPC_INDIRECT_PCI
 
 config GAMECUBE_COMMON
+	select NOT_COHERENT_CACHE
+	default n
 	bool
 
 config USBGECKO_UDBG
