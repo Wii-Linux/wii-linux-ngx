@@ -6,6 +6,7 @@
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Stefan Esser
  * Copyright (C) 2004,2005,2008,2009 Albert Herranz
+ * Copyright (C) 2025,2026 Michael "Techflash" Garofalo
  */
 
 #include <linux/kernel.h>
@@ -20,25 +21,18 @@
 #include <linux/slab.h>
 #include <linux/reboot.h>
 
-/* for flipper hardware registers */
-#include "flipper-pic.h"
-
 #define FLIPPER_ICR		0x00
-#define FLIPPER_ICR_RSS		(1<<16) /* reset switch state */
+#define FLIPPER_ICR_RSS		BIT(16) /* reset switch state */
 
 #define DRV_MODULE_NAME	"gcn-rsw"
 #define DRV_DESCRIPTION	"Nintendo GameCube/Wii Reset SWitch (RSW) driver"
 #define DRV_AUTHOR			"Stefan Esser <se@nopiracy.de>, " \
-							"Albert Herranz"
+							"Albert Herranz, " \
+					"Michael \"Techflash\" Garofalo"
 
-static char rsw_driver_version[] = "1.1t";
-
-#define drv_printk(level, format, arg...) \
-	printk(level DRV_MODULE_NAME ": " format , ## arg)
+static char rsw_driver_version[] = "1.2t";
 
 struct rsw_drvdata {
-	spinlock_t lock;
-
 	void __iomem *io_base;
 	unsigned int irq;
 
@@ -51,10 +45,7 @@ struct rsw_drvdata {
  */
 static int rsw_is_button_pressed(void __iomem *io_base)
 {
-	u32 icr = in_be32(io_base + FLIPPER_ICR);
-
-	drv_printk(KERN_INFO, "%x\n", icr);
-	return !(icr & FLIPPER_ICR_RSS);
+	return !(in_be32(io_base + FLIPPER_ICR) & FLIPPER_ICR_RSS);
 }
 
 /*
@@ -80,100 +71,64 @@ static irqreturn_t rsw_handler(int irq, void *data)
  *
  */
 
-static int rsw_init(struct rsw_drvdata *drvdata, struct resource *mem, int irq)
-{
-	int retval;
+static int __init rsw_probe(struct platform_device *odev)
 
-	drvdata->io_base = ioremap(mem->start, mem->end - mem->start + 1);
+{
+	struct device *dev;
+	struct rsw_drvdata *drvdata;
+	int irq, retval;
+	void __iomem *io_base;
+
+	dev = &odev->dev;
+	io_base = of_iomap(dev->of_node, 0);
+	if (!io_base) {
+		dev_err(dev, "no io memory range found\n");
+		return -ENODEV;
+	}
+
+	irq = irq_of_parse_and_map(dev->of_node, 0);
+	if (!irq) {
+		dev_err(dev, "no irq found\n");
+		iounmap(io_base);
+		return -ENODEV;
+	}
+
+	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
+	if (!drvdata) {
+		dev_err(dev, "failed to allocate rsw_drvdata\n");
+		iounmap(io_base);
+		return -ENOMEM;
+	}
+	dev_set_drvdata(dev, drvdata);
+	drvdata->dev = dev;
+	drvdata->io_base = io_base;
 	drvdata->irq = irq;
 
-	retval = request_irq(drvdata->irq, rsw_handler, 0,
+	retval = request_irq(irq, rsw_handler, 0,
 			     DRV_MODULE_NAME, drvdata);
 	if (retval) {
-		drv_printk(KERN_ERR, "request of IRQ %d failed\n",
-			   drvdata->irq);
+		dev_err(dev, "request of IRQ %d failed\n", irq);
+		dev_set_drvdata(dev, NULL);
+		kfree(drvdata);
 	}
+
 	return retval;
 }
 
-static void rsw_exit(struct rsw_drvdata *drvdata)
+static void __exit rsw_remove(struct platform_device *odev)
 {
+	struct rsw_drvdata *drvdata = dev_get_drvdata(&odev->dev);
+
+	if (!drvdata)
+		return;
+
 	free_irq(drvdata->irq, drvdata);
 	if (drvdata->io_base) {
 		iounmap(drvdata->io_base);
 		drvdata->io_base = NULL;
 	}
-}
-
-/*
- * Driver model helper routines.
- *
- */
-
-static int rsw_do_probe(struct device *dev, struct resource *mem, int irq)
-{
-	struct rsw_drvdata *drvdata;
-	int retval;
-
-	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
-	if (!drvdata) {
-		drv_printk(KERN_ERR, "failed to allocate rsw_drvdata\n");
-		return -ENOMEM;
-	}
-	dev_set_drvdata(dev, drvdata);
-	drvdata->dev = dev;
-
-	retval = rsw_init(drvdata, mem, irq);
-	if (retval) {
-		dev_set_drvdata(dev, NULL);
-		kfree(drvdata);
-	}
-	return retval;
-}
-
-static int rsw_do_remove(struct device *dev)
-{
-	struct rsw_drvdata *drvdata = dev_get_drvdata(dev);
-
-	if (drvdata) {
-		rsw_exit(drvdata);
-		dev_set_drvdata(dev, NULL);
-		kfree(drvdata);
-		return 0;
-	}
-	return -ENODEV;
-}
-
-/*
- * OF platform driver hooks.
- *
- */
-
-static int __init rsw_of_probe(struct platform_device *odev)
-
-{
-	struct resource mem;
-	int retval;
-	int irq;
-
-	retval = of_address_to_resource(odev->dev.of_node, 0, &mem);
-	if (retval) {
-		drv_printk(KERN_ERR, "no io memory range found\n");
-		return -ENODEV;
-	}
-
-	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
-	if (!irq) {
-		drv_printk(KERN_ERR, "no irq found\n");
-		return -ENODEV;
-	}
-
-	return rsw_do_probe(&odev->dev, &mem, irq);
-}
-
-static void __exit rsw_of_remove(struct platform_device *odev)
-{
-	rsw_do_remove(&odev->dev);
+	dev_set_drvdata(&odev->dev, NULL);
+	kfree(drvdata);
 }
 
 static struct of_device_id rsw_of_match[] = {
@@ -190,8 +145,8 @@ static struct platform_driver rsw_of_driver __refdata = {
 		.owner = THIS_MODULE,
 		.of_match_table = rsw_of_match,
 	},
-	.probe = rsw_of_probe,
-	.remove = rsw_of_remove,
+	.probe = rsw_probe,
+	.remove = rsw_remove,
 };
 
 /*
@@ -201,8 +156,7 @@ static struct platform_driver rsw_of_driver __refdata = {
 
 static int __init rsw_init_module(void)
 {
-	drv_printk(KERN_INFO, "%s - version %s\n", DRV_DESCRIPTION,
-		   rsw_driver_version);
+	pr_info("%s - version %s\n", DRV_DESCRIPTION, rsw_driver_version);
 
 	return platform_driver_register(&rsw_of_driver);
 }
