@@ -476,11 +476,6 @@ static void ug_tty_exit(void)
 
 /*
  *
- * EXI layer interface.
- */
-
-/*
- *
  */
 static int ug_probe(struct spi_device *spi_device)
 {
@@ -491,15 +486,6 @@ static int ug_probe(struct spi_device *spi_device)
 
 	dev_info(&spi_device->dev, "probing for channel %d, device %d\n",
 	spi_device->controller->bus_num, spi_get_chipselect(spi_device, 0));
-
-	/* don't try to drive a device which already has a real identifier */
-#if 0
-	if (exi_device->eid.id != EXI_ID_NONE) {
-		dev_err(&exi_device->dev, "device ID is not NONE (0x%x), skipping\n",
-		        exi_device->eid.id);
-		return -ENODEV;
-	}
-#endif
 
 	if (!ug_check_adapter(spi_device)) {
 		dev_err(&spi_device->dev, "check_adapter() failed\n");
@@ -539,7 +525,7 @@ static int ug_probe(struct spi_device *spi_device)
 }
 
 /*
- * Makes unavailable the USB Gecko adapter identified by the EXI device
+ * Makes unavailable the USB Gecko adapter identified by the SPI device
  * `spi_device'.
  */
 static void ug_remove(struct spi_device *spi_device)
