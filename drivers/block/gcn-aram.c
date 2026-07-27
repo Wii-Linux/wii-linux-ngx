@@ -1,12 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * drivers/block/gcn-aram.c
- *
  * Nintendo GameCube Auxiliary RAM (ARAM) block driver
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2005 Todd Jeffreys <todd@voidpointer.org>
  * Copyright (C) 2005,2007,2008,2009 Albert Herranz
- * Copyright (C) 2026 Michael "Techflash" Garofalo
+ * Copyright (C) 2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on previous work by Franz Lehner.
  */
@@ -30,7 +28,8 @@
 #define DRV_MODULE_NAME "gcn-aram"
 #define DRV_DESCRIPTION "Nintendo GameCube Auxiliary RAM (ARAM) block driver"
 #define DRV_AUTHOR      "Todd Jeffreys <todd@voidpointer.org>, " \
-			"Albert Herranz"
+			"Albert Herranz, "\
+			"Michael \"Techflash\" Garofalo <officialTechflashYT@gmail.com>"
 
 static char aram_driver_version[] = "4.0i";
 
