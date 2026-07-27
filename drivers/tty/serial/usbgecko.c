@@ -566,7 +566,7 @@ static void ug_remove(struct spi_device *spi_device)
 }
 
 static const struct spi_device_id ug_id_table[] = {
-	{ "exi-usb-gecko", },
+	{ "exi-usb-gecko", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ug_id_table);
