@@ -1,13 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * drivers/video/gcn-vifb.c
- *
  * Nintendo GameCube/Wii Video Interface (VI) frame buffer driver
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Michael Steil <mist@c64.org>
  * Copyright (C) 2004,2005 Todd Jeffreys <todd@voidpointer.org>
  * Copyright (C) 2006,2007,2008,2009 Albert Herranz
- * Copyright (C) 2024,2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
+ * Copyright (C) 2024-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
  */
