@@ -25,13 +25,10 @@
 #include <linux/platform_device.h>
 
 
-#define DRV_MODULE_NAME "gcn-aram"
 #define DRV_DESCRIPTION "Nintendo GameCube Auxiliary RAM (ARAM) block driver"
 #define DRV_AUTHOR      "Todd Jeffreys <todd@voidpointer.org>, " \
 			"Albert Herranz, "\
 			"Michael \"Techflash\" Garofalo <officialTechflashYT@gmail.com>"
-
-static char aram_driver_version[] = "4.0i";
 
 /*
  * Hardware.
