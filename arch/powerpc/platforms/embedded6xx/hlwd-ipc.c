@@ -3,7 +3,7 @@
  * arch/powerpc/platforms/embedded6xx/hlwd-ipc.c
  *
  * Nintendo Wii "Hollywood" IPC support.
- * Copyright (C) 2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
+ * Copyright (C) 2025-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based in part on arch/powerpc/platforms/embedded6xx/starlet-ipc.c:
  * Copyright (C) 2009 The GameCube Linux Team
@@ -51,26 +51,24 @@ enum ipc_flavor ipc_get_flavor(void)
  */
 static int ipc_probe(struct platform_device *odev)
 {
-	struct resource mem;
-	int error, irq, io_size;
+	int error, irq;
 	void __iomem *io_base;
 
-	error = of_address_to_resource(odev->dev.of_node, 0, &mem);
-	if (error) {
+	io_base = of_iomap(odev->dev.of_node, 0);
+	if (!io_base) {
 		pr_err("no io memory range found (%d)\n", error);
-		goto out;
+		error = -ENOMEM;
+		goto err_iomap;
 	}
 	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
 
-	io_size = mem.end - mem.start + 1;
-	pr_info("hlwd-ipc: got address: 0x%08x, size %d, IRQ %d\n", (u32)mem.start, io_size, irq);
-	io_base = ioremap(mem.start, io_size);
-	if (!io_base)
-		return -ENOMEM;
+	pr_info("hlwd-ipc: got address: %p, IRQ %d\n", io_base, irq);
 
 	ipc = kzalloc(sizeof(struct hlwd_ipc), GFP_KERNEL);
-	if (!ipc)
-		return -ENOMEM;
+	if (!ipc) {
+		error = -ENOMEM;
+		goto err_ipc_alloc;
+	}
 
 	/* TODO: do actual detection */
 	ipc->flavor = IPC_FLAVOR_MINI;
@@ -79,13 +77,12 @@ static int ipc_probe(struct platform_device *odev)
 	dev_set_drvdata(&odev->dev, ipc);
 
 	error = ipc_init_mini(ipc);
-out:
 	return error;
-}
 
-static void ipc_shutdown(struct platform_device *odev)
-{
-	return;
+err_ipc_alloc:
+	iounmap(io_base);
+err_iomap:
+	return error;
 }
 
 static void ipc_remove(struct platform_device *odev)
@@ -115,8 +112,7 @@ static struct platform_driver ipc_of_driver = {
 		.of_match_table = ipc_of_match,
 	},
 	.probe = ipc_probe,
-	.remove = ipc_remove,
-	.shutdown = ipc_shutdown,
+	.remove = ipc_remove
 };
 
 /*
