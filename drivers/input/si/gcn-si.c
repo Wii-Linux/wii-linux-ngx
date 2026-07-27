@@ -80,8 +80,6 @@ static const char si_driver_version[] = "1.1t";
 
 /* SISR bits */
 #define SI_SR_WR			BIT(31)
-#define SI_SR_RDST(n)			BIT(5 + ((3 - (n)) * 8))
-#define SI_SR_WRST(n)			BIT(4 + ((3 - (n)) * 8))
 #define SI_SR_NOREP(n)			BIT(3 + ((3 - (n)) * 8))
 #define SI_SR_COLL(n)			BIT(2 + ((3 - (n)) * 8))
 #define SI_SR_OVRUN(n)			BIT(1 + ((3 - (n)) * 8))
