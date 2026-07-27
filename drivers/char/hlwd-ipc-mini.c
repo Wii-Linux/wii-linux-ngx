@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Nintendo Wii Hollywood IPC (MINI) Character Device Driver
  *
  * Copyright (C) 2025 Michael "Techflash" Garofalo
  *
- * Based on drivers/char/xenon-ipc.c:
+ * Based on drivers/char/xenon_smc.c:
  * Copyright (C) 2010 Herbert Poetzl
  */
 
