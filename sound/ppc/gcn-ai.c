@@ -487,7 +487,7 @@ static int ai_of_probe(struct platform_device *odev)
 	struct snd_card *card;
 	struct snd_gcn *chip;
 	int retval, irq;
-	u32 resets_val;
+	u32 resets_val, csr;
 
 	dev = &odev->dev;
 
@@ -527,6 +527,12 @@ static int ai_of_probe(struct platform_device *odev)
 		}
 		of_node_put(resets_np);
 	}
+
+	/* de-assert the DSP's own reset/halt bits if set, and tell it to boot from IROM */
+	csr = in_be16(chip->dsp_base + AI_DSP_CSR);
+	csr &= ~(AI_CSR_HALT | AI_CSR_RES);
+	csr |= AI_CSR_BOOTMODE;
+	out_be16(chip->dsp_base + AI_DSP_CSR, csr);
 
 	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
 
