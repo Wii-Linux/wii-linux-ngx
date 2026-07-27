@@ -97,7 +97,6 @@ struct exi_regs {
 #define   EXI_CSR_CLK_2MHZ     (1 << EXI_CSR_CLK_SHIFT)
 #define   EXI_CSR_CLK_1MHZ     (0 << EXI_CSR_CLK_SHIFT)
 #define EXI_CSR_CS_SHIFT     7
-#define EXI_CSR_CS           (7 << EXI_CSR_CS_SHIFT)
 #define EXI_CSR_EXTINTMASK   BIT(10)
 #define EXI_CSR_EXTINT       BIT(11)
 #define EXI_CSR_EXT          BIT(12)
@@ -107,12 +106,10 @@ struct exi_regs {
 #define EXI_CR_TSTART        BIT(0)
 #define EXI_CR_DMA           BIT(1)
 #define EXI_CR_RW_SHIFT      2
-#define EXI_CR_RW            (3 << EXI_CR_RW_SHIFT)
 #define   EXI_CR_RW_RD         (0 << EXI_CR_RW_SHIFT)
 #define   EXI_CR_RW_WR         (1 << EXI_CR_RW_SHIFT)
 #define   EXI_CR_RW_RDWR       (2 << EXI_CR_RW_SHIFT)
 #define EXI_CR_TLEN_SHIFT    4
-#define EXI_CR_TLEN          (3 << EXI_CR_TLEN_SHIFT)
 
 #define EXI_SD_CMD0_RETRIES  16
 #define EXI_SD_IDLE_BYTES    10
@@ -736,24 +733,24 @@ struct exi_id_entry {
 
 static struct exi_id_entry exi_id_table[] = {
 	/* TODO: When do we see one or the other? */
-	{ 0xffff1698, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
-	{ 0xffff2843, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
-	{ 0xfffff308, "Wii Mask ROM/RTC/SRAM/UART", "gamecube-rtc" },
-	{ 0x00000004, "Memory Card 59", "gamecube-memory-card" },
-	{ 0x00000008, "Memory Card 123", "gamecube-memory-card" },
-	{ 0x00000010, "Memory Card 251", "gamecube-memory-card" },
-	{ 0x00000020, "Memory Card 507", "gamecube-memory-card" },
-	{ 0x00000040, "Memory Card 1019", "gamecube-memory-card" },
-	{ 0x00000080, "Memory Card 2043", "gamecube-memory-card" },
-	{ 0x01010000, "USB Adapter", "" },
-	{ 0x01020000, "NPDP GDEV", "" },
-	{ 0x02020000, "Modem", "" },
-	{ 0x03010000, "Marlin?", "" },
+	{ 0xffff1698, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc", EXI_CSR_CLK_8MHZ },
+	{ 0xffff2843, "GameCube Mask ROM/RTC/SRAM/UART", "gamecube-rtc", EXI_CSR_CLK_8MHZ },
+	{ 0xfffff308, "Wii Mask ROM/RTC/SRAM/UART", "gamecube-rtc", EXI_CSR_CLK_8MHZ },
+	{ 0x00000004, "Memory Card 59", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x00000008, "Memory Card 123", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x00000010, "Memory Card 251", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x00000020, "Memory Card 507", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x00000040, "Memory Card 1019", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x00000080, "Memory Card 2043", "gamecube-memory-card", EXI_CSR_CLK_16MHZ },
+	{ 0x01010000, "USB Adapter", "", EXI_CSR_CLK_16MHZ },
+	{ 0x01020000, "NPDP GDEV", "", EXI_CSR_CLK_16MHZ },
+	{ 0x02020000, "Modem", "", EXI_CSR_CLK_16MHZ },
+	{ 0x03010000, "Marlin?", "", EXI_CSR_CLK_16MHZ },
 	{ 0x04020200, "BroadBand Adapter (DOL-015)", "gamecube-bba", EXI_CSR_CLK_32MHZ },
-	{ 0x04120000, "AD16", "" },
-	{ 0x05070000, "IS Viewer", "" },
+	{ 0x04120000, "AD16", "", EXI_CSR_CLK_16MHZ },
+	{ 0x05070000, "IS Viewer", "", EXI_CSR_CLK_16MHZ },
 	{ 0x0a000000, "Microphone (DOL-022)", "gamecube-microphone", EXI_CSR_CLK_16MHZ },
-	{ 0, NULL, NULL }
+	{ 0, NULL, NULL, EXI_CSR_CLK_16MHZ }
 };
 
 static void exi_set_device_mode(struct exi_spi *exi,
