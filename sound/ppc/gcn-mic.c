@@ -706,7 +706,7 @@ static void mic_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id mic_id_table[] = {
-	{ "gamecube-microphone" },
+	{ "gamecube-microphone", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, mic_id_table);
