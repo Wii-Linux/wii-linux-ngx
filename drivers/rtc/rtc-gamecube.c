@@ -304,7 +304,7 @@ static int gamecube_rtc_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id gamecube_rtc_id_table[] = {
-	{ "gamecube-rtc", },
+	{ "gamecube-rtc", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, gamecube_rtc_id_table);
