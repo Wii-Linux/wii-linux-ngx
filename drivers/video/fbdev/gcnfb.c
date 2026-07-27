@@ -180,12 +180,6 @@ __vi_reg_field(u32, bfbl, u32, fba, 0xffffff, 0);	/* Frame Buf Address */
 __vi_reg_field(u32, bfbr, u8, pob, 0x1, 28);		/* Page Offset Bit */
 __vi_reg_field(u32, bfbr, u32, fba, 0xffffff, 0);	/* Frame Buf Address */
 
-#define VI_DPV			0x2c /* Display Position Vertical, 16 bits */
-__vi_reg_field(u16, dpv, u16, val, 0x7ff, 0);
-
-#define VI_DPH			0x2e /* Display Position Horizontal, 16 bits */
-__vi_reg_field(u16, dph, u16, val, 0x7ff, 0);
-
 #define VI_DI0			0x30 /* Display Interrupt 0, 32 bits */
 #define VI_DI1			0x34 /* Display Interrupt 1, 32 bits */
 #define VI_DI2			0x38 /* Display Interrupt 2, 32 bits */
@@ -194,10 +188,6 @@ __vi_reg_field(u32, dix, u8, irq, 0x1, 31);
 __vi_reg_field(u32, dix, u8, enb, 0x1, 28);
 __vi_reg_field(u32, dix, u16, vct, 0x3ff, 16);
 __vi_reg_field(u32, dix, u16, hct, 0x3ff, 0);
-
-#define VI_DL0			0x40 /* Display Latch 0, 32 bits */
-
-#define VI_DL1			0x44 /* Display Latch 1, 32 bits */
 
 #define VI_PCR			0x48 /* Picture Configuration, 16 bits */
 __vi_reg_field(u16, pcr, u8, wpl, 0xff, 8);	/* reads per line in words */
@@ -1458,20 +1448,6 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
 		return IRQ_HANDLED;
 	}
-
-#if 0
-	/* currently unused, just in case */
-	val = in_be32(io_base + VI_DI2);
-	if (vi_dix_get_irq(val)) {
-		out_be32(io_base + VI_DI2, vi_dix_clear_irq(val));
-		return IRQ_HANDLED;
-	}
-	val = in_be32(io_base + VI_DI3);
-	if (vi_dix_get_irq(val)) {
-		out_be32(io_base + VI_DI3, vi_dix_clear_irq(val));
-		return IRQ_HANDLED;
-	}
-#endif
 
 	return IRQ_NONE;
 }
