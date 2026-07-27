@@ -71,8 +71,6 @@ static int ipc_probe(struct platform_device *odev)
 	ipc->flavor = IPC_FLAVOR_MINI;
 	ipc->regs = io_base;
 
-	dev_set_drvdata(&odev->dev, ipc);
-
 	error = ipc_init_mini(ipc);
 	return error;
 
@@ -84,8 +82,7 @@ err_iomap:
 
 static void ipc_remove(struct platform_device *odev)
 {
-	struct hlwd_ipc *ipc;
-	ipc = dev_get_drvdata(&odev->dev);
+	(void)odev;
 
 	iounmap(ipc->regs);
 	kfree(ipc);
