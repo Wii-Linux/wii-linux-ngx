@@ -21,7 +21,6 @@
 
 #include <sound/core.h>
 #include <sound/pcm.h>
-#define SNDRV_GET_ID
 #include <sound/initval.h>
 
 #define DRV_MODULE_NAME "gcn-mic"
