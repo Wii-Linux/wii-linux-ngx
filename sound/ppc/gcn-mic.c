@@ -210,7 +210,7 @@ static int mic_set_period(struct mic_device *dev, int period_bytes)
  *
  */
 
-static int index = SNDRV_DEFAULT_IDX1;
+static int idx = SNDRV_DEFAULT_IDX1;
 static char *id = SNDRV_DEFAULT_STR1;
 
 static struct snd_pcm_hardware mic_snd_capture = {
@@ -568,7 +568,7 @@ static int mic_init_snd(struct mic_device *dev)
 
 	DBG(&dev->spi_device->dev, "enter\n");
 
-	retval = snd_card_new(NULL, index, id, THIS_MODULE, 0, &card);
+	retval = snd_card_new(NULL, idx, id, THIS_MODULE, 0, &card);
 	if (retval < 0) {
 		dev_err(&dev->spi_device->dev, "unable to create sound card\n");
 		goto err_card;
