@@ -25,14 +25,11 @@
 
 /*
  * PPCCTRL IPC flags
- * There are more for ARMCTRL, but we don't touch that register
+ * There are more for ARMCTRL, but we don't touch that register.
+ * There are also more for PPCCTRL, but currently X1 is the only
+ * one that we touch.
  */
 #define X1  BIT(0)
-#define Y2  BIT(1)
-#define Y1  BIT(2)
-#define X2  BIT(3)
-#define IY1 BIT(4)
-#define IY2 BIT(5)
 
 struct infohdr {
 	char magic[3];
