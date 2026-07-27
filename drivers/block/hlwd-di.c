@@ -47,7 +47,6 @@
 #define DI_CMD_READ_PHYSINFO		0xad000000
 #define DI_CMD_GET_STATUS		0xe0000000
 
-#define DI_SR_BRK			BIT(0)
 #define DI_SR_DEINTMASK		BIT(1)
 #define DI_SR_DEINT			BIT(2)
 #define DI_SR_TCINTMASK		BIT(3)
