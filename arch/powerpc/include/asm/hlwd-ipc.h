@@ -1,7 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * arch/powerpc/platforms/embedded6xx/hlwd-ipc.h
- *
  * Nintendo Wii "Hollywood" IPC support.
  * Copyright (C) 2025 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  */
