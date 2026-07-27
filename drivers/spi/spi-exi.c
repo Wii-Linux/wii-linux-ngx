@@ -88,7 +88,6 @@ struct exi_regs {
 #define EXI_CSR_TCINTMASK    BIT(2)
 #define EXI_CSR_TCINT        BIT(3)
 #define EXI_CSR_CLK_SHIFT    4
-#define EXI_CSR_CLK          (7 << EXI_CSR_CLK_SHIFT)
 #define   EXI_CSR_CLK_64MHZ    (6 << EXI_CSR_CLK_SHIFT)
 #define   EXI_CSR_CLK_32MHZ    (5 << EXI_CSR_CLK_SHIFT)
 #define   EXI_CSR_CLK_16MHZ    (4 << EXI_CSR_CLK_SHIFT)
