@@ -1,7 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * drivers/input/gcn-si.c
- *
  * Nintendo GameCube/Wii Serial Interface (SI) driver.
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Steven Looman
