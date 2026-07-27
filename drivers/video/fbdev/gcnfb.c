@@ -1716,14 +1716,11 @@ static int vi_attach_ave(struct vi_ctl *ctl, struct i2c_client *client)
 
 static void vi_dettach_ave(struct vi_ctl *ctl)
 {
-	struct i2c_client *client;
-
 	if (!ctl)
 		return;
 
 	spin_lock(&ctl->lock);
 	if (ctl->i2c_client) {
-		client = ctl->i2c_client;
 		ctl->i2c_client = NULL;
 		spin_unlock(&ctl->lock);
 		dev_info(ctl->dev, "AVE-RVL support unloaded\n");
