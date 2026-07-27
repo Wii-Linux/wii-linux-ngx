@@ -51,13 +51,12 @@ enum ipc_flavor ipc_get_flavor(void)
  */
 static int ipc_probe(struct platform_device *odev)
 {
-	int error, irq;
+	int error = -ENOMEM, irq;
 	void __iomem *io_base;
 
 	io_base = of_iomap(odev->dev.of_node, 0);
 	if (!io_base) {
 		pr_err("no io memory range found (%d)\n", error);
-		error = -ENOMEM;
 		goto err_iomap;
 	}
 	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
@@ -65,10 +64,8 @@ static int ipc_probe(struct platform_device *odev)
 	pr_info("hlwd-ipc: got address: %p, IRQ %d\n", io_base, irq);
 
 	ipc = kzalloc(sizeof(struct hlwd_ipc), GFP_KERNEL);
-	if (!ipc) {
-		error = -ENOMEM;
+	if (!ipc)
 		goto err_ipc_alloc;
-	}
 
 	/* TODO: do actual detection */
 	ipc->flavor = IPC_FLAVOR_MINI;
