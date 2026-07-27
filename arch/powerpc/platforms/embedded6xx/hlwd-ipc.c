@@ -51,7 +51,7 @@ enum ipc_flavor ipc_get_flavor(void)
  */
 static int ipc_probe(struct platform_device *odev)
 {
-	int error, irq;
+	int error = -ENOMEM, irq;
 	void __iomem *io_base;
 
 	io_base = of_iomap(odev->dev.of_node, 0);
