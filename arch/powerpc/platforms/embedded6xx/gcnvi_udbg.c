@@ -207,10 +207,7 @@ static void gcnvi_udbg_console_init(struct console_data *con, void *framebuffer,
 #define VI_DCR                  0x02 /* u16 */
 #define VI_DCR_ENABLE           (0x1<<0)
 #define VI_TFBL                 0x1c
-#define VI_TFBR                 0x20
 #define VI_BFBL                 0x24
-#define VI_BFBR                 0x28
-#define VI_DPV                  0x2c
 
 #define _VI_LOWEST_BIT(bits)		((~((bits)-1))&(bits))
 #define _VI_VALUE(x,bits)		(((x)&(bits))/_VI_LOWEST_BIT(bits)) /* raw bits to value */
