@@ -16,7 +16,6 @@
 #include <linux/uaccess.h>
 #include <asm/hlwd-ipc-mini.h>
 
-#define DRV_NAME	"hlwd-ipc-mini-chardev"
 #define DRV_VERSION	"0.1"
 
 
