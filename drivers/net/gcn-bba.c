@@ -187,30 +187,14 @@ static void bba_outs_with_pad(int reg, const void *val, int len,
 #define   BBA_NCRA_SR		(1<<3)	/* SR, Start Receive */
 
 #define BBA_NCRB 0x01		/* Network Control Register B, RW */
-#define   BBA_NCRB_PR		(1<<0)	/* PR, Promiscuous Mode */
-#define   BBA_NCRB_CA		(1<<1)	/* CA, Capture Effect Mode */
-#define   BBA_NCRB_PM		(1<<2)	/* PM, Pass Multicast */
-#define   BBA_NCRB_PB		(1<<3)	/* PB, Pass Bad Frame */
 #define   BBA_NCRB_AB		(1<<4)	/* AB, Accept Broadcast */
-#define   BBA_NCRB_HBD		(1<<5)	/* HBD, reserved */
-#define   BBA_NCRB_RXINTC0	(1<<6)	/* RXINTC, Receive Interrupt Counter */
-#define   BBA_NCRB_RXINTC1	(1<<7)	/*  " */
 #define     BBA_NCRB_1_PACKET_PER_INT	(0<<6)	/* 0 0 */
-#define     BBA_NCRB_2_PACKETS_PER_INT	(1<<6)	/* 0 1 */
-#define     BBA_NCRB_4_PACKETS_PER_INT	(2<<6)	/* 1 0 */
-#define     BBA_NCRB_8_PACKETS_PER_INT	(3<<6)	/* 1 1 */
 
 #define BBA_LTPS 0x04		/* Last Transmitted Packet Status, RO */
 #define BBA_LRPS 0x05		/* Last Received Packet Status, RO */
 
 #define BBA_IMR 0x08		/* Interrupt Mask Register, RW, 00h */
-#define   BBA_IMR_FRAGIM	(1<<0) /* FRAGIM, Fragment Counter Int Mask */
-#define   BBA_IMR_RIM		(1<<1) /* RIM, Receive Interrupt Mask */
-#define   BBA_IMR_TIM		(1<<2) /* TIM, Transmit Interrupt Mask */
-#define   BBA_IMR_REIM		(1<<3) /* REIM, Receive Error Interrupt Mask */
-#define   BBA_IMR_TEIM		(1<<4) /* TEIM, Transmit Error Interrupt Mask */
 #define   BBA_IMR_FIFOEIM	(1<<5) /* FIFOEIM, FIFO Error Interrupt Mask */
-#define   BBA_IMR_BUSEIM	(1<<6) /* BUSEIM, BUS Error Interrupt Mask */
 #define   BBA_IMR_RBFIM		(1<<7) /* RBFIM, RX Buf Full Interrupt Mask */
 
 #define BBA_IR 0x09		/* Interrupt Register, RW, 00h */
@@ -225,8 +209,6 @@ static void bba_outs_with_pad(int reg, const void *val, int len,
 
 #define BBA_BP   0x0a/*+0x0b*/	/* Boundary Page Pointer Register */
 #define BBA_TLBP 0x0c/*+0x0d*/	/* TX Low Boundary Page Pointer Register */
-#define BBA_TWP  0x0e/*+0x0f*/	/* Transmit Buf Write Page Pointer Register */
-#define BBA_TRP  0x12/*+0x13*/	/* Transmit Buf Read Page Pointer Register */
 #define BBA_RWP  0x16/*+0x17*/	/* Receive Buffer Write Page Pointer Register */
 #define BBA_RRP  0x18/*+0x19*/	/* Receive Buffer Read Page Pointer Register */
 #define BBA_RHBP 0x1a/*+0x1b*/	/* Receive High Boundary Page Ptr Register */
@@ -234,32 +216,14 @@ static void bba_outs_with_pad(int reg, const void *val, int len,
 #define BBA_RXINTT    0x14/*+0x15*/	/* Receive Interrupt Timer Register */
 
 #define BBA_NAFR_PAR0 0x20	/* Physical Address Register Byte 0 */
-#define BBA_NAFR_PAR1 0x21	/* Physical Address Register Byte 1 */
-#define BBA_NAFR_PAR2 0x22	/* Physical Address Register Byte 2 */
-#define BBA_NAFR_PAR3 0x23	/* Physical Address Register Byte 3 */
-#define BBA_NAFR_PAR4 0x24	/* Physical Address Register Byte 4 */
-#define BBA_NAFR_PAR5 0x25	/* Physical Address Register Byte 5 */
-
-#define BBA_NWAYC 0x30		/* NWAY Configuration Register, RW, 84h */
-#define   BBA_NWAYC_FD		(1<<0)	/* FD, Full Duplex Mode */
-#define   BBA_NWAYC_PS100	(1<<1)	/* PS100/10, Port Select 100/10 */
-#define   BBA_NWAYC_ANE		(1<<2)	/* ANE, Autonegotiation Enable */
-#define   BBA_NWAYC_ANS_RA	(0x01<<3) /* ANS, Restart Autonegotiation */
-#define   BBA_NWAYC_LTE		(1<<7)	/* LTE, Link Test Enable */
 
 #define BBA_GCA 0x32		/* GMAC Configuration A Register, RW, 00h */
 #define   BBA_GCA_ARXERRB	(1<<3)	/* ARXERRB, Accept RX pkt with error */
-
-#define BBA_MISC 0x3d		/* MISC Control Register 1, RW, 3ch */
-#define   BBA_MISC_BURSTDMA	(1<<0)
-#define   BBA_MISC_DISLDMA	(1<<1)
 
 #define BBA_TXFIFOCNT 0x3e/*0x3f*/	/* Transmit FIFO Counter Register */
 #define BBA_WRTXFIFOD 0x48/*-0x4b*/	/* Write TX FIFO Data Port Register */
 
 #define BBA_MISC2 0x50		/* MISC Control Register 2, RW, 00h */
-#define   BBA_MISC2_HBRLEN0	(1<<0)	/* HBRLEN, Host Burst Read Length */
-#define   BBA_MISC2_HBRLEN1	(1<<1)	/*  " */
 #define   BBA_MISC2_AUTORCVR	(1<<7)	/* Auto RX Full Recovery */
 
 #define BBA_RX_STATUS_BF	(1<<0)
@@ -267,26 +231,20 @@ static void bba_outs_with_pad(int reg, const void *val, int len,
 #define BBA_RX_STATUS_FAE	(1<<2)
 #define BBA_RX_STATUS_FO	(1<<3)
 #define BBA_RX_STATUS_RW	(1<<4)
-#define BBA_RX_STATUS_MF	(1<<5)
 #define BBA_RX_STATUS_RF	(1<<6)
 #define BBA_RX_STATUS_RERR	(1<<7)
 
-#define BBA_TX_STATUS_CC0	(1<<0)
-#define BBA_TX_STATUS_CC1	(1<<1)
-#define BBA_TX_STATUS_CC2	(1<<2)
-#define BBA_TX_STATUS_CC3	(1<<3)
 #define  BBA_TX_STATUS_CCMASK	(0x0f)
 #define BBA_TX_STATUS_CRSLOST	(1<<4)
 #define BBA_TX_STATUS_UF	(1<<5)
 #define BBA_TX_STATUS_OWC	(1<<6)
-#define BBA_TX_STATUS_OWN	(1<<7)
 #define BBA_TX_STATUS_TERR	(1<<7)
 
 #define BBA_TX_MAX_PACKET_SIZE	1518	/* 14+1500+4 */
 #define BBA_RX_MAX_PACKET_SIZE	1536	/* 6 pages * 256 bytes */
 
 
-/**
+/*
  *
  * DRIVER NOTES
  *
@@ -333,7 +291,6 @@ struct bba_descr {
 struct bba_private {
 	spinlock_t		lock;
 	unsigned long		flags;
-#define BBA_RBFIM_OFF		(1<<__BBA_RBFIM_OFF)
 
 	u32			msg_enable;
 	u8			revid;
@@ -1145,7 +1102,7 @@ static void bba_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id bba_id_table[] = {
-	{ "gamecube-bba" },
+	{ "gamecube-bba", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, bba_id_table);
@@ -1159,7 +1116,7 @@ static struct spi_driver bba_driver = {
 	.remove = bba_remove,
 };
 
-/**
+/*
  *	bba_init_module -  driver initialization routine
  *
  *	Initializes the BroadBand Adapter driver module.
@@ -1172,7 +1129,7 @@ static int __init bba_init_module(void)
 	return spi_register_driver(&bba_driver);
 }
 
-/**
+/*
  *	bba_exit_module -  driver exit routine
  *
  *	Removes the BroadBand Adapter driver module.
