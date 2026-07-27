@@ -52,11 +52,8 @@ static char ai_driver_version[] = "1.2t";
 #define  AI_CSR_AIDINT		BIT(3)
 #define  AI_CSR_AIDINTMASK	BIT(4)
 #define  AI_CSR_ARINT		BIT(5)
-#define  AI_CSR_ARINTMASK	BIT(6)
 #define  AI_CSR_DSPINT		BIT(7)
-#define  AI_CSR_DSPINTMASK	BIT(8)
-#define  AI_CSR_DSPDMA		BIT(9)
-#define  AI_CSR_RESETXXX	BIT(11)
+#define  AI_CSR_BOOTMODE	BIT(11)
 
 #define AI_DSP_DMA_ADDRH	0x30	/* 16 bits */
 
@@ -195,7 +192,7 @@ static size_t ai_period_len(struct snd_gcn *chip, int period)
 	return len;
 }
 
-static int index = SNDRV_DEFAULT_IDX1;	/* index 0-MAX */
+static int idx = SNDRV_DEFAULT_IDX1;	/* index 0-MAX */
 static char *id = SNDRV_DEFAULT_STR1;	/* ID for this card */
 
 static struct snd_gcn *gcn_audio;
@@ -535,7 +532,7 @@ static int ai_of_probe(struct platform_device *odev)
 
 	of_reserved_mem_device_init(dev);
 
-	retval = snd_card_new(dev, index, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
+	retval = snd_card_new(dev, idx, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
 	if (retval < 0) {
 		dev_err(dev, "failed to allocate card\n");
 		return -ENOMEM;
