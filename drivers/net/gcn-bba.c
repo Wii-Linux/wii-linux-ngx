@@ -1,18 +1,12 @@
-/**
- * drivers/net/gcn-bba.c
- *
+// SPDX-License-Identifier: GPL-2.0+
+/*
  * Nintendo GameCube Broadband Adapter (BBA) driver
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2005 Todd Jeffreys
  * Copyright (C) 2004,2005,2006,2007,2008,2009 Albert Herranz
+ * Copyright (C) 2026 Michael "Techflash" Garofalo
  *
  * Based on previous work by Stefan Esser, Franz Lehner, Costis and tmbinc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
