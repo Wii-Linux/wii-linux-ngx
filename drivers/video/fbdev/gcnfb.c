@@ -8,6 +8,19 @@
  * Copyright (C) 2024-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
+ *
+ * GX code partially based on the following sources:
+ *   - NetBSD WiiFB:
+ *     Copyright (c) 2025 Jared McNeill <jmcneill@invisible.ca>
+ *     All rights reserved.
+ *
+ *   - GXFB:
+ *     Copyright (C) 2025-2026 Techflash
+ *
+ *   - libogc gx.c:
+ *     Copyright (C) 2004 - 2025
+ *     Michael Wiedenbauer (shagkur)
+ *     Dave Murphy (WinterMute)
  */
 
 #define DRV_MODULE_NAME   "gcn-vifb"
@@ -20,6 +33,7 @@
 
 #define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
 
+#include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
@@ -33,15 +47,15 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/string.h>
-#include <linux/tty.h>
-#include <linux/vmalloc.h>
+#include <linux/uaccess.h>
 #include <linux/wait.h>
 #include <linux/io.h>
-#include <linux/sched/signal.h>
+#include <linux/iopoll.h>
+#include <asm/reg.h>
+#include <asm/udbg.h>
 #ifdef CONFIG_WII_AVE_RVL
 #include <linux/i2c.h>
 #endif
-#include <linux/videodev2.h>
 
 /*
  * Driver changelog, since the git history has been screwed up over the years.
@@ -66,17 +80,10 @@
  * 2.3t - Techflash (6/3/2024) - Corrected nostalgic mode height from 480 to 448, added this changelog
  *
  * 2.4t - Techflash (11/16/2025) - Massive cleanups, make nostalgic mode the only option, fixup resolutions
+ *
+ * 2.5t - Techflash (07/29/2026) - Use GX for all copying and conversion
  */
-static char vifb_driver_version[] = "2.4t";
-
-struct double_uint32_t {
-	uint32_t left, right;
-};
-
-union double_rgba_pixel_t {
-	struct double_uint32_t k32;
-	uint64_t k64;
-};
+static char vifb_driver_version[] = "2.5t";
 
 /*
  * Hardware registers.
@@ -271,8 +278,9 @@ enum vi_tv_mode_flags {
 #define VI_HORZ_ALIGN		0xf	/* in pixels-1 */
 #define VI_HORZ_WORD_SIZE	32	/* bytes */
 
-#define TV_BYTES_PER_PIXEL 2 /* all supported TV modes are native YUYV */
-#define PIX_FMT_RGB888		V4L2_PIX_FMT_RGB32 /* only 3 components are being used */
+#define VI_XFB_WIDTH		640
+#define TV_BYTES_PER_PIXEL	2 /* all supported TV modes are native YUYV */
+#define VI_YUYV_BLACK		0x10801080
 
 /*
  * Video mode timings.
@@ -452,7 +460,22 @@ struct vi_ctl {
 	spinlock_t lock;
 
 	void __iomem *io_base;
+	void __iomem *wgpipe;
+	void __iomem *pi_base;
+	void __iomem *cp_base;
+	void __iomem *pe_base;
+	phys_addr_t gx_fifo_base;
+	void *fifo;
+	dma_addr_t fifo_dma;
+	void *rgb_fb;
+	dma_addr_t rgb_fb_dma;
+	size_t rgb_fb_size;
+	void *indirect_map;
+	dma_addr_t indirect_map_dma;
+	bool gx_faulted;
+	atomic_t pe_finished;
 	unsigned int irq;
+	unsigned int pe_irq;
 
 	int in_vtrace;
 	wait_queue_head_t vtrace_waitq;
@@ -538,7 +561,6 @@ static struct fb_var_screeninfo vifb_var = {
 	.activate = FB_ACTIVATE_NOW,
 	.width = 640,
 	.height = 448,
-	/* change to 32 to start with RGB888 mode by default */
 	.bits_per_pixel = 16,
 	.vmode = FB_VMODE_INTERLACED,
 };
@@ -556,189 +578,28 @@ static int force_tv;
 static u32 pseudo_palette[16];
 
 /*
- * Explanation of all the buffering going on here:
+ * Framebuffer layout:
  *
- * 0 - this is the hardware, Hollywood/Flipper GPU, it shares memory with CPU as instructed via ioctls and renders what finds there
- * 1 - gx_fb_start: this is the physical memory address (a.k.a. xfb-start) for the video card
- * 2 - fb_mem: this is the iomapped virtual address for the physical address, same size as physical memory used by video card
- *     a.k.a. "physical framebuffer", concealed from use except in native YUYV mode
- * 3 - info->fix.smem_start: this is the virtual framebuffer, VM'allocated, with format specified by 'vfb_format'
- * 4 - userland has its own memory buffers and can mmap into previous virtual framebuffer,
- *     or otherwise write there via file/memory operations.
- *
- * gx_fb_size: size of the physical framebuffer
- * vfb_mem: pointer to the virtual framebuffer, used only in RGB88 or RGB565 modes
- * vfb_len: size of the virtual framebuffer, used only in RGB88 or RGB565 modes
- * vfb_format: either RGB888, YUYV or RGB565
+ * Userspace and the fbdev helpers draw into a linear RGB565 DMA buffer.  At
+ * vertical retrace GX samples that buffer as a texture, uses a 16x4 indirect
+ * texture to undo GX's 4x4 RGB565 tiling in texture-coordinate space, renders
+ * the result to EFB, then copies EFB to the YUYV XFB consumed by VI.
  */
-static unsigned long gx_fb_start;
-static void *fb_mem, *vfb_mem;
-static unsigned long vfb_len;
-static unsigned int gx_fb_size;
-static int vfb_format;
+static unsigned long gx_xfb_start;
+static void *xfb_mem;
+static unsigned int gx_xfb_size;
 
-/*
- *
- *
- */
-
+#define GX_INDIRECT_WIDTH		16
+#define GX_INDIRECT_HEIGHT		4
+#define GX_WIDE_EFB_WIDTH		672
+#define GX_TALL_EFB_HEIGHT		574
+#define GX_INDIRECT_MAP_SIZE		(GX_INDIRECT_WIDTH * \
+					 GX_INDIRECT_HEIGHT * sizeof(u32))
 #ifdef CONFIG_WII_AVE_RVL
 static int vi_ave_setup(struct vi_ctl *ctl);
 static int vi_ave_get_video_format(struct vi_ctl *ctl,
 				   enum vi_video_format *fmt);
 #endif
-
-/*
- *
- * Color space handling.
- */
-
-/*
- * RGB to YCbYCr conversion support bits.
- * We are using here the ITU.BT-601 Y'CbCr standard.
- *
- * References:
- * - "Colour Space Conversions" by Adrian Ford and Alan Roberts, 1998
- *   (google for coloureq.pdf)
- *
- */
-
-#define RGB2YUV_SHIFT   16
-#define RGB2YUV_LUMA    16
-#define RGB2YUV_CHROMA 128
-
-#define Yr ((int)(0.299 * (1<<RGB2YUV_SHIFT)))
-#define Yg ((int)(0.587 * (1<<RGB2YUV_SHIFT)))
-#define Yb ((int)(0.114 * (1<<RGB2YUV_SHIFT)))
-
-#define Ur ((int)(-0.169 * (1<<RGB2YUV_SHIFT)))
-#define Ug ((int)(-0.331 * (1<<RGB2YUV_SHIFT)))
-#define Ub ((int)(0.500 * (1<<RGB2YUV_SHIFT)))
-
-#define Vr ((int)(0.500 * (1<<RGB2YUV_SHIFT)))	/* same as Ub */
-#define Vg ((int)(-0.419 * (1<<RGB2YUV_SHIFT)))
-#define Vb ((int)(-0.081 * (1<<RGB2YUV_SHIFT)))
-
-/*
- * Converts two 16bpp rgb pixels into a dual yuy2 pixel.
- */
-static inline uint32_t rgbrgb16toycbycr(uint32_t rgb1rgb2)
-{
-	uint16_t rgb1 = rgb1rgb2 >> 16, rgb2 = rgb1rgb2 & 0xFFFF;
-	register int Y1, Cb, Y2, Cr;
-	register int r1, g1, b1;
-	register int r2, g2, b2;
-	register int r, g, b;
-
-	/* fast path, thanks to bohdy */
-	if (!(rgb1 | rgb2))
-		return 0x00800080;	/* black, black */
-
-	/* RGB565 */
-
-	r1 = ((rgb1 >> 11) & 0x1f);
-	g1 = ((rgb1 >> 5) & 0x3f);
-	b1 = ((rgb1 >> 0) & 0x1f);
-
-	/* fast (approximated) scaling to 8 bits, thanks to Masken */
-	r1 = (r1 << 3) | (r1 >> 2);
-	g1 = (g1 << 2) | (g1 >> 4);
-	b1 = (b1 << 3) | (b1 >> 2);
-
-	Y1 = clamp(((Yr * r1 + Yg * g1 + Yb * b1) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_LUMA, 16, 235);
-	if (rgb1 == rgb2) {
-		/* this is just another fast path */
-		Y2 = Y1;
-		r = r1;
-		g = g1;
-		b = b1;
-	} else {
-		/* same as we did for r1 before */
-		r2 = ((rgb2 >> 11) & 0x1f);
-		g2 = ((rgb2 >> 5) & 0x3f);
-		b2 = ((rgb2 >> 0) & 0x1f);
-
-		r2 = (r2 << 3) | (r2 >> 2);
-		g2 = (g2 << 2) | (g2 >> 4);
-		b2 = (b2 << 3) | (b2 >> 2);
-
-		Y2 = clamp(((Yr * r2 + Yg * g2 + Yb * b2) >> RGB2YUV_SHIFT)
-			   + RGB2YUV_LUMA,
-			   16, 235);
-
-		r = (r1 + r2) / 2;
-		g = (g1 + g2) / 2;
-		b = (b1 + b2) / 2;
-	}
-
-	Cb = clamp(((Ur * r + Ug * g + Ub * b) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_CHROMA, 16, 240);
-	Cr = clamp(((Vr * r + Vg * g + Vb * b) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_CHROMA, 16, 240);
-
-	return (((uint8_t) Y1) << 24) | (((uint8_t) Cb) << 16) |
-	    (((uint8_t) Y2) << 8) | (((uint8_t) Cr) << 0);
-}
-
-
-/*
- * Converts two 32bpp rgb pixel into a dual YUYV pixel.
- */
-static inline uint32_t rgb32rgb32toycbycr(union double_rgba_pixel_t k)
-{
-	register int Y1, Cb, Y2, Cr;
-	register int r1, g1, b1;
-	register int r2, g2, b2;
-	register int r, g, b;
-
-	/* fast path, thanks to bohdy */
-	if (!k.k64)
-		return 0x00800080;	/* black, black */
-
-	/* RGB888 */
-
-	r1 = ((k.k32.left >> 16) & 0xff);
-	g1 = ((k.k32.left >> 8) & 0xff);
-	b1 = ((k.k32.left >> 0) & 0xff);
-
-	Y1 = clamp(((Yr * r1 + Yg * g1 + Yb * b1) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_LUMA, 16, 235);
-	if (k.k32.left == k.k32.right) {
-		/* this is just another fast path */
-		Y2 = Y1;
-		r = r1;
-		g = g1;
-		b = b1;
-	} else {
-		/* same as we did for r1 before */
-		if (force_scan == VI_SCAN_PROGRESSIVE) {
-			r2 = ((k.k32.right >> 0) & 0xff);
-			g2 = ((k.k32.right >> 8) & 0xff);
-			b2 = ((k.k32.right >> 16) & 0xff);
-		} else {
-			r2 = ((k.k32.right >> 16) & 0xff);
-			g2 = ((k.k32.right >> 8) & 0xff);
-			b2 = ((k.k32.right >> 0) & 0xff);
-		}
-
-		Y2 = clamp(((Yr * r2 + Yg * g2 + Yb * b2) >> RGB2YUV_SHIFT)
-			   + RGB2YUV_LUMA,
-			   16, 235);
-
-		r = (r1 + r2) / 2;
-		g = (g1 + g2) / 2;
-		b = (b1 + b2) / 2;
-	}
-
-	Cb = clamp(((Ur * r + Ug * g + Ub * b) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_CHROMA, 16, 240);
-	Cr = clamp(((Vr * r + Vg * g + Vb * b) >> RGB2YUV_SHIFT)
-		   + RGB2YUV_CHROMA, 16, 240);
-
-	return (((uint8_t) Y1) << 24) | (((uint8_t) Cb) << 16) |
-	    (((uint8_t) Y2) << 8) | (((uint8_t) Cr) << 0);
-}
 
 /*
  * Video mode timings calculation.
@@ -1272,12 +1133,6 @@ static int vi_setup_tv_mode(struct vi_ctl *ctl, bool force_detect)
 	return 0;
 }
 
-static int vifb_adjust_ll(int ll) {
-	if (vfb_format == PIX_FMT_RGB888)
-		return ll/2;
-	return ll;
-}
-
 /*
  * Set the address from where the video encoder will display data on screen.
  */
@@ -1287,7 +1142,7 @@ static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 	void __iomem *io_base = ctl->io_base;
 	u32 top, bot;
 	u8 xof;
-	int gx_ll = vifb_adjust_ll(info->fix.line_length);
+	int gx_ll = VI_XFB_WIDTH * TV_BYTES_PER_PIXEL;
 
 	top = bot = addr;
 	if (!vi_vmode_is_progressive(info->var.vmode)) {
@@ -1343,56 +1198,858 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 	out_be32(io_base + VI_DI3, 0);
 }
 
-static void vi_transcode_RGB565(struct vi_ctl *ctl)
+/*
+ * GX support.  Broadway writes only the linear RGB565 texture in MEM1; GX
+ * owns all EFB access.  During rendering and the EFB-to-XFB copy, the VI
+ * interrupt handler retains the only CPU until PE reports completion.
+ */
+#define BP_REG(x)			((x) << 24)
+#define GX_COORDS(x, y)			(((u32)(y) << 10) | (x))
+
+#define GX_CMD_LOAD_CP			0x08
+#define GX_CMD_LOAD_XF			0x10
+#define GX_CMD_INVALIDATE_VTX		0x48
+#define GX_CMD_LOAD_BP			0x61
+#define GX_CMD_QUADS_VTXFMT0		0x80
+
+#define BP_REG_GEN_MODE			BP_REG(0x00)
+#define BP_REG_DISPLAY_COPY_FILTER(n)	BP_REG(0x01 + (n))
+#define BP_REG_IND_MTX_A		BP_REG(0x06)
+#define BP_REG_IND_MTX_B		BP_REG(0x07)
+#define BP_REG_IND_MTX_C		BP_REG(0x08)
+#define BP_REG_IND_IMASK		BP_REG(0x0f)
+#define BP_REG_TEV_INDIRECT(stage)	BP_REG(0x10 + (stage))
+#define BP_REG_SCISSOR_TL		BP_REG(0x20)
+#define BP_REG_SCISSOR_BR		BP_REG(0x21)
+#define BP_REG_LINE_POINT_WIDTH		BP_REG(0x22)
+#define BP_REG_PERF0_TRI		BP_REG(0x23)
+#define BP_REG_PERF0_QUAD		BP_REG(0x24)
+#define BP_REG_IND_SCALE		BP_REG(0x25)
+#define BP_REG_IND_ORDER		BP_REG(0x27)
+#define BP_REG_TEV_ORDER		BP_REG(0x28)
+#define BP_REG_SU_SSIZE(coord)		BP_REG(0x30 + 2 * (coord))
+#define BP_REG_SU_TSIZE(coord)		BP_REG(0x31 + 2 * (coord))
+#define BP_REG_ZMODE			BP_REG(0x40)
+#define BP_REG_BLEND_MODE		BP_REG(0x41)
+#define BP_REG_CONSTANT_ALPHA		BP_REG(0x42)
+#define BP_REG_PE_CONTROL		BP_REG(0x43)
+#define BP_REG_FIELD_MASK		BP_REG(0x44)
+#define BP_REG_BUS_CLOCK0		BP_REG(0x46)
+#define BP_REG_XFB_STRIDE		BP_REG(0x4d)
+#define BP_REG_COPY_Y_SCALE		BP_REG(0x4e)
+#define BP_REG_COPY_FILTER0		BP_REG(0x53)
+#define BP_REG_COPY_FILTER1		BP_REG(0x54)
+#define BP_REG_CLEAR_BBOX1		BP_REG(0x55)
+#define BP_REG_CLEAR_BBOX2		BP_REG(0x56)
+#define BP_REG_REVISION_BITS		BP_REG(0x58)
+#define BP_REG_SCISSOR_OFFSET		BP_REG(0x59)
+#define BP_REG_TEXTURE_INVALIDATE	BP_REG(0x66)
+#define BP_REG_PERF1			BP_REG(0x67)
+#define BP_REG_BUS_CLOCK1		BP_REG(0x69)
+#define BP_REG_TEX_MODE0(map)		BP_REG(0x80 + (map))
+#define BP_REG_TEX_MODE1(map)		BP_REG(0x84 + (map))
+#define BP_REG_TEX_IMAGE0(map)		BP_REG(0x88 + (map))
+#define BP_REG_TEX_IMAGE1(map)		BP_REG(0x8c + (map))
+#define BP_REG_TEX_IMAGE2(map)		BP_REG(0x90 + (map))
+#define BP_REG_TEX_IMAGE3(map)		BP_REG(0x94 + (map))
+#define BP_REG_TEV_COLOR_ENV(stage)	BP_REG(0xc0 + 2 * (stage))
+#define BP_REG_TEV_ALPHA_ENV(stage)	BP_REG(0xc1 + 2 * (stage))
+#define BP_REG_ALPHA_COMPARE		BP_REG(0xf3)
+
+#define BP_REG_PE_DONE			BP_REG(0x45)
+#define BP_REG_EFB_COORDS_MIN		BP_REG(0x49)
+#define BP_REG_EFB_COORDS_MAX		BP_REG(0x4a)
+#define BP_REG_XFB_ADDR			BP_REG(0x4b)
+#define BP_REG_COPY_CLEAR_AR		BP_REG(0x4f)
+#define BP_REG_COPY_CLEAR_GB		BP_REG(0x50)
+#define BP_REG_COPY_CLEAR_Z		BP_REG(0x51)
+#define BP_REG_PE_COPY_EXECUTE		BP_REG(0x52)
+#define  PE_COPY_EXECUTE_TO_XFB		BIT(14)
+#define  PE_COPY_EXECUTE_YSCALE		BIT(10)
+#define  PE_COPY_EXECUTE_CLAMP		(2 << 0)
+#define  PE_DONE_TRIGGER		2
+
+#define GX_GEN_NUM_TEXGENS(n)		((n) & 0xf)
+#define GX_GEN_NUM_CHANS(n)		(((n) & 0x7) << 4)
+#define GX_GEN_NUM_INDSTAGES(n)		(((n) & 0x7) << 16)
+
+#define GX_CP_MATRIX_INDEX_A		0x30
+#define GX_CP_PERF_MODE			0x20
+#define GX_CP_VCD_LO			0x50
+#define GX_CP_VCD_HI			0x60
+#define GX_CP_VAT_A(vtxfmt)		(0x70 + (vtxfmt))
+#define GX_CP_VAT_B(vtxfmt)		(0x80 + (vtxfmt))
+#define GX_CP_VAT_C(vtxfmt)		(0x90 + (vtxfmt))
+
+#define GX_XF_POS_MTX0			0x0000
+#define GX_XF_TEX_MTX(index)		((index) << 2)
+#define GX_XF_DUAL_TEX_MTX(index)	(0x0500 + ((index) << 2))
+#define GX_XF_ERROR			0x1000
+#define GX_XF_CLIP_DISABLE		0x1005
+#define GX_XF_GP_METRIC			0x1006
+#define GX_XF_INVTXSPEC			0x1008
+#define GX_XF_NUMCOLORS			0x1009
+#define GX_XF_AMBIENT0			0x100a
+#define GX_XF_MATERIAL0			0x100c
+#define GX_XF_COLOR0CNTRL		0x100e
+#define GX_XF_ALPHA0CNTRL		0x1010
+#define GX_XF_DUALTEX			0x1012
+#define GX_XF_MATRIX_INDEX_A		0x1018
+#define GX_XF_VIEWPORT			0x101a
+#define GX_XF_PROJECTION		0x1020
+#define GX_XF_NUMTEXGENS		0x103f
+#define GX_XF_TEXGEN(index)		(0x1040 + (index))
+#define GX_XF_DUAL_TEXGEN(index)	(0x1050 + (index))
+
+#define GX_TEXMTX0			30
+#define GX_TEXMTX1			33
+#define GX_DTTIDENTITY			61
+#define GX_TEXGEN_SRC_TEX0		(5 << 7)
+#define GX_TEX_FORMAT_RGB565		4
+#define GX_TEX_FORMAT_RGBA8		6
+#define GX_TEX_DISABLE_EDGE_LOD		BIT(8)
+#define GX_TEX_WRAP_REPEAT_S		BIT(0)
+#define GX_TEX_WRAP_REPEAT_T		BIT(2)
+#define GX_TEX_IMAGE_SIZE(fmt, width, height) \
+	(((fmt) << 20) | (((height) - 1) << 10) | ((width) - 1))
+#define GX_TEX_IMAGE_ADDR(addr)		((u32)(addr) >> 5)
+#define GX_SU_RANGE_BIAS		BIT(16)
+
+#define GX_TMEM_MAP0_EVEN		0x0d8000
+#define GX_TMEM_MAP0_ODD		0x0dc000
+#define GX_TMEM_MAP1_RGBA8_EVEN		0x0d8800
+#define GX_TMEM_MAP1_RGBA8_ODD		0x0dc800
+
+#define GX_TEV_ORDER_TEXCOORD0_MAP0	BIT(6)
+#define GX_TEV_REPLACE_COLOR		0x08fff8
+#define GX_TEV_REPLACE_ALPHA		0x08ffc0
+#define GX_IND_ORDER_TEXCOORD1_MAP1	0x000009
+#define GX_TEV_INDIRECT_RGB565		0x000270
+#define GX_IND_MTX_A_640		0x400140
+#define GX_IND_MTX_A_672		0x400150
+#define GX_IND_MTX_B			0x800001
+#define GX_IND_MTX_C			0x402000
+#define GX_ALPHA_COMPARE_ALWAYS		0x3f0000
+#define GX_INVALIDATE_TEX_ALL_0		0x001000
+#define GX_INVALIDATE_TEX_ALL_1		0x001100
+
+#define GX_VCD_POS_XY_DIRECT		BIT(9)
+#define GX_VCD_TEX0_ST_DIRECT		1
+#define GX_VAT_POS_XY_TEX0_ST_F32	0x41200008
+#define GX_VAT_B_DEFAULT		0x80000000
+#define GX_VAT_A_DEFAULT		0x40000000
+#define GX_XF_ONE_TEXCOORD		BIT(4)
+#define GX_CHANNEL_CONTROL_DISABLED	0x00000401
+
+#define GX_FLOAT_ONE			0x3f800000
+#define GX_FLOAT_NEG_ONE		0xbf800000
+#define GX_FLOAT_QUARTER		0x3e800000
+#define GX_FLOAT_NEG_FIVE		0xc0a00000
+#define GX_FLOAT_447			0x43df8000
+#define GX_FLOAT_573			0x440f4000
+#define GX_FLOAT_639			0x441fc000
+#define GX_FLOAT_671			0x4427c000
+
+#define CP_SR				0x00
+#define  CP_SR_IDLE_CMDS			0x0008
+#define  CP_SR_IDLE_READ			0x0004
+#define CP_CR				0x02
+#define  CP_CR_READ_ENABLE		0x0001
+#define  CP_CR_GP_LINK_ENABLE		0x0010
+#define CP_CLEAR			0x04
+#define  CP_CLEAR_OVERFLOW		0x0001
+#define  CP_CLEAR_UNDERFLOW		0x0002
+#define CP_FIFO_BASE_LO			0x20
+#define CP_FIFO_BASE_HI			0x22
+#define CP_FIFO_END_LO			0x24
+#define CP_FIFO_END_HI			0x26
+#define CP_FIFO_HIWAT_LO			0x28
+#define CP_FIFO_HIWAT_HI			0x2a
+#define CP_FIFO_LOWAT_LO			0x2c
+#define CP_FIFO_LOWAT_HI			0x2e
+#define CP_FIFO_RW_DIST_LO		0x30
+#define CP_FIFO_RW_DIST_HI		0x32
+#define CP_FIFO_WRITE_PTR_LO		0x34
+#define CP_FIFO_WRITE_PTR_HI		0x36
+#define CP_FIFO_READ_PTR_LO		0x38
+#define CP_FIFO_READ_PTR_HI		0x3a
+#define PE_ZCONF			0x00
+#define  PE_ZCONF_UPD_ENABLE		0x0010
+#define  PE_ZCONF_FUNC_ALWAYS		0x000e
+#define  PE_ZCONF_COMP_ENABLE		0x0001
+#define PE_ALPHA_CONF			0x02
+#define  PE_ALPHA_CONF_OP_SET		0xf000
+#define  PE_ALPHA_CONF_SRC_1		0x0100
+#define  PE_ALPHA_CONF_UPD_A		0x0010
+#define  PE_ALPHA_CONF_UPD_C		0x0008
+#define PE_ALPHA_DEST			0x04
+#define PE_ALPHA_MODE			0x06
+#define  PE_ALPHA_MODE_ALWAYS		0x0700
+#define PE_ALPHA_READ			0x08
+#define  PE_ALPHA_READ_UNK		0x0004
+#define  PE_ALPHA_READ_FF		0x0001
+#define PE_ISR				0x0a
+#define  PE_ISR_FINISH			0x0008
+#define  PE_ISR_FINISH_ENABLE		0x0002
+#define PI_INTSR			0x00
+#define PI_FIFO_BASE_START		0x0c
+#define PI_FIFO_BASE_END		0x10
+#define PI_FIFO_WRITE_PTR		0x14
+
+#define GX_FIFO_SIZE			4096
+#define GX_FIFO_HIWAT(size)		((size) - 32)
+#define GX_FIFO_LOWAT(size)		(((size) >> 1) & ~0x1f)
+#define GX_COPY_TIMEOUT_US		2000
+
+static void gx_ppcsync(void)
 {
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	uint32_t *src = (uint32_t *)info->screen_base;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
+	unsigned long flags;
+	u32 hid0;
 
-	/* divided by 4 as two 16bit units (read as a single uint32_t) are mapped to two YUYV pixels */
-	width = info->fix.line_length >> 2;
+	/*
+	 * HID0_ABE is only temporary.  In process context a decrementer IRQ
+	 * must not run with a foreign address-broadcast/coherency mode between
+	 * these two HID0 writes.
+	 */
+	local_irq_save(flags);
+	hid0 = mfspr(SPRN_HID0);
+	mtspr(SPRN_HID0, hid0 | HID0_ABE);
+	asm volatile("isync" : : : "memory");
+	asm volatile("sync" : : : "memory");
+	mtspr(SPRN_HID0, hid0);
+	asm volatile("isync" : : : "memory");
+	local_irq_restore(flags);
+}
 
-	while (height--) {
-		int j = width;
-		while (j--) {
-			uint32_t k = *(src + j);
-			*(dst + j) = rgbrgb16toycbycr(k);
+static void gx_set_wgpipe(phys_addr_t base)
+{
+	u32 value;
+
+	if (base)
+		mtspr(SPRN_WPAR_GEKKO, (u32)base);
+
+	value = mfspr(SPRN_HID2_GEKKO);
+	if (base)
+		value |= HID2_WPE;
+	else
+		value &= ~HID2_WPE;
+	mtspr(SPRN_HID2_GEKKO, value);
+	asm volatile("isync" : : : "memory");
+}
+
+/*
+ * Every GX command must be one uninterrupted write-gather stream.  The normal
+ * PowerPC MMIO accessors issue ordering operations around individual stores,
+ * which can split variable-width FIFO packets.  libogc uses plain volatile
+ * native-endian stores for this aperture.
+ */
+static inline void gx_fifo_write8(struct vi_ctl *ctl, u8 value)
+{
+	asm volatile("stb %0,0(%1)" : : "r"(value), "b"(ctl->wgpipe) :
+		     "memory");
+}
+
+static inline void gx_fifo_write16(struct vi_ctl *ctl, u16 value)
+{
+	asm volatile("sth %0,0(%1)" : : "r"(value), "b"(ctl->wgpipe) :
+		     "memory");
+}
+
+static inline void gx_fifo_write32(struct vi_ctl *ctl, u32 value)
+{
+	asm volatile("stw %0,0(%1)" : : "r"(value), "b"(ctl->wgpipe) :
+		     "memory");
+}
+
+static void gx_bp_set_reg(struct vi_ctl *ctl, u32 data)
+{
+	gx_fifo_write8(ctl, GX_CMD_LOAD_BP);
+	gx_fifo_write32(ctl, data);
+}
+
+static void gx_cp_load(struct vi_ctl *ctl, u8 addr, u32 data)
+{
+	gx_fifo_write8(ctl, GX_CMD_LOAD_CP);
+	gx_fifo_write8(ctl, addr);
+	gx_fifo_write32(ctl, data);
+}
+
+static void gx_xf_load(struct vi_ctl *ctl, u16 addr, u32 data)
+{
+	gx_fifo_write8(ctl, GX_CMD_LOAD_XF);
+	gx_fifo_write32(ctl, addr);
+	gx_fifo_write32(ctl, data);
+}
+
+static void gx_xf_load_multi(struct vi_ctl *ctl, u16 addr, u16 count,
+			     const u32 *data)
+{
+	u16 n;
+
+	gx_fifo_write8(ctl, GX_CMD_LOAD_XF);
+	gx_fifo_write32(ctl, ((u32)(count - 1) << 16) | addr);
+	for (n = 0; n < count; n++)
+		gx_fifo_write32(ctl, data[n]);
+}
+
+static void gx_init_indirect_map(struct vi_ctl *ctl)
+{
+	u32 linear[GX_INDIRECT_WIDTH * GX_INDIRECT_HEIGHT];
+	u16 *out = ctl->indirect_map;
+	unsigned int bx, by, x, y;
+
+	for (y = 0; y < GX_INDIRECT_HEIGHT; y++) {
+		for (x = 0; x < GX_INDIRECT_WIDTH; x++) {
+			unsigned int k = x >> 2;
+			unsigned int j = x & 3;
+			u8 s = 2 * y + 128;
+			u8 t = -4 * k + 3 * j + 128;
+			u8 u = k - y + 128;
+
+			/* RGBA bytes; GX consumes A/B/G as indirect S/T/U. */
+			linear[y * GX_INDIRECT_WIDTH + x] =
+				((u32)u << 16) | ((u32)t << 8) | s;
 		}
-		dst += width;
-		src += width;
+	}
+
+	/* Convert once to GX's 4x4, split AR/GB RGBA8 texture layout. */
+	for (by = 0; by < GX_INDIRECT_HEIGHT; by += 4) {
+		for (bx = 0; bx < GX_INDIRECT_WIDTH; bx += 4) {
+			for (y = 0; y < 4; y++) {
+				for (x = 0; x < 4; x++) {
+					u32 p = linear[(by + y) *
+						       GX_INDIRECT_WIDTH + bx + x];
+
+					*out++ = cpu_to_be16(((u16)(u8)p << 8) |
+							    (u8)(p >> 24));
+				}
+			}
+			for (y = 0; y < 4; y++) {
+				for (x = 0; x < 4; x++) {
+					u32 p = linear[(by + y) *
+						       GX_INDIRECT_WIDTH + bx + x];
+
+					*out++ = cpu_to_be16((u16)(u8)(p >> 16)
+							    << 8 |
+							    (u8)(p >> 8));
+				}
+			}
+		}
 	}
 }
 
-static void vi_transcode_RGB888(struct vi_ctl *ctl)
+static void gx_set_viewport(struct vi_ctl *ctl);
+static void gx_set_scissor(struct vi_ctl *ctl, u32 width, u32 height);
+
+static void gx_setup_indirect_renderer(struct vi_ctl *ctl)
 {
-	/* Copy and convert contents of virtual framebuffer,
-	 * uses a secondary buffer to check data which needs to be copied */
-	struct fb_info *info = ctl->info;
-	unsigned int width;
-	unsigned int height = info->var.yres;
-	/* address of the virtual framebuffer */
-	union double_rgba_pixel_t *src = (union double_rgba_pixel_t *)info->screen_base;
-	/* address of the memory-mapped physical framebuffer */
-	uint32_t *dst = fb_mem;
+	u32 width = ctl->mode->width;
+	u32 height = ctl->mode->height;
+	const u32 fb_tex_mtx[] = {
+		GX_FLOAT_QUARTER, 0, 0, 0,	/* S = TEX0.s / 4 */
+		0, GX_FLOAT_ONE, 0, 0,	/* T = TEX0.t */
+	};
+	const u32 ind_coord_mtx[] = {
+		width == GX_WIDE_EFB_WIDTH ? 0x42280000 : 0x42200000, 0, 0, 0,
+		0, height == GX_TALL_EFB_HEIGHT ? 0x430f8000 : 0x42e00000, 0, 0,
+	};
+	const u32 projection[] = {
+		width == GX_WIDE_EFB_WIDTH ? 0x3b43569b : 0x3b4d1ed9,
+		GX_FLOAT_NEG_ONE,
+		height == GX_TALL_EFB_HEIGHT ? 0xbb64bf38 : 0xbb929cec,
+		GX_FLOAT_ONE,
+		0xbb5a740e,
+		GX_FLOAT_NEG_ONE,
+		1,	/* GX_ORTHOGRAPHIC */
+	};
+	const u32 position_mtx[] = {
+		GX_FLOAT_ONE, 0, 0, 0,
+		0, GX_FLOAT_ONE, 0, 0,
+		0, 0, GX_FLOAT_ONE, GX_FLOAT_NEG_FIVE,
+	};
+	const u32 dual_tex_identity[] = {
+		GX_FLOAT_ONE, 0, 0, 0,
+		0, GX_FLOAT_ONE, 0, 0,
+		0, 0, GX_FLOAT_ONE, 0,
+	};
+	const u32 gen_mode = GX_GEN_NUM_TEXGENS(2) | GX_GEN_NUM_CHANS(1) |
+			     GX_GEN_NUM_INDSTAGES(1);
+	const u32 matrix_index = (GX_TEXMTX0 << 6) | (GX_TEXMTX1 << 12);
 
-	/* divided by 8 as two 32bit units (read as two uint32_t) are mapped to two YUYV pixels (2 16bit values) */
-	width = info->fix.line_length >> 3;
+	/*
+	 * GX starts from undefined state on this boot chain.  Match GX_Init's
+	 * default GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+	 * otherwise PE may discard every rasterized texture fragment.
+	 */
+	gx_bp_set_reg(ctl, BP_REG_ALPHA_COMPARE |
+		      GX_ALPHA_COMPARE_ALWAYS);
 
-	while (height--) {
-		int j = width;
-		while (j--) {
-			union double_rgba_pixel_t k = *(src + j);
-			*(dst + j) = rgb32rgb32toycbycr(k);
-		}
-		dst += width;
-		src += width;
+	/* Direct XY float position and direct ST float texture coordinate. */
+	gx_cp_load(ctl, GX_CP_VCD_LO, GX_VCD_POS_XY_DIRECT);
+	gx_cp_load(ctl, GX_CP_VCD_HI, GX_VCD_TEX0_ST_DIRECT);
+	gx_cp_load(ctl, GX_CP_VAT_A(0), GX_VAT_POS_XY_TEX0_ST_F32);
+	gx_cp_load(ctl, GX_CP_VAT_B(0), GX_VAT_B_DEFAULT);
+	gx_cp_load(ctl, GX_CP_VAT_C(0), 0);
+	gx_xf_load(ctl, GX_XF_INVTXSPEC, GX_XF_ONE_TEXCOORD);
+
+	/* TEX0 drives two differently-scaled generated coordinates. */
+	gx_cp_load(ctl, GX_CP_MATRIX_INDEX_A, matrix_index);
+	gx_xf_load(ctl, GX_XF_MATRIX_INDEX_A, matrix_index);
+	gx_xf_load_multi(ctl, GX_XF_POS_MTX0, ARRAY_SIZE(position_mtx),
+			 position_mtx);
+	gx_xf_load(ctl, GX_XF_NUMTEXGENS, 2);
+	/*
+	 * Match GX_SetNumChans(1) in the working libogc program.  TEX0 is
+	 * replaced by TEV, but the stage is still ordered against COLOR0A0.
+	 */
+	gx_xf_load(ctl, GX_XF_NUMCOLORS, 1);
+	gx_xf_load(ctl, GX_XF_AMBIENT0, 0);
+	gx_xf_load(ctl, GX_XF_MATERIAL0, 0xffffffff);
+	gx_xf_load(ctl, GX_XF_COLOR0CNTRL, GX_CHANNEL_CONTROL_DISABLED);
+	gx_xf_load(ctl, GX_XF_ALPHA0CNTRL, GX_CHANNEL_CONTROL_DISABLED);
+	gx_xf_load(ctl, GX_XF_TEXGEN(0), GX_TEXGEN_SRC_TEX0);
+	gx_xf_load(ctl, GX_XF_DUAL_TEXGEN(0), GX_DTTIDENTITY);
+	gx_xf_load(ctl, GX_XF_TEXGEN(1), GX_TEXGEN_SRC_TEX0);
+	gx_xf_load(ctl, GX_XF_DUAL_TEXGEN(1), GX_DTTIDENTITY);
+	/*
+	 * GX_SetTexCoordGen() selects GX_DTTIDENTITY as the dual/post
+	 * transform.  GX_Init() uploads that 3x4 identity matrix at XF 0x5f4;
+	 * unlike the primary texture matrices, it is not hardware reset state.
+	 * Leaving it undefined corrupts both generated texture coordinates.
+	 */
+	gx_xf_load_multi(ctl, GX_XF_DUAL_TEX_MTX(GX_DTTIDENTITY),
+			 ARRAY_SIZE(dual_tex_identity),
+			 dual_tex_identity);
+	gx_xf_load_multi(ctl, GX_XF_TEX_MTX(GX_TEXMTX0),
+			 ARRAY_SIZE(fb_tex_mtx),
+			 fb_tex_mtx);
+	gx_xf_load_multi(ctl, GX_XF_TEX_MTX(GX_TEXMTX1),
+			 ARRAY_SIZE(ind_coord_mtx),
+			 ind_coord_mtx);
+	gx_xf_load_multi(ctl, GX_XF_PROJECTION, ARRAY_SIZE(projection),
+			 projection);
+
+	/* Linear RGB565 framebuffer on map 0. */
+	gx_bp_set_reg(ctl, BP_REG_TEX_MODE0(0) | GX_TEX_DISABLE_EDGE_LOD);
+	gx_bp_set_reg(ctl, BP_REG_TEX_MODE1(0));
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE0(0) |
+		      GX_TEX_IMAGE_SIZE(GX_TEX_FORMAT_RGB565, width, height));
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE1(0) | GX_TMEM_MAP0_EVEN);
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE2(0) | GX_TMEM_MAP0_ODD);
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE3(0) |
+		      GX_TEX_IMAGE_ADDR(ctl->rgb_fb_dma));
+
+	/* Repeating 16x4 RGBA8 indirect map on map 1. */
+	gx_bp_set_reg(ctl, BP_REG_TEX_MODE0(1) | GX_TEX_DISABLE_EDGE_LOD |
+		      GX_TEX_WRAP_REPEAT_S | GX_TEX_WRAP_REPEAT_T);
+	gx_bp_set_reg(ctl, BP_REG_TEX_MODE1(1));
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE0(1) |
+		      GX_TEX_IMAGE_SIZE(GX_TEX_FORMAT_RGBA8,
+					GX_INDIRECT_WIDTH, GX_INDIRECT_HEIGHT));
+	/*
+	 * Wii libogc assigns ordinary (non-CI/CMPR) map 1 to texture region
+	 * 9: even TMEM at 0x10000 and odd TMEM at 0x90000.  RGBA8 consumes
+	 * both planes, so using the generic map-1 region here is not equivalent.
+	 */
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE1(1) |
+		      GX_TMEM_MAP1_RGBA8_EVEN);
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE2(1) |
+		      GX_TMEM_MAP1_RGBA8_ODD);
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE3(1) |
+		      GX_TEX_IMAGE_ADDR(ctl->indirect_map_dma));
+
+	/* Texture extents/wrap for generated coordinate 0 and 1. */
+	gx_bp_set_reg(ctl, BP_REG_SU_SSIZE(0) | (width - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_TSIZE(0) | (height - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_SSIZE(1) | GX_SU_RANGE_BIAS |
+		      (GX_INDIRECT_WIDTH - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_TSIZE(1) | GX_SU_RANGE_BIAS |
+		      (GX_INDIRECT_HEIGHT - 1));
+
+	/* One-stage replace TEV using the indirect framebuffer correction. */
+	gx_bp_set_reg(ctl, BP_REG_GEN_MODE | gen_mode);
+	gx_bp_set_reg(ctl, BP_REG_TEV_ORDER |
+		      GX_TEV_ORDER_TEXCOORD0_MAP0);
+	/*
+	 * GX_SetTevOp(GX_TEVSTAGE0, GX_REPLACE): A/B/C must explicitly use
+	 * the ZERO selectors; their zero-valued encodings select CPREV/APREV.
+	 */
+	gx_bp_set_reg(ctl, BP_REG_TEV_COLOR_ENV(0) |
+		      GX_TEV_REPLACE_COLOR);
+	gx_bp_set_reg(ctl, BP_REG_TEV_ALPHA_ENV(0) |
+		      GX_TEV_REPLACE_ALPHA);
+	gx_bp_set_reg(ctl, BP_REG_IND_IMASK);
+	gx_bp_set_reg(ctl, BP_REG_IND_ORDER |
+		      GX_IND_ORDER_TEXCOORD1_MAP1);
+	gx_bp_set_reg(ctl, BP_REG_IND_SCALE);
+	gx_bp_set_reg(ctl, BP_REG_IND_MTX_A |
+		      (width == GX_WIDE_EFB_WIDTH ? GX_IND_MTX_A_672 :
+		       GX_IND_MTX_A_640));
+	gx_bp_set_reg(ctl, BP_REG_IND_MTX_B | GX_IND_MTX_B);
+	gx_bp_set_reg(ctl, BP_REG_IND_MTX_C | GX_IND_MTX_C);
+	gx_bp_set_reg(ctl, BP_REG_TEV_INDIRECT(0) |
+		      GX_TEV_INDIRECT_RGB565);
+
+	/*
+	 * Re-emit SU state after the final texture/coordinate association.
+	 * This matches the point at which libogc's dirty-state flush derives
+	 * these registers from GX_SetTevOrder()/GX_SetIndTexOrder().
+	 */
+	gx_bp_set_reg(ctl, BP_REG_SU_SSIZE(0) | (width - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_TSIZE(0) | (height - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_SSIZE(1) | GX_SU_RANGE_BIAS |
+		      (GX_INDIRECT_WIDTH - 1));
+	gx_bp_set_reg(ctl, BP_REG_SU_TSIZE(1) | GX_SU_RANGE_BIAS |
+		      (GX_INDIRECT_HEIGHT - 1));
+}
+
+static void gx_draw_framebuffer(struct vi_ctl *ctl)
+{
+	u32 width = ctl->mode->width == GX_WIDE_EFB_WIDTH ?
+		    GX_FLOAT_671 : GX_FLOAT_639;
+	u32 height = ctl->mode->height == GX_TALL_EFB_HEIGHT ?
+		     GX_FLOAT_573 : GX_FLOAT_447;
+
+	/*
+	 * Match GX_InvalidateTexAll().  The RGB565 framebuffer is CPU-written,
+	 * so GX must not reuse texture-cache lines from the preceding frame.
+	 */
+	gx_bp_set_reg(ctl, BP_REG_IND_IMASK);
+	gx_bp_set_reg(ctl, BP_REG_TEXTURE_INVALIDATE |
+		      GX_INVALIDATE_TEX_ALL_0);
+	gx_bp_set_reg(ctl, BP_REG_TEXTURE_INVALIDATE |
+		      GX_INVALIDATE_TEX_ALL_1);
+	gx_bp_set_reg(ctl, BP_REG_IND_IMASK);
+	gx_fifo_write8(ctl, GX_CMD_INVALIDATE_VTX);
+
+	/* XY/F32 position followed by ST/F32, exactly as declared by VCD/VAT0. */
+	gx_fifo_write8(ctl, GX_CMD_QUADS_VTXFMT0);
+	gx_fifo_write16(ctl, 4);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, width);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, GX_FLOAT_ONE);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, width);
+	gx_fifo_write32(ctl, height);
+	gx_fifo_write32(ctl, GX_FLOAT_ONE);
+	gx_fifo_write32(ctl, GX_FLOAT_ONE);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, height);
+	gx_fifo_write32(ctl, 0);
+	gx_fifo_write32(ctl, GX_FLOAT_ONE);
+}
+
+static void gx_set_viewport(struct vi_ctl *ctl)
+{
+	u32 data[] = {
+		ctl->mode->width == GX_WIDE_EFB_WIDTH ? 0x43a80000 : 0x43a00000,
+		ctl->mode->height == GX_TALL_EFB_HEIGHT ? 0xc38f8000 : 0xc3600000,
+		0x4b7fffff,
+		ctl->mode->width == GX_WIDE_EFB_WIDTH ? 0x44298000 : 0x44258000,
+		ctl->mode->height == GX_TALL_EFB_HEIGHT ? 0x441d4000 : 0x440d8000,
+		0x4b7fffff,
+	};
+
+	gx_xf_load_multi(ctl, GX_XF_VIEWPORT, ARRAY_SIZE(data), data);
+}
+
+static void gx_set_scissor(struct vi_ctl *ctl, u32 width, u32 height)
+{
+	u32 xo = 0x156;
+	u32 yo = 0x156;
+
+	gx_bp_set_reg(ctl, BP_REG_SCISSOR_TL | yo | (xo << 12));
+	gx_bp_set_reg(ctl, BP_REG_SCISSOR_BR |
+		      (yo + height - 1) | ((xo + width - 1) << 12));
+	gx_bp_set_reg(ctl, BP_REG_SCISSOR_OFFSET |
+		      GX_COORDS(xo >> 1, yo >> 1));
+}
+
+static void gx_flush(struct vi_ctl *ctl)
+{
+	int n;
+
+	/* A CP read orders preceding writes before the gather-pipe flush. */
+	in_be16(ctl->cp_base + CP_CR);
+	for (n = 0; n < 8; n++)
+		gx_fifo_write32(ctl, 0);
+	gx_ppcsync();
+}
+
+static int gx_clear_pe_finish(struct vi_ctl *ctl)
+{
+	u32 cause;
+	u16 status;
+	int error;
+
+	out_be16(ctl->pe_base + PE_ISR,
+		 PE_ISR_FINISH_ENABLE | PE_ISR_FINISH);
+	gx_ppcsync();
+	error = read_poll_timeout_atomic(in_be16, status,
+					 !(status & PE_ISR_FINISH), 1,
+					 GX_COPY_TIMEOUT_US, false,
+					 ctl->pe_base + PE_ISR);
+	if (error)
+		goto timeout;
+
+	/* Do not mistake a stale cascaded PE cause for the next copy. */
+	error = read_poll_timeout_atomic(in_be32, cause, !(cause & BIT(10)), 1,
+					 GX_COPY_TIMEOUT_US, false,
+					 ctl->pi_base + PI_INTSR);
+	if (!error)
+		return 0;
+
+timeout:
+	udbg_printf(DRV_MODULE_NAME
+		    ": could not clear PE finish: PI=%08x PE=%04x\n",
+		    in_be32(ctl->pi_base + PI_INTSR),
+		    in_be16(ctl->pe_base + PE_ISR));
+	return error;
+}
+
+static int gx_arm_pe_finish(struct vi_ctl *ctl)
+{
+	atomic_set(&ctl->pe_finished, 0);
+	return gx_clear_pe_finish(ctl);
+}
+
+static int gx_wait_pe_finish(struct vi_ctl *ctl, const char *phase)
+{
+	int done;
+	int error;
+
+	/*
+	 * The PE interrupt handler validates PE_ISR_FINISH before publishing
+	 * completion.  Keep this wait bounded: if GX has wedged, continuing to
+	 * append frames only overwrites the FIFO and obscures the first fault.
+	 */
+	local_irq_enable();
+	error = read_poll_timeout_atomic(atomic_read, done, done, 1,
+					 GX_COPY_TIMEOUT_US, false,
+					 &ctl->pe_finished);
+	local_irq_disable();
+
+	if (error)
+		udbg_printf(DRV_MODULE_NAME
+			    ": PE %s timeout: PI=%08x PE=%04x CP=%04x dist=%04x%04x write=%04x%04x read=%04x%04x\n",
+			    phase,
+			    in_be32(ctl->pi_base + PI_INTSR),
+			    in_be16(ctl->pe_base + PE_ISR),
+			    in_be16(ctl->cp_base + CP_SR),
+			    in_be16(ctl->cp_base + CP_FIFO_RW_DIST_HI),
+			    in_be16(ctl->cp_base + CP_FIFO_RW_DIST_LO),
+			    in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI),
+			    in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO),
+			    in_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI),
+			    in_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO));
+
+	return error;
+}
+
+static int gx_wait_cp_idle(struct vi_ctl *ctl)
+{
+	u16 status;
+	int error;
+
+	error = read_poll_timeout(in_be16, status,
+				  (status & (CP_SR_IDLE_CMDS |
+					     CP_SR_IDLE_READ)) ==
+				  (CP_SR_IDLE_CMDS | CP_SR_IDLE_READ),
+				  1, GX_COPY_TIMEOUT_US, false,
+				  ctl->cp_base + CP_SR);
+	if (error) {
+		dev_err(ctl->dev,
+			"GX CP did not become idle: SR=%#x distance=%04x%04x write=%04x%04x read=%04x%04x\n",
+			status,
+			in_be16(ctl->cp_base + CP_FIFO_RW_DIST_HI),
+			in_be16(ctl->cp_base + CP_FIFO_RW_DIST_LO),
+			in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI),
+			in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO),
+			in_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI),
+			in_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO));
+		return error;
 	}
+
+	return 0;
+}
+
+static int gx_init(struct vi_ctl *ctl)
+{
+	u32 fifo_base, fifo_end, fifo_hiwat, fifo_lowat;
+	u32 bus_clock = 243000000;
+	u32 clock_div;
+	u16 tmp;
+	int error, n;
+
+	dma_coerce_mask_and_coherent(ctl->dev, DMA_BIT_MASK(32));
+	ctl->fifo = dma_alloc_noncoherent(ctl->dev, GX_FIFO_SIZE,
+					  &ctl->fifo_dma, DMA_BIDIRECTIONAL,
+					  GFP_KERNEL);
+	if (!ctl->fifo)
+		return -ENOMEM;
+
+	fifo_base = (u32)ctl->fifo_dma;
+	fifo_end = fifo_base + GX_FIFO_SIZE - 4;
+	fifo_hiwat = GX_FIFO_HIWAT(GX_FIFO_SIZE);
+	fifo_lowat = GX_FIFO_LOWAT(GX_FIFO_SIZE);
+	gx_set_wgpipe(0);
+	out_be16(ctl->cp_base + CP_CR, 0);
+	out_be16(ctl->cp_base + CP_CLEAR,
+		 CP_CLEAR_UNDERFLOW | CP_CLEAR_OVERFLOW);
+	out_be16(ctl->cp_base + CP_FIFO_BASE_LO, fifo_base);
+	out_be16(ctl->cp_base + CP_FIFO_BASE_HI, fifo_base >> 16);
+	out_be16(ctl->cp_base + CP_FIFO_END_LO, fifo_end);
+	out_be16(ctl->cp_base + CP_FIFO_END_HI, fifo_end >> 16);
+	out_be16(ctl->cp_base + CP_FIFO_HIWAT_LO, fifo_hiwat);
+	out_be16(ctl->cp_base + CP_FIFO_HIWAT_HI, fifo_hiwat >> 16);
+	out_be16(ctl->cp_base + CP_FIFO_LOWAT_LO, fifo_lowat);
+	out_be16(ctl->cp_base + CP_FIFO_LOWAT_HI, fifo_lowat >> 16);
+	out_be16(ctl->cp_base + CP_FIFO_RW_DIST_LO, 0);
+	out_be16(ctl->cp_base + CP_FIFO_RW_DIST_HI, 0);
+	out_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO, fifo_base);
+	out_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI, fifo_base >> 16);
+	out_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO, fifo_base);
+	out_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI, fifo_base >> 16);
+	gx_ppcsync();
+
+	out_be32(ctl->pi_base + PI_FIFO_BASE_START, fifo_base);
+	out_be32(ctl->pi_base + PI_FIFO_BASE_END, fifo_end);
+	out_be32(ctl->pi_base + PI_FIFO_WRITE_PTR, fifo_base);
+	gx_ppcsync();
+
+	out_be16(ctl->cp_base + CP_CR, CP_CR_GP_LINK_ENABLE);
+	tmp = in_be16(ctl->cp_base + CP_CR);
+	out_be16(ctl->cp_base + CP_CR, tmp | CP_CR_READ_ENABLE);
+
+	out_be16(ctl->pe_base + PE_ZCONF,
+		 PE_ZCONF_UPD_ENABLE | PE_ZCONF_FUNC_ALWAYS |
+		 PE_ZCONF_COMP_ENABLE);
+	out_be16(ctl->pe_base + PE_ALPHA_CONF,
+		 PE_ALPHA_CONF_OP_SET | PE_ALPHA_CONF_SRC_1 |
+		 PE_ALPHA_CONF_UPD_A | PE_ALPHA_CONF_UPD_C);
+	out_be16(ctl->pe_base + PE_ALPHA_DEST, 0);
+	out_be16(ctl->pe_base + PE_ALPHA_MODE, PE_ALPHA_MODE_ALWAYS);
+	out_be16(ctl->pe_base + PE_ALPHA_READ,
+		 PE_ALPHA_READ_UNK | PE_ALPHA_READ_FF);
+
+	gx_set_wgpipe(ctl->gx_fifo_base);
+	for (n = 0; n < 8; n++) {
+		gx_cp_load(ctl, GX_CP_VAT_A(n), GX_VAT_A_DEFAULT);
+		gx_cp_load(ctl, GX_CP_VAT_B(n), GX_VAT_B_DEFAULT);
+		gx_cp_load(ctl, GX_CP_VAT_C(n), 0);
+	}
+	gx_cp_load(ctl, GX_CP_PERF_MODE, 0);
+	gx_xf_load(ctl, GX_XF_ERROR, 0x3f);
+	gx_xf_load(ctl, GX_XF_CLIP_DISABLE, 0); /* clipping enabled */
+	gx_xf_load(ctl, GX_XF_DUALTEX, 1);
+	gx_xf_load(ctl, GX_XF_GP_METRIC, 0);
+
+	gx_bp_set_reg(ctl, BP_REG_GEN_MODE | GX_GEN_NUM_TEXGENS(1));
+	gx_bp_set_reg(ctl, BP_REG_DISPLAY_COPY_FILTER(0) | 0x666666);
+	gx_bp_set_reg(ctl, BP_REG_DISPLAY_COPY_FILTER(1) | 0x666666);
+	gx_bp_set_reg(ctl, BP_REG_DISPLAY_COPY_FILTER(2) | 0x666666);
+	gx_bp_set_reg(ctl, BP_REG_DISPLAY_COPY_FILTER(3) | 0x666666);
+	gx_bp_set_reg(ctl, BP_REG_LINE_POINT_WIDTH | 0x000606);
+	gx_bp_set_reg(ctl, BP_REG_PERF0_TRI);
+	gx_bp_set_reg(ctl, BP_REG_PERF0_QUAD);
+	/*
+	 * GX_Init() derives these two pipeline clock values from the external
+	 * bus clock.  Do not inherit them from the boot environment: CP can
+	 * consume commands while an incorrectly clocked raster pipeline fails
+	 * to produce pixels.
+	 */
+	of_property_read_u32(ctl->dev->of_node->parent, "clock-frequency",
+			     &bus_clock);
+	clock_div = bus_clock / 500;
+	gx_bp_set_reg(ctl, BP_REG_BUS_CLOCK1 |
+		      (clock_div >> 11) | 0x0400);
+	clock_div /= 4224;
+	gx_bp_set_reg(ctl, BP_REG_BUS_CLOCK0 | clock_div | 0x0200);
+	gx_bp_set_reg(ctl, BP_REG_CONSTANT_ALPHA);
+	gx_bp_set_reg(ctl, BP_REG_FIELD_MASK | 3);
+	gx_bp_set_reg(ctl, BP_REG_PE_CONTROL);
+	gx_bp_set_reg(ctl, BP_REG_COPY_FILTER0 | 0x595000);
+	gx_bp_set_reg(ctl, BP_REG_COPY_FILTER1 | 0x000015);
+	gx_bp_set_reg(ctl, BP_REG_CLEAR_BBOX1 | 0x0003ff);
+	gx_bp_set_reg(ctl, BP_REG_CLEAR_BBOX2 | 0x0003ff);
+	gx_bp_set_reg(ctl, BP_REG_REVISION_BITS | 0x00000f);
+	gx_bp_set_reg(ctl, BP_REG_PERF1);
+	/* Opaque black copy-clear color and maximum Z. */
+	gx_bp_set_reg(ctl, BP_REG_COPY_CLEAR_AR);
+	gx_bp_set_reg(ctl, BP_REG_COPY_CLEAR_GB);
+	gx_bp_set_reg(ctl, BP_REG_COPY_CLEAR_Z | 0xffffff);
+
+	gx_set_viewport(ctl);
+	gx_set_scissor(ctl, ctl->mode->width, ctl->mode->height);
+	gx_bp_set_reg(ctl, BP_REG_ZMODE | 0x1f);
+	if (ctl->mode->height == GX_TALL_EFB_HEIGHT)
+		gx_bp_set_reg(ctl, BP_REG_COPY_Y_SCALE | 0x127);
+	gx_bp_set_reg(ctl, BP_REG_BLEND_MODE | 0x4bc);
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MIN | GX_COORDS(0, 0));
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MAX |
+		      GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
+	gx_bp_set_reg(ctl, BP_REG_XFB_STRIDE | (ctl->mode->width >> 4));
+	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR |
+		      GX_TEX_IMAGE_ADDR(gx_xfb_start));
+	gx_setup_indirect_renderer(ctl);
+
+	gx_flush(ctl);
+	error = gx_wait_cp_idle(ctl);
+	if (error)
+		return error;
+	return 0;
+}
+
+static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
+{
+	u32 copy_mask = ctl->mode->height == GX_TALL_EFB_HEIGHT ?
+			PE_COPY_EXECUTE_YSCALE : 0;
+	int error;
+
+	/*
+	 * The VI handler entered with local interrupts disabled on the only CPU.
+	 * Userspace cannot resume while it waits for GX rendering and copying.
+	 */
+	if (READ_ONCE(ctl->gx_faulted))
+		return;
+
+	dma_sync_single_for_device(ctl->dev, ctl->rgb_fb_dma,
+				   ctl->rgb_fb_size, DMA_TO_DEVICE);
+	error = gx_arm_pe_finish(ctl);
+	if (error)
+		goto fault;
+	gx_draw_framebuffer(ctl);
+	gx_bp_set_reg(ctl, BP_REG_PE_DONE | PE_DONE_TRIGGER);
+	gx_flush(ctl);
+	error = gx_wait_pe_finish(ctl, "render");
+	if (error)
+		goto fault;
+	error = gx_arm_pe_finish(ctl);
+	if (error)
+		goto fault;
+
+	gx_bp_set_reg(ctl, BP_REG_PE_COPY_EXECUTE |
+		      PE_COPY_EXECUTE_TO_XFB | PE_COPY_EXECUTE_CLAMP |
+		      copy_mask);
+	gx_bp_set_reg(ctl, BP_REG_PE_DONE | PE_DONE_TRIGGER);
+	gx_flush(ctl);
+	error = gx_wait_pe_finish(ctl, "copy");
+	if (error)
+		goto fault;
+	dma_sync_single_for_cpu(ctl->dev, ctl->rgb_fb_dma,
+				ctl->rgb_fb_size, DMA_TO_DEVICE);
+	return;
+
+fault:
+	WRITE_ONCE(ctl->gx_faulted, true);
+	dma_sync_single_for_cpu(ctl->dev, ctl->rgb_fb_dma,
+				ctl->rgb_fb_size, DMA_TO_DEVICE);
+	udbg_printf(DRV_MODULE_NAME
+		    ": disabling GX submissions after completion failure\n");
 }
 
 static void vi_dispatch_vtrace(struct vi_ctl *ctl)
@@ -1426,22 +2083,7 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	if (vi_dix_get_irq(val)) {
 		ctl->in_vtrace = 1;
 
-		switch (vfb_format) {
-			case V4L2_PIX_FMT_YUYV:
-				/* do nothing */
-			break;
-			case V4L2_PIX_FMT_RGB565:
-				/* RGB565 -> YUYV */
-				vi_transcode_RGB565(ctl);
-				break;
-			case PIX_FMT_RGB888:
-				/* (RGB32, RGB32) to YUYV */
-				vi_transcode_RGB888(ctl);
-				break;
-			default:
-				BUG();
-				break;
-		}
+		gx_copy_efb_to_xfb(ctl);
 
 		vi_dispatch_vtrace(ctl);
 
@@ -1450,6 +2092,23 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	}
 
 	return IRQ_NONE;
+}
+
+static irqreturn_t pe_irq_handler(int irq, void *dev)
+{
+	struct fb_info *info = dev_get_drvdata((struct device *)dev);
+	struct vi_ctl *ctl = info->par;
+
+	/*
+	 * IRQ 10 is the dedicated PE-finish interrupt.  PE_ISR_FINISH is not
+	 * reliably observable as set by the time Broadway enters this handler;
+	 * libogc and JoJo's driver therefore acknowledge the IRQ without using
+	 * that bit as an additional qualification.
+	 */
+	out_be16(ctl->pe_base + PE_ISR,
+		 PE_ISR_FINISH_ENABLE | PE_ISR_FINISH);
+	atomic_set(&ctl->pe_finished, 1);
+	return IRQ_HANDLED;
 }
 
 #ifdef CONFIG_WII_AVE_RVL
@@ -1805,6 +2464,10 @@ static int vifb_setcolreg(unsigned regno, unsigned red, unsigned green,
 	case 15:
 	case 24:
 	case 32:
+		((u32 *)info->pseudo_palette)[regno] =
+			((red >> 8) << 16) |
+			((green >> 8) << 8) |
+			(blue >> 8);
 		break;
 	}
 	return 0;
@@ -1861,7 +2524,6 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	struct vi_ctl *ctl = info->par;
 	struct vi_tv_mode *mode = ctl->mode;
 	int error = -EINVAL;
-	unsigned int bytes_per_pixel;
 	__u32 xres, yres, xres_virtual, yres_virtual;
 
 	/* no custom viewports, sorry */
@@ -1871,44 +2533,23 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		return -EINVAL;
 	}
 
-	if (vifb_format_is_fourcc(var)) {
-		/* only the native YUYV format is supported */
-		if (var->grayscale != V4L2_PIX_FMT_YUYV) {
-			return -EINVAL;
-		}
+	if (vifb_format_is_fourcc(var))
+		return -EINVAL;
 
-		/* YUYV a.k.a. YUY2 */
-		var->bits_per_pixel = 16;
-		var->colorspace = V4L2_PIX_FMT_YUYV; /* only for FOURCC-based modes */
-		var->nonstd = V4L2_PIX_FMT_YUYV;
+	var->nonstd = 0;
+	if (var->bits_per_pixel == 16) {
+		var->red.offset = 11;
+		var->red.length = 5;
+		var->green.offset = 5;
+		var->green.length = 6;
+		var->blue.offset = 0;
+		var->blue.length = 5;
+		var->transp.offset = 0;
+		var->transp.length = 0;
 	} else {
-		var->nonstd = 0;
-
-		/* emulated RGB colorspaces */
-		if (var->bits_per_pixel == 16) {			/* RGB565 */
-			var->red.offset = 11;
-			var->red.length = 5;
-			var->green.offset = 5;
-			var->green.length = 6;
-			var->blue.offset = 0;
-			var->blue.length = 5;
-			var->transp.offset = 0;
-			var->transp.length = 0;
-		} else if (var->bits_per_pixel == 32) {		/* RGB888 */
-			var->red.offset = 16;
-			var->red.length = 8;
-			var->green.offset = 8;
-			var->green.length = 8;
-			var->blue.offset = 0;
-			var->blue.length = 8;
-			/* transparency is effectively ignored */
-			var->transp.offset = 24;
-			var->transp.length = 8;
-		} else {
-			dev_err(info->device, "unsupported depth %u\n",
-					var->bits_per_pixel);
-			return -EINVAL;
-		}
+		dev_err(info->device, "unsupported depth %u\n",
+			var->bits_per_pixel);
+		return -EINVAL;
 	}
 
 	var->grayscale = 0;
@@ -1947,9 +2588,8 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (!xres_virtual || xres_virtual < xres)
 		xres_virtual = xres;
 
-	bytes_per_pixel = var->bits_per_pixel / 8;
-	if (xres_virtual * yres_virtual * bytes_per_pixel >
-		info->fix.smem_len) {
+	if (xres_virtual * yres_virtual * sizeof(u16) >
+	    ctl->rgb_fb_size) {
 		dev_err(info->device, "not enough memory for virtual resolution (%ux%ux%u)\n",
 			   xres_virtual, yres_virtual, var->bits_per_pixel);
 		return -EINVAL;
@@ -1975,30 +2615,17 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	return 0;
 }
 
-static void vifb_clear_all(void)
+static void vifb_clear_all(struct fb_info *info)
 {
+	u32 *xfb;
 	int i;
-	uint32_t *j;
-	/* clear virtual framebuffer */
-	switch (vfb_format)
-	{
-		case V4L2_PIX_FMT_YUYV:
-			/* no framebuffer to clean */
-			break;
-		case V4L2_PIX_FMT_RGB565:
-		case PIX_FMT_RGB888:
-			memset(vfb_mem, 0, vfb_len);
-			break;
-		default:
-			BUG();
-			return;
-	}
-	/* clear screen */
-	i = gx_fb_size >> 2;
-	j = (uint32_t *)fb_mem;
-	while (i--) {
-		*(j++) = 0x10801080;
-	}
+
+	memset(info->screen_buffer, 0, info->screen_size);
+
+	i = gx_xfb_size >> 2;
+	xfb = xfb_mem;
+	while (i--)
+		*(xfb++) = VI_YUYV_BLACK;
 }
 
 /*
@@ -2014,43 +2641,24 @@ static int vifb_set_par(struct fb_info *info)
 	int error;
 #endif
 
-	/* horizontal line in bytes, refers to virtual framebuffer */
-	info->fix.line_length = var->xres_virtual * (var->bits_per_pixel / 8);
+	if (vifb_format_is_fourcc(var) || var->bits_per_pixel != 16)
+		return -EINVAL;
 
-	if (vifb_format_is_fourcc(var)) {
-		vfb_format = var->nonstd;
-		if (vfb_format != V4L2_PIX_FMT_YUYV) {
-			BUG();
-			return -EINVAL;
-		}
-		info->fix.visual = FB_VISUAL_FOURCC;
-	} else {
-		/* Set internal vfb format and define desired framebuffer size;
-		 * it can either be same size of video card physical framebuffer,
-		 * or double size for RGB888 */
-		if (info->var.bits_per_pixel == 16) {
-			vfb_format = V4L2_PIX_FMT_RGB565;
-		} else if (info->var.bits_per_pixel == 32) {
-			vfb_format = PIX_FMT_RGB888;
-		} else {
-			BUG();
-			return -EINVAL;
-		}
-		/* buffer-backed framebuffers always read fast */
-		info->flags |= FBINFO_READS_FAST | FBINFO_VIRTFB;
-	}
-
+	info->fix.line_length = var->xres_virtual * sizeof(u16);
+	info->fix.smem_len = info->fix.line_length * var->yres_virtual;
+	info->screen_size = info->fix.smem_len;
+	info->fix.visual = FB_VISUAL_TRUECOLOR;
 	/* info->fix.smem_* refer to the virtual framebuffer, here however
 	 * we want to store physical fb info, namely the
 	 * addresses of the two pages used for flipping
 	 */
-	gx_ll = vifb_adjust_ll(info->fix.line_length);
-	ctl->page_address[0] = gx_fb_start;
-	if (var->yres * gx_ll <= gx_fb_size / 2)
+	gx_ll = VI_XFB_WIDTH * TV_BYTES_PER_PIXEL;
+	ctl->page_address[0] = gx_xfb_start;
+	if (var->yres * gx_ll <= gx_xfb_size / 2)
 		ctl->page_address[1] =
-		    gx_fb_start + var->yres * gx_ll;
+		    gx_xfb_start + var->yres * gx_ll;
 	else /* this is weird but I don't understand it, so I don't touch it */
-		ctl->page_address[1] = gx_fb_start;
+		ctl->page_address[1] = gx_xfb_start;
 
 	/* set page 1 as the visible page and cancel pending flips */
 	spin_lock_irqsave(&ctl->lock, flags);
@@ -2067,9 +2675,6 @@ static int vifb_set_par(struct fb_info *info)
 		info->fix.ypanstep = 0;
 	}
 
-	/* always clear framebuffer and screen when changing modes */
-	vifb_clear_all();
-
 	vi_setup_tv_mode(ctl, false);
 #ifdef CONFIG_WII_AVE_RVL
 	if (ctl->i2c_client) {
@@ -2079,79 +2684,227 @@ static int vifb_set_par(struct fb_info *info)
 	}
 #endif
 
-	/* enable the video retrace handling */
-	vi_enable_interrupts(ctl, 1);
-
 	return 0;
 }
 
-static int vfb_mmap(struct fb_info *info,
-		    struct vm_area_struct *vma)
+static void __maybe_unused vifb_fillrect(struct fb_info *info,
+			  const struct fb_fillrect *rect)
 {
-	unsigned long start = vma->vm_start;
-	unsigned long size = vma->vm_end - vma->vm_start;
-	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long page, pos;
+	u32 __iomem *dst;
+	u32 color;
+	unsigned int x, y;
 
-	if (offset + size > info->fix.smem_len) {
-		return -EINVAL;
-	}
+	if (!rect->width || !rect->height)
+		return;
 
-	pos = (unsigned long)info->fix.smem_start + offset;
+	color = rect->color;
+	if (info->fix.visual == FB_VISUAL_TRUECOLOR)
+		color = ((u32 *)info->pseudo_palette)[color];
 
-	while (size > 0) {
-		page = vmalloc_to_pfn((void *)pos);
-		if (remap_pfn_range(vma, start, page, PAGE_SIZE, PAGE_SHARED)) {
-			return -EAGAIN;
+	for (y = 0; y < rect->height; y++) {
+		dst = (u32 __iomem *)
+			((u8 __iomem *)info->screen_base +
+			 (rect->dy + y) * info->fix.line_length) + rect->dx;
+		for (x = 0; x < rect->width; x++) {
+			if (rect->rop == ROP_XOR)
+				out_be32(dst + x, in_be32(dst + x) ^ color);
+			else
+				out_be32(dst + x, color);
 		}
-		start += PAGE_SIZE;
-		pos += PAGE_SIZE;
-		if (size > PAGE_SIZE)
-			size -= PAGE_SIZE;
-		else
-			size = 0;
 	}
-
-	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);	/* avoid to swap out this VMA */
-	return 0;
-
 }
 
+static void __maybe_unused vifb_copyarea(struct fb_info *info,
+			  const struct fb_copyarea *area)
+{
+	u32 __iomem *src, *dst;
+	int x, y, x_start, x_end, x_step;
+	int y_start, y_end, y_step;
+
+	if (!area->width || !area->height)
+		return;
+
+	if (area->dy > area->sy) {
+		y_start = area->height - 1;
+		y_end = -1;
+		y_step = -1;
+	} else {
+		y_start = 0;
+		y_end = area->height;
+		y_step = 1;
+	}
+	if (area->dy == area->sy && area->dx > area->sx) {
+		x_start = area->width - 1;
+		x_end = -1;
+		x_step = -1;
+	} else {
+		x_start = 0;
+		x_end = area->width;
+		x_step = 1;
+	}
+
+	for (y = y_start; y != y_end; y += y_step) {
+		src = (u32 __iomem *)
+			((u8 __iomem *)info->screen_base +
+			 (area->sy + y) * info->fix.line_length) + area->sx;
+		dst = (u32 __iomem *)
+			((u8 __iomem *)info->screen_base +
+			 (area->dy + y) * info->fix.line_length) + area->dx;
+		for (x = x_start; x != x_end; x += x_step)
+			out_be32(dst + x, in_be32(src + x));
+	}
+}
+
+static void __maybe_unused vifb_imageblit(struct fb_info *info,
+			   const struct fb_image *image)
+{
+	const u8 *src = image->data;
+	u32 __iomem *dst;
+	u32 fg, bg, color;
+	unsigned int pitch, x, y;
+
+	if (!image->width || !image->height)
+		return;
+
+	fg = image->fg_color;
+	bg = image->bg_color;
+	if (info->fix.visual == FB_VISUAL_TRUECOLOR) {
+		fg = ((u32 *)info->pseudo_palette)[fg];
+		bg = ((u32 *)info->pseudo_palette)[bg];
+	}
+
+	if (image->depth == 1) {
+		pitch = DIV_ROUND_UP(image->width, 8);
+		for (y = 0; y < image->height; y++) {
+			dst = (u32 __iomem *)
+				((u8 __iomem *)info->screen_base +
+				 (image->dy + y) * info->fix.line_length) +
+				image->dx;
+			for (x = 0; x < image->width; x++) {
+				color = src[y * pitch + x / 8] &
+					BIT(7 - (x & 7)) ? fg : bg;
+				out_be32(dst + x, color);
+			}
+		}
+	} else if (image->depth == 32) {
+		pitch = image->width * sizeof(color);
+		for (y = 0; y < image->height; y++) {
+			dst = (u32 __iomem *)
+				((u8 __iomem *)info->screen_base +
+				 (image->dy + y) * info->fix.line_length) +
+				image->dx;
+			for (x = 0; x < image->width; x++) {
+				memcpy(&color, src + y * pitch +
+				       x * sizeof(color), sizeof(color));
+				out_be32(dst + x, color);
+			}
+		}
+	}
+}
+
+static bool __maybe_unused
+vifb_efb_word_valid(struct fb_info *info, unsigned long offset)
+{
+	unsigned long line = offset / info->fix.line_length;
+	unsigned long column = offset % info->fix.line_length;
+
+	return line < info->var.yres_virtual &&
+	       column + sizeof(u32) <= info->var.xres_virtual * sizeof(u32);
+}
+
+static ssize_t __maybe_unused
+vifb_read(struct fb_info *info, char __user *buf, size_t count,
+			 loff_t *ppos)
+{
+	unsigned long limit = info->fix.line_length * info->var.yres_virtual;
+	unsigned long pos = *ppos;
+	size_t done = 0;
+
+	if (pos >= limit)
+		return 0;
+	count = min_t(size_t, count, limit - pos);
+
+	while (done < count) {
+		unsigned long word_pos = pos & ~(sizeof(u32) - 1);
+		size_t word_off = pos & (sizeof(u32) - 1);
+		size_t len = min_t(size_t, sizeof(u32) - word_off,
+				   count - done);
+		u32 value = 0;
+
+		if (vifb_efb_word_valid(info, word_pos))
+			value = in_be32((u32 __iomem *)
+				((u8 __iomem *)info->screen_base + word_pos));
+		if (copy_to_user(buf + done, (u8 *)&value + word_off, len))
+			return done ? done : -EFAULT;
+
+		pos += len;
+		done += len;
+	}
+
+	*ppos = pos;
+	return done;
+}
+
+static ssize_t __maybe_unused
+vifb_write(struct fb_info *info, const char __user *buf,
+			  size_t count, loff_t *ppos)
+{
+	unsigned long limit = info->fix.line_length * info->var.yres_virtual;
+	unsigned long pos = *ppos;
+	size_t done = 0;
+
+	if (pos > limit)
+		return -EFBIG;
+	count = min_t(size_t, count, limit - pos);
+
+	while (done < count) {
+		unsigned long word_pos = pos & ~(sizeof(u32) - 1);
+		size_t word_off = pos & (sizeof(u32) - 1);
+		size_t len = min_t(size_t, sizeof(u32) - word_off,
+				   count - done);
+		u32 __iomem *dst = (u32 __iomem *)
+			((u8 __iomem *)info->screen_base + word_pos);
+		u32 value = 0;
+
+		if (vifb_efb_word_valid(info, word_pos) &&
+		    len != sizeof(value))
+			value = in_be32(dst);
+
+		if (copy_from_user((u8 *)&value + word_off, buf + done, len))
+			return done ? done : -EFAULT;
+
+		if (vifb_efb_word_valid(info, word_pos))
+			out_be32(dst, value);
+
+		pos += len;
+		done += len;
+	}
+
+	*ppos = pos;
+	return done;
+}
+
+static int vifb_mmap(struct fb_info *info, struct vm_area_struct *vma)
+{
+	struct vi_ctl *ctl = info->par;
+
+	return dma_mmap_pages(ctl->dev, vma, ctl->rgb_fb_size,
+			      virt_to_page(ctl->rgb_fb));
+}
 
 struct fb_ops vifb_ops = {
 	.owner = THIS_MODULE,
+	.fb_read = fb_sys_read,
+	.fb_write = fb_sys_write,
+	.fb_mmap = vifb_mmap,
 	.fb_setcolreg = vifb_setcolreg,
 	/*.fb_ioctl = vifb_ioctl,*/
 	.fb_set_par = vifb_set_par,
 	.fb_check_var = vifb_check_var,
-	.fb_mmap = vfb_mmap,
-	.fb_fillrect = cfb_fillrect,
-	.fb_copyarea = cfb_copyarea,
-	.fb_imageblit = cfb_imageblit,
-	__FB_DEFAULT_SYSMEM_OPS_RDWR
+	.fb_fillrect = sys_fillrect,
+	.fb_copyarea = sys_copyarea,
+	.fb_imageblit = sys_imageblit
 };
-
-/*
- * Driver model helper routines.
- *
- */
-
-static void vifb_release_virtual_fb(void);
-
-/* clean up reserved pages of the virtual framebuffer */
-static void vifb_release_virtual_fb(void) {
-	unsigned long size;
-	unsigned long adr = (unsigned long)vfb_mem;
-
-	/* release the virtual framebuffer's reserved pages */
-	size = PAGE_ALIGN(vfb_len);
-	while ((long) size > 0) {
-		ClearPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
-	}
-	vfree((void *)vfb_mem);
-}
 
 #ifndef MODULE
 
@@ -2203,188 +2956,203 @@ static int vifb_setup(char *options)
  *
  */
 
+static void __iomem *vifb_iomap_compatible(struct device *dev,
+					   const char *compatible,
+					   phys_addr_t *start)
+{
+	struct device_node *np;
+	struct resource res;
+	void __iomem *base;
+
+	np = of_find_compatible_node(NULL, NULL, compatible);
+	if (!np)
+		return NULL;
+	if (of_address_to_resource(np, 0, &res)) {
+		of_node_put(np);
+		return NULL;
+	}
+	base = devm_ioremap(dev, res.start, resource_size(&res));
+	if (start)
+		*start = res.start;
+	of_node_put(np);
+	return base;
+}
+
+static unsigned int vifb_irq_compatible(const char *compatible,
+					unsigned int index)
+{
+	struct device_node *np;
+	unsigned int irq;
+
+	np = of_find_compatible_node(NULL, NULL, compatible);
+	if (!np)
+		return 0;
+	irq = irq_of_parse_and_map(np, index);
+	of_node_put(np);
+	return irq;
+}
+
 static int vifb_of_probe(struct platform_device *odev)
 {
-	struct device *dev;
-	const unsigned long *prop;
-	unsigned long xfb_start, xfb_size, adr, size;
-	void __iomem *io_base;
+	struct device *dev = &odev->dev;
 	struct fb_info *info;
 	struct vi_ctl *ctl;
-	int irq, video_cmap_len, error = -EINVAL, i;
-	uint32_t *j;
+	u32 xfb_start, xfb_size, efb_start, efb_size;
+	int error;
 
-	dev = &odev->dev;
-
-	io_base = of_iomap(dev->of_node, 0);
-	if (!io_base) {
-		dev_err(dev, "no io memory range found\n");
+	if (of_property_read_u32(dev->of_node, "xfb-start", &xfb_start) ||
+	    of_property_read_u32(dev->of_node, "xfb-size", &xfb_size) ||
+	    of_property_read_u32(dev->of_node, "efb-start", &efb_start) ||
+	    of_property_read_u32(dev->of_node, "efb-size", &efb_size)) {
+		dev_err(dev, "missing EFB or XFB description\n");
 		return -ENODEV;
 	}
-
-	prop = of_get_property(dev->of_node, "xfb-start", NULL);
-	if (!prop) {
-		dev_err(dev, "no xfb start found\n");
-		return -ENODEV;
-	}
-	xfb_start = *prop;
-
-	prop = of_get_property(dev->of_node, "xfb-size", NULL);
-	if (!prop) {
-		dev_err(&odev->dev, "no xfb size found\n");
-		return -ENODEV;
-	}
-	xfb_size = *prop;
-
-	irq = irq_of_parse_and_map(dev->of_node, 0);
 
 	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
 	if (!info)
-		return -EINVAL;
+		return -ENOMEM;
 
 	info->fbops = &vifb_ops;
 	info->var = vifb_var;
 	info->fix = vifb_fix;
-
 	ctl = info->par;
 	ctl->info = info;
-	ctl->irq = irq;
+	ctl->irq = irq_of_parse_and_map(dev->of_node, 0);
+	ctl->pe_irq = vifb_irq_compatible("nintendo,flipper-gx-pe", 1);
 	ctl->dev = dev;
-	ctl->io_base = io_base;
-
-	fb_mem = devm_ioremap(dev, xfb_start, xfb_size);
-	if (!fb_mem) {
-		dev_err(dev,"failed to ioremap video memory at %p (%ldk)\n",
-			(void *)xfb_start, xfb_size / 1024);
-		error = -EIO;
-		goto err_ioremap;
+	ctl->io_base = devm_of_iomap(dev, dev->of_node, 0, NULL);
+	if (IS_ERR(ctl->io_base)) {
+		error = PTR_ERR(ctl->io_base);
+		goto err_release_info;
 	}
 
-	/* store global variables for the physical framebuffer */
-	gx_fb_start = xfb_start;
-	gx_fb_size = xfb_size;
-
-	dev_info(dev, "framebuffer at 0x%p mapped to 0x%p, size %ldk\n",
-		 (void *)xfb_start, fb_mem, xfb_size / 1024);
-
-
-	/* create a virtual framebuffer, which is used for on-the-fly colorspace conversions
-	 * always as big as the largest mode supported
-	 * TODO: reallocate framebuffer as needed
-	 */
-	vfb_len = xfb_size;
-	info->fix.smem_len = vfb_len;
-	size = PAGE_ALIGN(info->fix.smem_len);
-	vfb_mem = vmalloc_32(size);
-	if (!vfb_mem) {
-		info->fix.smem_len = 0; /* just in case */
-		dev_err(dev, "failed to allocate virtual framebuffer\n");
-		return -ENOMEM;
+	ctl->cp_base = vifb_iomap_compatible(dev,
+					     "nintendo,flipper-gx-cp", NULL);
+	ctl->pe_base = vifb_iomap_compatible(dev,
+					     "nintendo,flipper-gx-pe", NULL);
+	ctl->pi_base = vifb_iomap_compatible(dev,
+					     "nintendo,flipper-pi", NULL);
+	ctl->wgpipe = vifb_iomap_compatible(dev,
+					    "nintendo,flipper-gx-fifo",
+					    &ctl->gx_fifo_base);
+	if (!ctl->cp_base || !ctl->pe_base || !ctl->pi_base || !ctl->wgpipe ||
+	    !ctl->pe_irq) {
+		dev_err(dev, "unable to map GX registers\n");
+		error = -ENODEV;
+		goto err_release_info;
 	}
-	info->fix.smem_start = (unsigned long)vfb_mem;
-	/*
-	 * Now that the virtual framebuffer has been setup,
-	 * store its location and size.
-	 * All software rendering will be redirected to this virtual framebuffer.
-	 * Normally screen_base would be the physical framebuffer, but here we play on-the-fly colorconversion.
-	 */
-	info->screen_base = (char __iomem *)info->fix.smem_start;
 
-	adr = info->fix.smem_start;
-	while (size > 0) {
-		SetPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
+	xfb_mem = devm_ioremap(dev, xfb_start, xfb_size);
+	if (!xfb_mem) {
+		dev_err(dev, "unable to map XFB\n");
+		error = -ENOMEM;
+		goto err_release_info;
 	}
-	dev_info(dev, "virtual framebuffer at 0x%p, size %ldk\n",
-		   (void *)vfb_mem, PAGE_ALIGN(vfb_len) / 1024);
+	gx_xfb_start = xfb_start;
+	gx_xfb_size = xfb_size;
 
 	spin_lock_init(&ctl->lock);
 	init_waitqueue_head(&ctl->vtrace_waitq);
-
 	vi_reset_video(ctl);
 	vi_detect_tv_mode(ctl);
+
+	ctl->rgb_fb_size = ctl->mode->width * ctl->mode->height * sizeof(u16);
+	ctl->rgb_fb = dma_alloc_noncoherent(dev, ctl->rgb_fb_size,
+					    &ctl->rgb_fb_dma, DMA_TO_DEVICE,
+					    GFP_KERNEL);
+	if (!ctl->rgb_fb) {
+		error = -ENOMEM;
+		goto err_release_info;
+	}
+	ctl->indirect_map = dma_alloc_noncoherent(dev, GX_INDIRECT_MAP_SIZE,
+						  &ctl->indirect_map_dma,
+						  DMA_TO_DEVICE, GFP_KERNEL);
+	if (!ctl->indirect_map) {
+		error = -ENOMEM;
+		goto err_free_rgb_fb;
+	}
+	gx_init_indirect_map(ctl);
+	dma_sync_single_for_device(dev, ctl->indirect_map_dma,
+				   GX_INDIRECT_MAP_SIZE, DMA_TO_DEVICE);
+	info->fix.smem_start = ctl->rgb_fb_dma;
+	info->fix.smem_len = ctl->rgb_fb_size;
+	info->fix.line_length = ctl->mode->width * sizeof(u16);
+	info->screen_buffer = ctl->rgb_fb;
+	info->screen_size = ctl->rgb_fb_size;
+	info->flags |= FBINFO_VIRTFB;
+
+	error = gx_init(ctl);
+	if (error) {
+		if (ctl->fifo)
+			goto err_free_fifo;
+		goto err_free_indirect_map;
+	}
 
 #ifdef CONFIG_WII_AVE_RVL
 	if (!first_vi_ctl)
 		first_vi_ctl = ctl;
-
-	/* Try to attach an encoder that probed before the framebuffer. */
 	if (first_vi_ave) {
 		error = vi_attach_ave(ctl, first_vi_ave);
 		if (error)
 			dev_err(dev, "unable to attach AVE: error %d\n", error);
-		else
-			dev_info(dev, "AVE attached successfully\n");
 	}
 #endif
 
 	info->var.xres = ctl->mode->width;
 	info->var.yres = ctl->mode->height;
-
 	ctl->visible_page = 0;
-	ctl->flip_pending = 0;
-
-	video_cmap_len = 16;
+	ctl->gx_faulted = false;
+	atomic_set(&ctl->pe_finished, 0);
 	info->pseudo_palette = pseudo_palette;
-	if (fb_alloc_cmap(&info->cmap, video_cmap_len, 0)) {
-		error = -ENOMEM;
-		goto err_alloc_cmap;
-	}
 
+	error = fb_alloc_cmap(&info->cmap, 16, 0);
+	if (error)
+		goto err_free_fifo;
 	error = vifb_check_var(&info->var, info);
 	if (error)
-		goto err_check_var;
+		goto err_cmap;
+	info->fix.smem_len = info->fix.line_length * info->var.yres_virtual;
+	info->screen_size = info->fix.smem_len;
 
-	dev_info(dev, "mode is %dx%dx%d (FOURCC colorspace = 0x%x)\n", info->var.xres,
-		   info->var.yres, info->var.bits_per_pixel, info->var.colorspace);
-
-	/* Clear virtual framebuffer */
-	memset(vfb_mem, 0, vfb_len);
-	/* Clear screen */
-	i = xfb_size >> 2;
-	j = (uint32_t *)fb_mem;
-	while (i--)
-		*(j++) = 0x10801080;
-
+	vifb_clear_all(info);
 	dev_set_drvdata(dev, info);
-
 	vi_enable_interrupts(ctl, 0);
+	error = request_irq(ctl->irq, vi_irq_handler, IRQF_NO_THREAD,
+			    DRV_MODULE_NAME, dev);
+	if (error)
+		goto err_drvdata;
+	error = request_irq(ctl->pe_irq, pe_irq_handler, IRQF_NO_THREAD,
+			    DRV_MODULE_NAME "-pe", dev);
+	if (error)
+		goto err_vi_irq;
+	error = register_framebuffer(info);
+	if (error)
+		goto err_pe_irq;
 
-	error = request_irq(ctl->irq, vi_irq_handler, 0, DRV_MODULE_NAME, dev);
-	if (error) {
-		dev_err(dev, "unable to register IRQ %u\n", ctl->irq);
-		goto err_request_irq;
-	}
-
-	/* now register us */
-	if (register_framebuffer(info) < 0) {
-		error = -EINVAL;
-		goto err_register_framebuffer;
-	}
-
-	pr_info("fb%d: %s frame buffer device\n", info->node, info->fix.id);
-
+	pr_info("fb%d: %s frame buffer device (GX indirect RGB565)\n",
+		info->node, info->fix.id);
+	vi_enable_interrupts(ctl, 1);
 	return 0;
 
-err_register_framebuffer:
+err_pe_irq:
+	free_irq(ctl->pe_irq, dev);
+err_vi_irq:
 	free_irq(ctl->irq, dev);
-err_check_var:
-err_request_irq:
-	fb_dealloc_cmap(&info->cmap);
-err_alloc_cmap:
-	iounmap(fb_mem);
-err_ioremap:
-	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
-
-	/* release the physical framebuffer */
-	vifb_release_virtual_fb();
-
+err_drvdata:
 	dev_set_drvdata(dev, NULL);
-	iounmap(ctl->io_base);
+err_cmap:
+	fb_dealloc_cmap(&info->cmap);
+err_free_fifo:
+	dma_free_noncoherent(dev, GX_FIFO_SIZE, ctl->fifo, ctl->fifo_dma,
+			     DMA_BIDIRECTIONAL);
+err_free_indirect_map:
+	dma_free_noncoherent(dev, GX_INDIRECT_MAP_SIZE, ctl->indirect_map,
+			     ctl->indirect_map_dma, DMA_TO_DEVICE);
+err_free_rgb_fb:
+	dma_free_noncoherent(dev, ctl->rgb_fb_size, ctl->rgb_fb,
+			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
+err_release_info:
 	framebuffer_release(info);
-
 	return error;
 }
 
@@ -2398,18 +3166,19 @@ static void vifb_of_remove(struct platform_device *odev)
 
 	ctl = info->par;
 
+	free_irq(ctl->pe_irq, &odev->dev);
 	free_irq(ctl->irq, &odev->dev);
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);
-	iounmap(fb_mem);
-
-	/* release memory mapping region */
-	release_mem_region(gx_fb_start, gx_fb_size);
-
-	vifb_release_virtual_fb();
+	dma_free_noncoherent(&odev->dev, GX_FIFO_SIZE, ctl->fifo,
+			     ctl->fifo_dma, DMA_BIDIRECTIONAL);
+	dma_free_noncoherent(&odev->dev, GX_INDIRECT_MAP_SIZE,
+			     ctl->indirect_map, ctl->indirect_map_dma,
+			     DMA_TO_DEVICE);
+	dma_free_noncoherent(&odev->dev, ctl->rgb_fb_size, ctl->rgb_fb,
+			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
 
 	dev_set_drvdata(&odev->dev, NULL);
-	iounmap(ctl->io_base);
 
 #ifdef CONFIG_WII_AVE_RVL
 	vi_dettach_ave(ctl);
