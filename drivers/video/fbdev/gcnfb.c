@@ -5,6 +5,7 @@
  * Copyright (C) 2004 Michael Steil <mist@c64.org>
  * Copyright (C) 2004,2005 Todd Jeffreys <todd@voidpointer.org>
  * Copyright (C) 2006,2007,2008,2009 Albert Herranz
+ * Copyright (C) 2025-2026 Joe Mason <buddyjojo06@outlook.com>
  * Copyright (C) 2024-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
