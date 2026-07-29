@@ -285,6 +285,48 @@
 		otp@d8001ec {
 			compatible = "nintendo,hollywood-otp";
 			reg = <0x0d8001ec 0x8>;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				boot1-sha1@0 {
+					reg = <0x00 0x14>;
+				};
+
+				common-key@14 {
+					reg = <0x14 0x10>;
+				};
+
+				device-id@24 {
+					reg = <0x24 0x4>;
+				};
+
+				/*
+				 * device-private-key@28 and nand-hmac-key@44
+				 * overlap on two bytes, that’s expected.
+				 */
+				device-private-key@28 {
+					reg = <0x28 0x1e>;
+				};
+
+				nand-hmac-key@44 {
+					reg = <0x44 0x14>;
+				};
+
+				nand-key@58 {
+					reg = <0x58 0x10>;
+				};
+
+				backup-key@68 {
+					reg = <0x68 0x10>;
+				};
+
+				unknown@78 {
+					reg = <0x78 0x8>;
+				};
+			};
 		};
 
 		disk@d806000 {
