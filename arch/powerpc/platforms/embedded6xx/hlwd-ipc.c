@@ -25,7 +25,7 @@
 /*
  * Shared IPC state (used by both MINI and IOS implementations)
  */
-static struct hlwd_ipc *ipc;
+static struct hlwd_ipc *ipc = NULL;
 
 /*
  * Used by the MINI and IOS implementations
@@ -36,14 +36,19 @@ struct hlwd_ipc *ipc_get_state(void)
 	/* TODO: lock it? */
 	return ipc;
 }
+EXPORT_SYMBOL_GPL(ipc_get_state);
 
 /*
  * Get the IPC flavor
  */
 enum ipc_flavor ipc_get_flavor(void)
 {
-	return ipc->flavor;
+	if (ipc)
+		return ipc->flavor;
+	else
+		return IPC_FLAVOR_UNKNOWN;
 }
+EXPORT_SYMBOL_GPL(ipc_get_flavor);
 
 
 /*

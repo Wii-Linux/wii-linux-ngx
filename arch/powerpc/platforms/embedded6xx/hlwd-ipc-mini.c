@@ -164,6 +164,7 @@ out_ioremap_in:
 out_invalid_infohdr:
 	return ret;
 }
+EXPORT_SYMBOL_GPL(ipc_init_mini);
 
 static u16 peek_outtail(struct hlwd_ipc *ipc)
 {
@@ -256,6 +257,7 @@ int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
 	/* success, Starlet is processing it */
 	return 0;
 }
+EXPORT_SYMBOL_GPL(ipc_vpost_mini);
 
 int ipc_post_mini(u32 code, u32 tag, int num_args, ...)
 {
@@ -272,6 +274,7 @@ int ipc_post_mini(u32 code, u32 tag, int num_args, ...)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(ipc_post_mini);
 
 /* TODO: IRQs? */
 int ipc_receive_mini(struct ipc_request_mini *req, int max_attempts)
@@ -317,6 +320,7 @@ int ipc_receive_mini(struct ipc_request_mini *req, int max_attempts)
 	/* success, read your message */
 	return 0;
 }
+EXPORT_SYMBOL_GPL(ipc_receive_mini);
 
 int ipc_receive_tagged_mini(struct ipc_request_mini *req, u32 code, u32 tag, int max_recv_attempts, int max_attempts)
 {
@@ -339,6 +343,7 @@ int ipc_receive_tagged_mini(struct ipc_request_mini *req, u32 code, u32 tag, int
 
 	return error;
 }
+EXPORT_SYMBOL_GPL(ipc_receive_tagged_mini);
 
 
 int ipc_exchange_mini(struct ipc_request_mini *req, u32 code, int max_recv_attempts, int max_attempts, int num_args, ...)
@@ -378,3 +383,4 @@ out:
 
 	return error;
 }
+EXPORT_SYMBOL_GPL(ipc_exchange_mini);
