@@ -282,7 +282,7 @@ static void vi_fixups(void)
 static void platform_fixups(void)
 {
 	void *mem;
-	u32 reg[4];
+	u32 reg[6];
 	u32 mem2_boundary;
 	int len;
 	int error;
@@ -305,9 +305,9 @@ static void platform_fixups(void)
 		mem2_boundary = MEM2_TOP - FIRMWARE_DEFAULT_SIZE;
 	}
 
-	if (mem2_boundary > reg[2] && mem2_boundary < reg[2] + reg[3]) {
-		reg[3] = mem2_boundary - reg[2];
-		printf("top of MEM2 @ %08X\n", reg[2] + reg[3]);
+	if (mem2_boundary > reg[4] && mem2_boundary < reg[4] + reg[5]) {
+		reg[5] = mem2_boundary - reg[4];
+		printf("top of MEM2 @ %08X\n", reg[4] + reg[5]);
 		setprop(mem, "reg", reg, sizeof(reg));
 	}
 
