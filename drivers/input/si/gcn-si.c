@@ -9,8 +9,10 @@
 
 /* #define SI_DEBUG */
 
+#include <linux/completion.h>
 #include <linux/init.h>
 #include <linux/input.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -69,6 +71,7 @@ static const char si_driver_version[] = "1.1t";
 #define SI_COMCSR_OUTLEN_SHIFT		16
 #define SI_COMCSR_RDSTINT		BIT(28)
 #define SI_COMCSR_COMERR		BIT(29)
+#define SI_COMCSR_TCINTMSK		BIT(30)
 #define SI_COMCSR_TCINT			BIT(31)
 #define SI_COMCSR_W1C_MASK		(SI_COMCSR_TCINT | SI_COMCSR_RDSTINT)
 
@@ -189,6 +192,8 @@ struct si_drvdata {
 	struct delayed_work hotplug_work;
 
 	void __iomem *io_base;
+	int irq;
+	struct completion transfer_done;
 
 	struct device *dev;
 };
@@ -325,24 +330,19 @@ static enum si_comerr_result si_handle_comerr(struct si_drvdata *drvdata,
 	return SI_COMERR_NOREP;
 }
 
-static int si_wait_transfer_done(struct si_drvdata *drvdata,
-				 unsigned int index)
+static irqreturn_t si_irq(int irq, void *data)
 {
-	void __iomem *io_base = drvdata->io_base;
-	unsigned long deadline = jiffies + SI_TRANSFER_TIMEOUT;
+	struct si_drvdata *drvdata = data;
+	u32 comcsr;
 
-	while (!(in_be32(io_base + SICOMCSR) & SI_COMCSR_TCINT)) {
-		if (time_after(jiffies, deadline)) {
-			dev_err(drvdata->dev,
-				"port %u serial transfer timed out\n",
-				index + 1);
-			return -ETIMEDOUT;
-		}
-		cpu_relax();
-	}
+	comcsr = in_be32(drvdata->io_base + SICOMCSR);
+	if (!(comcsr & SI_COMCSR_TCINT))
+		return IRQ_NONE;
 
-	out_be32(io_base + SICOMCSR, SI_COMCSR_TCINT);
-	return 0;
+	out_be32(drvdata->io_base + SICOMCSR, SI_COMCSR_TCINT);
+	complete(&drvdata->transfer_done);
+
+	return IRQ_HANDLED;
 }
 
 static int si_transfer(struct si_drvdata *drvdata, unsigned int index,
@@ -352,8 +352,8 @@ static int si_transfer(struct si_drvdata *drvdata, unsigned int index,
 	void __iomem *io_base = drvdata->io_base;
 	enum si_comerr_result comerr;
 	u32 comcsr;
-	int error;
 
+	reinit_completion(&drvdata->transfer_done);
 	out_be32(io_base + SICOMCSR, SI_COMCSR_W1C_MASK);
 	si_drain_all_inbufs(io_base);
 	si_clear_iobuf(io_base);
@@ -362,12 +362,21 @@ static int si_transfer(struct si_drvdata *drvdata, unsigned int index,
 	comcsr = (out_len << SI_COMCSR_OUTLEN_SHIFT) |
 		 (in_len << SI_COMCSR_INLEN_SHIFT) |
 		 (index << SI_COMCSR_CHAN_SHIFT) |
-		 SI_COMCSR_TSTART;
+		 SI_COMCSR_TCINTMSK | SI_COMCSR_TSTART;
 	out_be32(io_base + SICOMCSR, comcsr);
 
-	error = si_wait_transfer_done(drvdata, index);
-	if (error)
-		return error;
+	if (!wait_for_completion_timeout(&drvdata->transfer_done,
+					 SI_TRANSFER_TIMEOUT)) {
+		/*
+		 * Mask and acknowledge the interrupt before synchronizing so a
+		 * late completion cannot satisfy the next transfer's wait.
+		 */
+		out_be32(io_base + SICOMCSR, SI_COMCSR_W1C_MASK);
+		synchronize_irq(drvdata->irq);
+		dev_err(drvdata->dev, "port %u serial transfer timed out\n",
+			index + 1);
+		return -ETIMEDOUT;
+	}
 
 	comerr = si_handle_comerr(drvdata, index);
 	if (comerr == SI_COMERR_NOREP)
@@ -894,6 +903,7 @@ static int si_of_probe(struct platform_device *odev)
 	struct device *dev;
 	struct si_drvdata *drvdata;
 	struct si_port *port;
+	int error;
 	int index;
 
 	dev = &odev->dev;
@@ -914,9 +924,23 @@ static int si_of_probe(struct platform_device *odev)
 	dev_set_drvdata(dev, drvdata);
 	drvdata->dev = dev;
 	drvdata->io_base = io_base;
+	init_completion(&drvdata->transfer_done);
 
 	INIT_DELAYED_WORK(&drvdata->hotplug_work, si_hotplug_work);
 	si_reset_all(drvdata->io_base);
+
+	drvdata->irq = platform_get_irq(odev, 0);
+	if (drvdata->irq < 0) {
+		error = drvdata->irq;
+		goto err_free_drvdata;
+	}
+
+	error = request_irq(drvdata->irq, si_irq, 0, dev_name(dev), drvdata);
+	if (error) {
+		dev_err(dev, "failed to request IRQ %d: %d\n",
+			drvdata->irq, error);
+		goto err_free_drvdata;
+	}
 
 	for (index = 0; index < SI_MAX_PORTS; ++index) {
 		port = &drvdata->ports[index];
@@ -933,6 +957,12 @@ static int si_of_probe(struct platform_device *odev)
 	schedule_delayed_work(&drvdata->hotplug_work, SI_HOTPLUG_TIME);
 
 	return 0;
+
+err_free_drvdata:
+	dev_set_drvdata(dev, NULL);
+	kfree(drvdata);
+	iounmap(io_base);
+	return error;
 }
 
 static void si_of_remove(struct platform_device *odev)
@@ -952,6 +982,7 @@ static void si_of_remove(struct platform_device *odev)
 
 		if (drvdata->io_base) {
 			si_reset_all(drvdata->io_base);
+			free_irq(drvdata->irq, drvdata);
 			iounmap(drvdata->io_base);
 			drvdata->io_base = NULL;
 		}
