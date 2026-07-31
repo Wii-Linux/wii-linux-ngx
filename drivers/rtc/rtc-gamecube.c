@@ -98,8 +98,12 @@ static int rtc_reg_write(void *context, u32 reg, u32 data)
 }
 
 static const struct regmap_bus rtc_regmap = {
-	/* TODO: is that true?  Not that it matters here, but still. */
-	.fast_io = true,
+	/*
+	 * spi-exi holds a mutex, since each EXI channel is shared and may
+	 * be performing large transfers, so, even though we're doing tiny
+	 * transfers here, we can't use fast_io = true.
+	 */
+	.fast_io = false,
 	.reg_read = rtc_reg_read,
 	.reg_write = rtc_reg_write,
 };
