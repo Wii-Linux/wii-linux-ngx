@@ -39,6 +39,8 @@
 
 static void *fdt;
 static void *buf; /* = NULL */
+static fdt32_t loader_initrd_start;
+static fdt32_t loader_initrd_end;
 
 #define EXPAND_GRANULARITY	1024
 
@@ -153,6 +155,127 @@ static unsigned long fdt_wrapper_finalize(void)
 	return (unsigned long)fdt;
 }
 
+static int range_contains(const struct fdt_mapped_range *range,
+			  unsigned long addr, unsigned long size)
+{
+	unsigned long offset;
+
+	if (addr < range->start)
+		return 0;
+
+	offset = addr - range->start;
+	return offset < range->size && size <= range->size - offset;
+}
+
+static int mapped_fdt_range(const struct fdt_mapped_range *ranges,
+			    unsigned int nranges, unsigned long addr,
+			    unsigned long size)
+{
+	unsigned int i;
+
+	for (i = 0; i < nranges; i++)
+		if (range_contains(&ranges[i], addr, size))
+			return 1;
+
+	return 0;
+}
+
+static int valid_loader_fdt(unsigned long r3, unsigned long r4,
+			    unsigned long r5,
+			    const struct fdt_mapped_range *ranges,
+			    unsigned int nranges)
+{
+	const void *loader_fdt = (const void *)r3;
+
+	/*
+	 * The 32-bit PowerPC direct boot protocol passes the FDT in r3, the
+	 * kernel physical start in r4, and zero in r5.  r4 is intentionally
+	 * unconstrained since a wrapper may be loaded independently of the
+	 * kernel image it contains.
+	 */
+	(void)r4;
+	if (!r3 || r5 || (r3 & 7))
+		return 0;
+
+	/* Do not dereference a header unless it is wholly in mapped RAM. */
+	if (!mapped_fdt_range(ranges, nranges, r3,
+			      sizeof(struct fdt_header)))
+		return 0;
+
+	if (fdt_check_header(loader_fdt))
+		return 0;
+
+	return mapped_fdt_range(ranges, nranges, r3,
+				fdt_totalsize(loader_fdt));
+}
+
+static int save_loader_initrd(const void *loader_fdt)
+{
+	const fdt32_t *prop;
+	u64 start = 0, end = 0;
+	int chosen, len, i;
+
+	chosen = fdt_path_offset(loader_fdt, "/chosen");
+	if (chosen < 0)
+		return 0;
+
+	prop = fdt_getprop(loader_fdt, chosen, "linux,initrd-start", &len);
+	if (!prop || len <= 0 || len > sizeof(start) || len % sizeof(*prop))
+		return 0;
+	for (i = 0; i < len / sizeof(*prop); i++)
+		start = (start << 32) | fdt32_to_cpu(prop[i]);
+
+	prop = fdt_getprop(loader_fdt, chosen, "linux,initrd-end", &len);
+	if (!prop || len <= 0 || len > sizeof(end) || len % sizeof(*prop))
+		return 0;
+	for (i = 0; i < len / sizeof(*prop); i++)
+		end = (end << 32) | fdt32_to_cpu(prop[i]);
+
+	if (start >= end || start > 0xffffffff || end > 0xffffffff)
+		return 0;
+
+	/*
+	 * The direct boot protocol used here is 32-bit.  Saving these as
+	 * single cells also lets the kentry hook restore them in place after
+	 * main.c replaces them with the wrapper's attached initramfs.
+	 */
+	loader_initrd_start = cpu_to_fdt32(start);
+	loader_initrd_end = cpu_to_fdt32(end);
+	return 1;
+}
+
+static void loader_fdt_kentry(unsigned long fdt_addr, void *vmlinux_addr)
+{
+	void *kernel_fdt = (void *)fdt_addr;
+	int chosen, err;
+
+	/*
+	 * main.c gives an attached initramfs priority over loader-provided
+	 * data.  Restore the loader's properties immediately before entering
+	 * the kernel when the loader-provided initramfs is preferred.
+	 */
+	chosen = fdt_path_offset(kernel_fdt, "/chosen");
+	if (chosen < 0)
+		fatal("Can't find /chosen in loader device tree\n");
+
+	err = fdt_setprop_inplace(kernel_fdt, chosen, "linux,initrd-start",
+				  &loader_initrd_start,
+				  sizeof(loader_initrd_start));
+	if (err)
+		fatal("Can't restore linux,initrd-start: %s\n",
+		      fdt_strerror(err));
+
+	err = fdt_setprop_inplace(kernel_fdt, chosen, "linux,initrd-end",
+				  &loader_initrd_end,
+				  sizeof(loader_initrd_end));
+	if (err)
+		fatal("Can't restore linux,initrd-end: %s\n",
+		      fdt_strerror(err));
+
+	flush_cache(kernel_fdt, fdt_totalsize(kernel_fdt));
+	((kernel_entry_t)vmlinux_addr)(fdt_addr, 0, NULL);
+}
+
 void fdt_init(void *blob)
 {
 	int err;
@@ -182,4 +305,21 @@ void fdt_init(void *blob)
 		fatal("fdt_init(): %s\n\r", fdt_strerror(err));
 
 	fdt = buf;
+}
+
+void fdt_init_from_loader(unsigned long r3, unsigned long r4,
+			  unsigned long r5,
+			  const struct fdt_mapped_range *ranges,
+			  unsigned int nranges)
+{
+	void *loader_fdt = _dtb_start;
+
+	if (valid_loader_fdt(r3, r4, r5, ranges, nranges)) {
+		loader_fdt = (void *)r3;
+		if (&_initrd_end > &_initrd_start &&
+		    save_loader_initrd(loader_fdt))
+			platform_ops.kentry = loader_fdt_kentry;
+	}
+
+	fdt_init(loader_fdt);
 }
