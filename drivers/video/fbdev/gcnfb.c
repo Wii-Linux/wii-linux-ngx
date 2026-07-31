@@ -1399,7 +1399,7 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 #define GX_FIFO_SIZE			4096
 #define GX_FIFO_HIWAT(size)		((size) - 32)
 #define GX_FIFO_LOWAT(size)		(((size) >> 1) & ~0x1f)
-#define GX_COPY_TIMEOUT_US		2000
+#define GX_COPY_TIMEOUT_US		5000
 
 static void gx_ppcsync(void)
 {
