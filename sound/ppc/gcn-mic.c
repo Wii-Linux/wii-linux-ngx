@@ -625,7 +625,7 @@ static int mic_probe(struct spi_device *spi)
 	struct mic_device *dev;
 	int retval, channel;
 
-	DBG(&dev->spi_device->dev, "Microphone inserted\n");
+	DBG(&spi->dev, "Microphone inserted\n");
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -643,24 +643,24 @@ static int mic_probe(struct spi_device *spi)
 		goto err_init_snd;
 
 	init_waitqueue_head(&dev->io_waitq);
-	channel = dev->spi_device->controller->bus_num;
+	channel = spi->controller->bus_num;
 	dev->io_thread = kthread_run(mic_io_thread, dev, "kmicd/%d", channel);
 	if (IS_ERR(dev->io_thread)) {
 		dev_err(&dev->spi_device->dev, "error creating io thread\n");
 		goto err_io_thread;
 	}
 
-	if (!dev->spi_device->irq) {
-		dev_err(&dev->spi_device->dev, "no IRQ configured\n");
+	if (!spi->irq) {
+		dev_err(&spi->dev, "no IRQ configured\n");
 		retval = -ENXIO;
 		goto err_event_register;
 	}
 
-	retval = request_threaded_irq(dev->spi_device->irq, mic_irq,
+	retval = request_threaded_irq(spi->irq, mic_irq,
 				      mic_irq_thread, IRQF_SHARED,
-				      dev_name(&dev->spi_device->dev), dev);
+				      dev_name(&spi->dev), dev);
 	if (retval) {
-		dev_err(&dev->spi_device->dev, "error registering IRQ\n");
+		dev_err(&spi->dev, "error registering IRQ\n");
 		goto err_event_register;
 	}
 
@@ -684,7 +684,7 @@ static void mic_remove(struct spi_device *spi)
 {
 	struct mic_device *dev = spi_get_drvdata(spi);
 
-	DBG(&dev->spi_device->dev, "Microphone removed\n");
+	DBG(&spi->dev, "Microphone removed\n");
 
 	if (!dev) {
 		spi_set_drvdata(spi, NULL);
@@ -693,8 +693,8 @@ static void mic_remove(struct spi_device *spi)
 
 	dev->running = 0;
 
-	if (dev->spi_device->irq)
-		free_irq(dev->spi_device->irq, dev);
+	if (spi->irq)
+		free_irq(spi->irq, dev);
 
 	if (!IS_ERR(dev->io_thread))
 		mic_stop_io_thread(dev);
