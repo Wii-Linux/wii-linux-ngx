@@ -34,6 +34,7 @@
 
 #define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
 
+#include <linux/completion.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -473,7 +474,7 @@ struct vi_ctl {
 	void *indirect_map;
 	dma_addr_t indirect_map_dma;
 	bool gx_faulted;
-	atomic_t pe_finished;
+	struct completion pe_finished;
 	unsigned int irq;
 	unsigned int pe_irq;
 
@@ -1400,6 +1401,7 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 #define GX_FIFO_HIWAT(size)		((size) - 32)
 #define GX_FIFO_LOWAT(size)		(((size) >> 1) & ~0x1f)
 #define GX_COPY_TIMEOUT_US		5000
+#define GX_POLL_INTERVAL_US		50
 
 static void gx_ppcsync(void)
 {
@@ -1789,17 +1791,17 @@ static int gx_clear_pe_finish(struct vi_ctl *ctl)
 	out_be16(ctl->pe_base + PE_ISR,
 		 PE_ISR_FINISH_ENABLE | PE_ISR_FINISH);
 	gx_ppcsync();
-	error = read_poll_timeout_atomic(in_be16, status,
-					 !(status & PE_ISR_FINISH), 1,
-					 GX_COPY_TIMEOUT_US, false,
-					 ctl->pe_base + PE_ISR);
+	error = read_poll_timeout(in_be16, status,
+				  !(status & PE_ISR_FINISH),
+				  GX_POLL_INTERVAL_US, GX_COPY_TIMEOUT_US,
+				  false, ctl->pe_base + PE_ISR);
 	if (error)
 		goto timeout;
 
 	/* Do not mistake a stale cascaded PE cause for the next copy. */
-	error = read_poll_timeout_atomic(in_be32, cause, !(cause & BIT(10)), 1,
-					 GX_COPY_TIMEOUT_US, false,
-					 ctl->pi_base + PI_INTSR);
+	error = read_poll_timeout(in_be32, cause, !(cause & BIT(10)),
+				  GX_POLL_INTERVAL_US, GX_COPY_TIMEOUT_US,
+				  false, ctl->pi_base + PI_INTSR);
 	if (!error)
 		return 0;
 
@@ -1813,25 +1815,35 @@ timeout:
 
 static int gx_arm_pe_finish(struct vi_ctl *ctl)
 {
-	atomic_set(&ctl->pe_finished, 0);
-	return gx_clear_pe_finish(ctl);
+	int error;
+
+	error = gx_clear_pe_finish(ctl);
+	if (!error) {
+		/*
+		 * The stale IRQ may have acknowledged its PI cause before it
+		 * publishes completion.  Drain that handler before resetting
+		 * the completion for the command about to be submitted.
+		 */
+		synchronize_irq(ctl->pe_irq);
+		reinit_completion(&ctl->pe_finished);
+	}
+	return error;
 }
 
 static int gx_wait_pe_finish(struct vi_ctl *ctl, const char *phase)
 {
-	int done;
-	int error;
+	unsigned long timeout;
+	int error = 0;
 
 	/*
-	 * The PE interrupt handler validates PE_ISR_FINISH before publishing
-	 * completion.  Keep this wait bounded: if GX has wedged, continuing to
-	 * append frames only overwrites the FIFO and obscures the first fault.
+	 * Sleep until the dedicated PE-finish IRQ publishes completion.  Keep
+	 * the wait bounded: if GX has wedged, continuing to append frames only
+	 * overwrites the FIFO and obscures the first fault.
 	 */
-	local_irq_enable();
-	error = read_poll_timeout_atomic(atomic_read, done, done, 1,
-					 GX_COPY_TIMEOUT_US, false,
-					 &ctl->pe_finished);
-	local_irq_disable();
+	timeout = usecs_to_jiffies(GX_COPY_TIMEOUT_US);
+	timeout = wait_for_completion_timeout(&ctl->pe_finished, timeout);
+	if (!timeout)
+		error = -ETIMEDOUT;
 
 	if (error)
 		dev_crit(ctl->dev,
@@ -1859,7 +1871,7 @@ static int gx_wait_cp_idle(struct vi_ctl *ctl)
 				  (status & (CP_SR_IDLE_CMDS |
 					     CP_SR_IDLE_READ)) ==
 				  (CP_SR_IDLE_CMDS | CP_SR_IDLE_READ),
-				  1, GX_COPY_TIMEOUT_US, false,
+				  GX_POLL_INTERVAL_US, GX_COPY_TIMEOUT_US, false,
 				  ctl->cp_base + CP_SR);
 	if (error) {
 		dev_err(ctl->dev,
@@ -2010,10 +2022,6 @@ static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
 			PE_COPY_EXECUTE_YSCALE : 0;
 	int error;
 
-	/*
-	 * The VI handler entered with local interrupts disabled on the only CPU.
-	 * Userspace cannot resume while it waits for GX rendering and copying.
-	 */
 	if (READ_ONCE(ctl->gx_faulted))
 		return;
 
@@ -2082,15 +2090,22 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	if (vi_dix_get_irq(val)) {
 		ctl->in_vtrace = 1;
 
-		gx_copy_efb_to_xfb(ctl);
-
-		vi_dispatch_vtrace(ctl);
-
 		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
-		return IRQ_HANDLED;
+		return IRQ_WAKE_THREAD;
 	}
 
 	return IRQ_NONE;
+}
+
+static irqreturn_t vi_irq_thread(int irq, void *dev)
+{
+	struct fb_info *info = dev_get_drvdata((struct device *)dev);
+	struct vi_ctl *ctl = info->par;
+
+	gx_copy_efb_to_xfb(ctl);
+	vi_dispatch_vtrace(ctl);
+
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t pe_irq_handler(int irq, void *dev)
@@ -2106,7 +2121,7 @@ static irqreturn_t pe_irq_handler(int irq, void *dev)
 	 */
 	out_be16(ctl->pe_base + PE_ISR,
 		 PE_ISR_FINISH_ENABLE | PE_ISR_FINISH);
-	atomic_set(&ctl->pe_finished, 1);
+	complete(&ctl->pe_finished);
 	return IRQ_HANDLED;
 }
 
@@ -3101,7 +3116,7 @@ static int vifb_of_probe(struct platform_device *odev)
 	info->var.yres = ctl->mode->height;
 	ctl->visible_page = 0;
 	ctl->gx_faulted = false;
-	atomic_set(&ctl->pe_finished, 0);
+	init_completion(&ctl->pe_finished);
 	info->pseudo_palette = pseudo_palette;
 
 	error = fb_alloc_cmap(&info->cmap, 16, 0);
@@ -3116,8 +3131,8 @@ static int vifb_of_probe(struct platform_device *odev)
 	vifb_clear_all(info);
 	dev_set_drvdata(dev, info);
 	vi_enable_interrupts(ctl, 0);
-	error = request_irq(ctl->irq, vi_irq_handler, IRQF_NO_THREAD,
-			    DRV_MODULE_NAME, dev);
+	error = request_threaded_irq(ctl->irq, vi_irq_handler, vi_irq_thread,
+				     IRQF_ONESHOT, DRV_MODULE_NAME, dev);
 	if (error)
 		goto err_drvdata;
 	error = request_irq(ctl->pe_irq, pe_irq_handler, IRQF_NO_THREAD,
@@ -3134,7 +3149,9 @@ static int vifb_of_probe(struct platform_device *odev)
 	return 0;
 
 err_pe_irq:
+	free_irq(ctl->irq, dev);
 	free_irq(ctl->pe_irq, dev);
+	goto err_drvdata;
 err_vi_irq:
 	free_irq(ctl->irq, dev);
 err_drvdata:
@@ -3165,8 +3182,9 @@ static void vifb_of_remove(struct platform_device *odev)
 
 	ctl = info->par;
 
-	free_irq(ctl->pe_irq, &odev->dev);
+	vi_enable_interrupts(ctl, 0);
 	free_irq(ctl->irq, &odev->dev);
+	free_irq(ctl->pe_irq, &odev->dev);
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);
 	dma_free_noncoherent(&odev->dev, GX_FIFO_SIZE, ctl->fifo,
@@ -3194,6 +3212,7 @@ static void vifb_of_shutdown(struct platform_device *odev)
 	void __iomem *io_base = ctl->io_base;
 
 	vi_enable_interrupts(ctl, 0);
+	synchronize_irq(ctl->irq);
 	vi_reset_video(ctl);
 	out_be16(io_base + VI_DCR, vi_dcr_enb(0));
 
