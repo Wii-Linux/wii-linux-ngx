@@ -53,7 +53,6 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <asm/reg.h>
-#include <asm/udbg.h>
 #ifdef CONFIG_WII_AVE_RVL
 #include <linux/i2c.h>
 #endif
@@ -1805,10 +1804,10 @@ static int gx_clear_pe_finish(struct vi_ctl *ctl)
 		return 0;
 
 timeout:
-	udbg_printf(DRV_MODULE_NAME
-		    ": could not clear PE finish: PI=%08x PE=%04x\n",
-		    in_be32(ctl->pi_base + PI_INTSR),
-		    in_be16(ctl->pe_base + PE_ISR));
+	dev_err(ctl->dev,
+		"could not clear PE finish: PI=%08x PE=%04x\n",
+		in_be32(ctl->pi_base + PI_INTSR),
+		in_be16(ctl->pe_base + PE_ISR));
 	return error;
 }
 
@@ -1835,18 +1834,18 @@ static int gx_wait_pe_finish(struct vi_ctl *ctl, const char *phase)
 	local_irq_disable();
 
 	if (error)
-		udbg_printf(DRV_MODULE_NAME
-			    ": PE %s timeout: PI=%08x PE=%04x CP=%04x dist=%04x%04x write=%04x%04x read=%04x%04x\n",
-			    phase,
-			    in_be32(ctl->pi_base + PI_INTSR),
-			    in_be16(ctl->pe_base + PE_ISR),
-			    in_be16(ctl->cp_base + CP_SR),
-			    in_be16(ctl->cp_base + CP_FIFO_RW_DIST_HI),
-			    in_be16(ctl->cp_base + CP_FIFO_RW_DIST_LO),
-			    in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI),
-			    in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO),
-			    in_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI),
-			    in_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO));
+		dev_crit(ctl->dev,
+			"PE %s timeout: PI=%08x PE=%04x CP=%04x dist=%04x%04x write=%04x%04x read=%04x%04x\n",
+			phase,
+			in_be32(ctl->pi_base + PI_INTSR),
+			in_be16(ctl->pe_base + PE_ISR),
+			in_be16(ctl->cp_base + CP_SR),
+			in_be16(ctl->cp_base + CP_FIFO_RW_DIST_HI),
+			in_be16(ctl->cp_base + CP_FIFO_RW_DIST_LO),
+			in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_HI),
+			in_be16(ctl->cp_base + CP_FIFO_WRITE_PTR_LO),
+			in_be16(ctl->cp_base + CP_FIFO_READ_PTR_HI),
+			in_be16(ctl->cp_base + CP_FIFO_READ_PTR_LO));
 
 	return error;
 }
@@ -2049,8 +2048,7 @@ fault:
 	WRITE_ONCE(ctl->gx_faulted, true);
 	dma_sync_single_for_cpu(ctl->dev, ctl->rgb_fb_dma,
 				ctl->rgb_fb_size, DMA_TO_DEVICE);
-	udbg_printf(DRV_MODULE_NAME
-		    ": disabling GX submissions after completion failure\n");
+	dev_crit(ctl->dev, "disabling GX submissions after completion failure\n");
 }
 
 static void vi_dispatch_vtrace(struct vi_ctl *ctl)
