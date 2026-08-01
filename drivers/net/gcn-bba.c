@@ -592,30 +592,31 @@ static int bba_rx(struct net_device *dev, int budget)
 		bba_ins(rrp << 8, &descr, sizeof(descr));
 		le32_to_cpus((u32 *) &descr);
 
-		size = descr.packet_len - 4;	/* ignore CRC */
 		lrps = descr.status;
 
 		/* abort processing in case of errors */
-		if (size > BBA_RX_MAX_PACKET_SIZE + 4) {
-			dev_warn(&priv->spi_device->dev, "packet too big %d\n",
-				 size);
-			continue;
+		if (descr.packet_len < 4 ||
+		    descr.packet_len > BBA_RX_MAX_PACKET_SIZE + 4) {
+			dev_warn(&priv->spi_device->dev,
+				 "invalid packet length %u\n", descr.packet_len);
+			dev->stats.rx_length_errors++;
+			dev->stats.rx_errors++;
+			goto drop;
 		}
+		size = descr.packet_len - 4;	/* ignore CRC */
 
 		if ((lrps & (BBA_RX_STATUS_RERR | BBA_RX_STATUS_FAE))) {
 			dev_dbg(&priv->spi_device->dev,
 				"error %x on received packet\n", lrps);
 			bba_rx_err(lrps, dev);
-			rwp = bba_in12(BBA_RWP);
-			rrp = bba_in12(BBA_RRP);
-			continue;
+			goto drop;
 		}
 
 		/* allocate a buffer, omitting the CRC (4 bytes) */
 		skb = dev_alloc_skb(size + NET_IP_ALIGN);
 		if (!skb) {
 			dev->stats.rx_dropped++;
-			continue;
+			goto drop;
 		}
 		skb->dev = dev;
 		skb_reserve(skb, NET_IP_ALIGN);	/* align */
@@ -632,8 +633,7 @@ static int bba_rx(struct net_device *dev, int budget)
 			int chunk_size = top - pos;
 
 			bba_ins(pos, skb->data, chunk_size);
-			rrp = BBA_INIT_RRP;
-			bba_ins(rrp << 8, skb->data + chunk_size,
+			bba_ins(BBA_INIT_RRP << 8, skb->data + chunk_size,
 				size - chunk_size);
 		}
 
@@ -646,8 +646,19 @@ static int bba_rx(struct net_device *dev, int budget)
 		netif_rx(skb);
 		received++;
 
+drop:
 		/* move read pointer to next packet */
-		rrp = descr.next_packet_ptr;
+		if (descr.next_packet_ptr < BBA_INIT_BP ||
+		    descr.next_packet_ptr > BBA_INIT_RHBP ||
+		    descr.next_packet_ptr == rrp) {
+			dev_warn(&priv->spi_device->dev,
+				 "invalid next packet pointer 0x%x\n",
+				 descr.next_packet_ptr);
+			dev->stats.rx_errors++;
+			rrp = rwp;
+		} else {
+			rrp = descr.next_packet_ptr;
+		}
 		bba_out12(BBA_RRP, rrp);
 
 		/* get write pointer and continue */
