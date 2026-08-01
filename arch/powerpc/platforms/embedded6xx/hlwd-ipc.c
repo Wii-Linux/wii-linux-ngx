@@ -57,6 +57,7 @@ EXPORT_SYMBOL_GPL(ipc_get_flavor);
 static int ipc_probe(struct platform_device *odev)
 {
 	int error = -ENOMEM, irq;
+	struct hlwd_ipc *new_ipc;
 	void __iomem *io_base;
 
 	io_base = of_iomap(odev->dev.of_node, 0);
@@ -68,16 +69,26 @@ static int ipc_probe(struct platform_device *odev)
 
 	pr_info("hlwd-ipc: got address: %p, IRQ %d\n", io_base, irq);
 
-	ipc = kzalloc(sizeof(struct hlwd_ipc), GFP_KERNEL);
-	if (!ipc)
+	new_ipc = kzalloc_obj(*new_ipc);
+	if (!new_ipc)
 		goto err_ipc_alloc;
 
 	/* TODO: do actual detection */
-	ipc->flavor = IPC_FLAVOR_MINI;
-	ipc->regs = io_base;
+	new_ipc->flavor = IPC_FLAVOR_MINI;
+	new_ipc->regs = io_base;
+	ipc = new_ipc;
 
-	error = ipc_init_mini(ipc);
-	return error;
+	error = ipc_init_mini(new_ipc);
+	if (error)
+		goto err_flavor_init;
+
+	platform_set_drvdata(odev, new_ipc);
+	return 0;
+
+err_flavor_init:
+	ipc = NULL;
+	ipc_cleanup_mini(new_ipc);
+	kfree(new_ipc);
 
 err_ipc_alloc:
 	iounmap(io_base);
@@ -87,11 +98,16 @@ err_iomap:
 
 static void ipc_remove(struct platform_device *odev)
 {
-	(void)odev;
+	struct hlwd_ipc *old_ipc = platform_get_drvdata(odev);
 
-	iounmap(ipc->regs);
-	kfree(ipc);
-	return;
+	if (!old_ipc)
+		return;
+
+	ipc = NULL;
+	platform_set_drvdata(odev, NULL);
+	ipc_cleanup_mini(old_ipc);
+	iounmap(old_ipc->regs);
+	kfree(old_ipc);
 }
 
 /*

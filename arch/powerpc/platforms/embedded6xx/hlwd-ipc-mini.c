@@ -52,6 +52,28 @@ struct mini_state {
 	u32 cur_tag;                                  /* Current request number ("tag") */
 };
 
+void ipc_cleanup_mini(struct hlwd_ipc *ipc)
+{
+	struct mini_state *state;
+
+	if (!ipc)
+		return;
+
+	state = ipc->flavor_state;
+	if (!state)
+		return;
+
+	if (state->out_queue)
+		iounmap((void *)state->out_queue);
+	if (state->in_queue)
+		iounmap((void *)state->in_queue);
+	if (state->infohdr)
+		memunmap(state->infohdr);
+
+	kfree(state);
+	ipc->flavor_state = NULL;
+}
+
 int ipc_init_mini(struct hlwd_ipc *ipc)
 {
 	struct device_node *mini_np;
@@ -72,11 +94,13 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 	prop = (u32 *)of_get_property(mini_np, "infohdr", &len);
 	if (!prop || len != sizeof(u32)) {
 		pr_err("infohdr property not found or invalid\n");
+		of_node_put(mini_np);
 		return -ENODEV;
 	}
 
 	/* try to map the memory region that holds the infohdr pointer */
 	infohdr_ptr_mapped = memremap(*prop, 4, MEMREMAP_WB);
+	of_node_put(mini_np);
 	if (!infohdr_ptr_mapped) {
 		pr_err("memremap failed for infohdr ptr\n");
 		return -ENOMEM;
@@ -157,11 +181,11 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 
 
 out_ioremap_out:
-	iounmap((void *)state->in_queue);
 out_ioremap_in:
-	memunmap(infohdr);
-	kfree(state);
+	ipc_cleanup_mini(ipc);
+	return ret;
 out_invalid_infohdr:
+	memunmap(infohdr);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(ipc_init_mini);
