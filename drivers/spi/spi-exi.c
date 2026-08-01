@@ -1002,8 +1002,8 @@ static void exi_remove_device(struct exi_spi *exi,
 	exi_unlock(ch);
 
 	if (device) {
-		dev_info(exi->dev, "[%d:%d]: removed device\n", channel, cs);
 		spi_unregister_device(device);
+		dev_info(exi->dev, "[%d:%d]: removed device\n", channel, cs);
 	}
 }
 
