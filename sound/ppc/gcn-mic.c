@@ -647,6 +647,7 @@ static int mic_probe(struct spi_device *spi)
 	dev->io_thread = kthread_run(mic_io_thread, dev, "kmicd/%d", channel);
 	if (IS_ERR(dev->io_thread)) {
 		dev_err(&dev->spi_device->dev, "error creating io thread\n");
+		retval = PTR_ERR(dev->io_thread);
 		goto err_io_thread;
 	}
 
