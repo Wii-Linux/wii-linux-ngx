@@ -486,7 +486,7 @@ static int ai_of_probe(struct platform_device *odev)
 	struct device *dev;
 	struct snd_card *card;
 	struct snd_gcn *chip;
-	int retval, irq;
+	int retval = -ENODEV, irq;
 	u32 resets_val, csr;
 
 	dev = &odev->dev;
@@ -494,19 +494,20 @@ static int ai_of_probe(struct platform_device *odev)
 	ai = of_iomap(dev->of_node, 0);
 	if (!ai) {
 		dev_err(dev, "no ai io memory range found\n");
-		return -ENODEV;
+		goto err_iomap_ai;
 	}
 
 	dsp_np = of_find_matching_node(NULL, ai_dsp_match);
 	if (!dsp_np) {
 		dev_err(dev, "failed to find dsp node\n");
-		return -ENODEV;
+		goto err_find_dsp;
 	}
 
 	dsp = of_iomap(dsp_np, 0);
 	if (!dsp) {
 		dev_err(dev, "no dsp io memory range found\n");
-		return -ENODEV;
+		of_node_put(dsp_np);
+		goto err_iomap_dsp;
 	}
 
 	of_node_put(dsp_np);
@@ -523,7 +524,7 @@ static int ai_of_probe(struct platform_device *odev)
 		if (!resets) {
 			dev_err(dev, "no resets io memory range found\n");
 			of_node_put(resets_np);
-			return -ENODEV;
+			goto err_iomap_resets;
 		}
 		of_node_put(resets_np);
 	}
@@ -541,7 +542,7 @@ static int ai_of_probe(struct platform_device *odev)
 	retval = snd_card_new(dev, idx, id, THIS_MODULE, sizeof(struct snd_gcn), &card);
 	if (retval < 0) {
 		dev_err(dev, "failed to allocate card\n");
-		return -ENOMEM;
+		goto err_snd_card_new;
 	}
 
 	chip = (struct snd_gcn *)card->private_data;
@@ -564,6 +565,7 @@ static int ai_of_probe(struct platform_device *odev)
 		resets_val |= BIT(22);
 		out_be32(resets, resets_val);
 		iounmap(resets);
+		resets = NULL;
 	}
 
 	/* PCM */
@@ -594,11 +596,16 @@ err_card_register:
 	free_irq(irq, chip);
 err_request_irq:
 err_new_pcm:
-	iounmap(dsp);
-	iounmap(ai);
-
 	snd_card_free(card);
-
+err_snd_card_new:
+	if (resets)
+		iounmap(resets);
+err_iomap_resets:
+	iounmap(dsp);
+err_iomap_dsp:
+err_find_dsp:
+	iounmap(ai);
+err_iomap_ai:
 	return retval;
 }
 
