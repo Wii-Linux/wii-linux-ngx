@@ -173,6 +173,7 @@ struct si_port {
 
 	enum si_control_type type;
 	bool registered;
+	bool opened;
 
 	struct input_dev *idev;
 	struct timer_list timer;
@@ -537,7 +538,7 @@ static void si_timer(struct timer_list *t)
 	input_sync(port->idev);
 
 out:
-	if (port->registered && port->idev &&
+	if (port->registered && port->opened && port->idev &&
 	    !(port->drvdata->flags & SI_QUIESCE))
 		mod_timer(&port->timer, jiffies + SI_REFRESH_TIME);
 }
@@ -551,9 +552,8 @@ static int si_open(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
-	timer_setup(&port->timer, si_timer, 0);
-	port->timer.expires = jiffies + SI_REFRESH_TIME;
-	add_timer(&port->timer);
+	port->opened = true;
+	mod_timer(&port->timer, jiffies + SI_REFRESH_TIME);
 
 	return 0;
 }
@@ -562,7 +562,8 @@ static void si_close(struct input_dev *idev)
 {
 	struct si_port *port = input_get_drvdata(idev);
 
-	timer_delete(&port->timer);
+	port->opened = false;
+	timer_delete_sync(&port->timer);
 }
 
 static int si_event(struct input_dev *idev, unsigned int type,
@@ -803,6 +804,7 @@ static void si_unregister_port(struct si_port *port)
 		return;
 
 	port->registered = false;
+	port->opened = false;
 	timer_delete_sync(&port->timer);
 	port->idev = NULL;
 	input_unregister_device(idev);
@@ -949,6 +951,7 @@ static int si_of_probe(struct platform_device *odev)
 		port->index = index;
 		port->drvdata = drvdata;
 		port->type = CTL_NONE;
+		timer_setup(&port->timer, si_timer, 0);
 		snprintf(port->name, sizeof(port->name), "%s",
 			 si_type_name(CTL_NONE));
 	}
