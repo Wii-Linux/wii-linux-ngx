@@ -98,7 +98,7 @@ static ssize_t ipc_write(struct file *file, const char __user *buf,
 		break;
 	}
 	case 6: {
-		ret = ipc_post_mini(req[0], 0, 5, req[2], req[3], req[4], req[5], req[6], req[7]);
+		ret = ipc_post_mini(req[0], 0, 6, req[2], req[3], req[4], req[5], req[6], req[7]);
 		break;
 	}
 	}
