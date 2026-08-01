@@ -202,22 +202,39 @@ static int ug_safe_getc(struct ug_adapter *adapter, char *c)
 /*
  *
  * Linux console interface.
+ *
+ * SPI transfers may sleep, so this console intentionally provides only an
+ * nbcon threaded writer. There is no safe write_atomic implementation.
  */
 
-/*
- *
- */
-static void ug_console_write(struct console *co, const char *buf,
-			      unsigned int count)
+static void ug_console_write_thread(struct console *co,
+				    struct nbcon_write_context *wctxt)
 {
 	struct ug_adapter *adapter = co->data;
-	char *b = (char *)buf;
+	const char *buf = wctxt->outbuf;
+	unsigned int count = wctxt->len;
 
 	while (count--) {
-		if (*b == '\n')
+		if (*buf == '\n')
 			ug_safe_putc(adapter, '\r');
-		ug_safe_putc(adapter, *b++);
+		ug_safe_putc(adapter, *buf++);
 	}
+}
+
+static void ug_console_device_lock(struct console *co, unsigned long *flags)
+{
+	struct ug_adapter *adapter = co->data;
+
+	mutex_lock(&adapter->mutex);
+	migrate_disable();
+}
+
+static void ug_console_device_unlock(struct console *co, unsigned long flags)
+{
+	struct ug_adapter *adapter = co->data;
+
+	migrate_enable();
+	mutex_unlock(&adapter->mutex);
 }
 
 /*
@@ -250,28 +267,34 @@ static struct tty_driver *ug_console_device(struct console *co, int *index)
 static struct console ug_consoles[] = {
 	{
 		.name   = DRV_MODULE_NAME,
-		.write  = ug_console_write,
+		.write_thread = ug_console_write_thread,
+		.device_lock = ug_console_device_lock,
+		.device_unlock = ug_console_device_unlock,
 		.read   = ug_console_read,
 		.device = ug_console_device,
-		.flags  = CON_PRINTBUFFER | CON_ENABLED,
+		.flags  = CON_PRINTBUFFER | CON_ENABLED | CON_NBCON,
 		.index  = 0,
 		.data	= &ug_adapters[0],
 	},
 	{
 		.name   = DRV_MODULE_NAME,
-		.write  = ug_console_write,
+		.write_thread = ug_console_write_thread,
+		.device_lock = ug_console_device_lock,
+		.device_unlock = ug_console_device_unlock,
 		.read   = ug_console_read,
 		.device = ug_console_device,
-		.flags  = CON_PRINTBUFFER | CON_ENABLED,
+		.flags  = CON_PRINTBUFFER | CON_ENABLED | CON_NBCON,
 		.index  = 1,
 		.data	= &ug_adapters[1],
 	},
 	{
 		.name   = DRV_MODULE_NAME,
-		.write  = ug_console_write,
+		.write_thread = ug_console_write_thread,
+		.device_lock = ug_console_device_lock,
+		.device_unlock = ug_console_device_unlock,
 		.read   = ug_console_read,
 		.device = ug_console_device,
-		.flags  = CON_PRINTBUFFER | CON_ENABLED,
+		.flags  = CON_PRINTBUFFER | CON_ENABLED | CON_NBCON,
 		.index  = 2,
 		.data	= &ug_adapters[2],
 	},
