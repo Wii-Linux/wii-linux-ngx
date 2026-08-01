@@ -35,7 +35,7 @@ struct ug_adapter {
 	int refcnt;
 };
 
-static struct ug_adapter ug_adapters[2];
+static struct ug_adapter ug_adapters[3];
 
 
 /*
@@ -266,6 +266,15 @@ static struct console ug_consoles[] = {
 		.index  = 1,
 		.data	= &ug_adapters[1],
 	},
+	{
+		.name   = DRV_MODULE_NAME,
+		.write  = ug_console_write,
+		.read   = ug_console_read,
+		.device = ug_console_device,
+		.flags  = CON_PRINTBUFFER | CON_ENABLED,
+		.index  = 2,
+		.data	= &ug_adapters[2],
+	},
 };
 
 
@@ -442,7 +451,7 @@ static int ug_tty_init(void)
 	struct tty_driver *driver;
 	int retval;
 
-	driver = tty_alloc_driver(2, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
+	driver = tty_alloc_driver(3, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
 	if (IS_ERR(driver))
 		return PTR_ERR(driver);
 	driver->name = DRV_MODULE_NAME "con";
