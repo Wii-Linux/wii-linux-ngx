@@ -603,21 +603,22 @@ static void ug_remove(struct spi_device *spi_device)
 	struct tty_port *port;
 	unsigned int slot;
 
-	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
-	spi_device->controller->bus_num, spi_get_chipselect(spi_device, 0));
-
 	slot = spi_device->controller->bus_num;
 	console = &ug_consoles[slot];
 	adapter = console->data;
 
-	unregister_console(console);
-
+	/* Prevent any new console write from starting an SPI transfer. */
 	mutex_lock(&adapter->mutex);
 	held_spi = adapter->spi_device;
 	adapter->spi_device = NULL;
 	poller = adapter->poller;
 	adapter->poller = ERR_PTR(-EINVAL);
 	mutex_unlock(&adapter->mutex);
+
+	unregister_console(console);
+
+	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
+	spi_device->controller->bus_num, spi_get_chipselect(spi_device, 0));
 
 	if (!IS_ERR_OR_NULL(poller))
 		kthread_stop(poller);
