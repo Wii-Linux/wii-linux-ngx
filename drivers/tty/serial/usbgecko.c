@@ -615,6 +615,14 @@ static void ug_remove(struct spi_device *spi_device)
 	adapter->poller = ERR_PTR(-EINVAL);
 	mutex_unlock(&adapter->mutex);
 
+	/*
+	 * This is surprise removal, so attempting to flush the console can
+	 * only wait on hardware which is no longer present. Disable output
+	 * before unregister_console() performs its optional backlog flush.
+	 */
+	console_list_lock();
+	console_srcu_write_flags(console, console->flags & ~CON_ENABLED);
+	console_list_unlock();
 	unregister_console(console);
 
 	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
