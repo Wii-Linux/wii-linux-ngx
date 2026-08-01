@@ -2420,13 +2420,16 @@ static void vi_ave_remove(struct i2c_client *client)
 {
 	if (first_vi_ave == client)
 		first_vi_ave = NULL;
+
+	if (first_vi_ctl && first_vi_ctl->i2c_client == client)
+		first_vi_ctl->i2c_client = NULL;
+
 	return;
 }
 
 
 static const struct of_device_id ave_of_match[] = {
 	{ .compatible = "nintendo,wii-audio-video-encoder" },
-	{ .compatible = "wii-audio-video-encoder" },
 	{  },
 };
 
