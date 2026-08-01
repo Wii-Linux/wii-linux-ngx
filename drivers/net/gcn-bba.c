@@ -1101,13 +1101,21 @@ static void bba_remove(struct spi_device *spi)
 {
 	struct net_device *dev = spi_get_drvdata(spi);
 	struct bba_private *priv;
+	struct sk_buff *skb;
+	unsigned long flags;
 
 	if (dev) {
 		priv = netdev_priv(dev);
 
+		unregister_netdev(dev);
 		kthread_stop(priv->io_thread);
 
-		unregister_netdev(dev);
+		spin_lock_irqsave(&priv->lock, flags);
+		skb = priv->tx_skb;
+		priv->tx_skb = NULL;
+		spin_unlock_irqrestore(&priv->lock, flags);
+		dev_kfree_skb_any(skb);
+
 		free_netdev(dev);
 		spi_set_drvdata(spi, NULL);
 		bba_dev = NULL;
