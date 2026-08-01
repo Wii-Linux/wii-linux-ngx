@@ -56,6 +56,9 @@ struct ipc_request_mini {
  */
 int ipc_init_mini(struct hlwd_ipc *ipc);
 
+/* Release all MINI-specific mappings and state. */
+void ipc_cleanup_mini(struct hlwd_ipc *ipc);
+
 /*
  * Post a message w/ va_args.  See ipc_post_mini.
  */
