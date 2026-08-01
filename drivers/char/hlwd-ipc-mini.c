@@ -2,7 +2,7 @@
 /*
  * Nintendo Wii Hollywood IPC (MINI) Character Device Driver
  *
- * Copyright (C) 2025 Michael "Techflash" Garofalo
+ * Copyright (C) 2025-2026 Michael "Techflash" Garofalo
  *
  * Based on drivers/char/xenon_smc.c:
  * Copyright (C) 2010 Herbert Poetzl
@@ -56,13 +56,19 @@ static ssize_t ipc_write(struct file *file, const char __user *buf,
 	u32 req[8];
 	int ret;
 
+	/* valid write size? */
 	if (count > 32 || count < 8 || *ppos)
 		return -EINVAL;
 
 	if (copy_from_user(req, buf, count))
 		return -EFAULT;
 
+	/* too many args? */
 	if (req[1] > 6)
+		return -EINVAL;
+
+	/* received amount of data matches supposed number of args? */
+	if (count != 8 + (req[1] * sizeof(u32)))
 		return -EINVAL;
 
 	/* TODO: there's probably a cleaner way to do this */
