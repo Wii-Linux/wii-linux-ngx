@@ -337,7 +337,7 @@ static int ug_tty_open(struct tty_struct *tty, struct file *filp)
 		return -ENODEV;
 	}
 
-	if (!adapter->refcnt) {
+	if (IS_ERR_OR_NULL(adapter->poller)) {
 		adapter->poller = kthread_run(ug_tty_poller, tty, "kugtty");
 		if (IS_ERR(adapter->poller)) {
 			dev_err(&adapter->spi_device->dev, "error creating poller thread\n");
@@ -363,6 +363,11 @@ static void ug_tty_close(struct tty_struct *tty, struct file *filp)
 	adapter = &ug_adapters[index];
 
 	mutex_lock(&adapter->mutex);
+
+	if (WARN_ON_ONCE(!adapter->refcnt)) {
+		mutex_unlock(&adapter->mutex);
+		return;
+	}
 
 	adapter->refcnt--;
 	if (!adapter->refcnt) {
@@ -449,7 +454,13 @@ static const struct tty_operations ug_tty_ops = {
 static int ug_tty_init(void)
 {
 	struct tty_driver *driver;
+	int i;
 	int retval;
+
+	for (i = 0; i < ARRAY_SIZE(ug_adapters); i++) {
+		mutex_init(&ug_adapters[i].mutex);
+		ug_adapters[i].poller = ERR_PTR(-EINVAL);
+	}
 
 	driver = tty_alloc_driver(3, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
 	if (IS_ERR(driver))
@@ -473,10 +484,21 @@ static int ug_tty_init(void)
 static void ug_tty_exit(void)
 {
 	struct tty_driver *driver = ug_tty_driver;
+	struct tty_port *port;
+	int i;
 
 	ug_tty_driver = NULL;
 	if (driver) {
 		tty_unregister_driver(driver);
+		for (i = 0; i < ARRAY_SIZE(ug_adapters); i++) {
+			port = driver->ports[i];
+			if (port) {
+				tty_port_destroy(port);
+				kfree(port);
+				driver->ports[i] = NULL;
+			}
+			mutex_destroy(&ug_adapters[i].mutex);
+		}
 		tty_driver_kref_put(driver);
 	}
 }
@@ -489,6 +511,7 @@ static void ug_tty_exit(void)
 static int ug_probe(struct spi_device *spi_device)
 {
 	struct console *console;
+	struct device *tty_dev;
 	struct ug_adapter *adapter;
 	unsigned int slot;
 	struct tty_port *port;
@@ -502,6 +525,9 @@ static int ug_probe(struct spi_device *spi_device)
 	}
 
 	slot = spi_device->controller->bus_num;
+	if (slot >= ARRAY_SIZE(ug_adapters))
+		return -EINVAL;
+
 	console = &ug_consoles[slot];
 	adapter = console->data;
 
@@ -514,18 +540,26 @@ static int ug_probe(struct spi_device *spi_device)
 
 		tty_port_init(port);
 		ug_tty_driver->ports[slot] = port;
-		tty_port_register_device(port, ug_tty_driver, slot, NULL);
 	}
 
+	mutex_lock(&adapter->mutex);
+	adapter->spi_device = spi_dev_get(spi_device);
+	mutex_unlock(&adapter->mutex);
+
+	port = ug_tty_driver->ports[slot];
+	tty_dev = tty_port_register_device(port, ug_tty_driver, slot,
+					   &spi_device->dev);
+	if (IS_ERR(tty_dev)) {
+		mutex_lock(&adapter->mutex);
+		adapter->spi_device = NULL;
+		mutex_unlock(&adapter->mutex);
+		spi_dev_put(spi_device);
+		return PTR_ERR(tty_dev);
+	}
 
 	dev_info(&spi_device->dev, "USB Gecko detected in memcard slot-%c\n",
 		   'A'+slot);
 
-	adapter->poller = ERR_PTR(-EINVAL);
-	mutex_init(&adapter->mutex);
-	adapter->refcnt = 0;
-
-	adapter->spi_device = spi_dev_get(spi_device);
 	spi_set_drvdata(spi_device, adapter);
 	register_console(console);
 
@@ -541,6 +575,9 @@ static void ug_remove(struct spi_device *spi_device)
 {
 	struct console *console;
 	struct ug_adapter *adapter;
+	struct spi_device *held_spi;
+	struct task_struct *poller;
+	struct tty_port *port;
 	unsigned int slot;
 
 	dev_info(&spi_device->dev, "removing device on channel %d, device %d\n",
@@ -550,25 +587,27 @@ static void ug_remove(struct spi_device *spi_device)
 	console = &ug_consoles[slot];
 	adapter = console->data;
 
-	if (adapter->refcnt)
-		dev_err(&spi_device->dev, "adapter removed while in use!\n");
-
 	unregister_console(console);
 
-	if (ug_tty_driver->ports[slot]) {
-		tty_unregister_device(ug_tty_driver, slot);
-		tty_port_destroy(ug_tty_driver->ports[slot]);
-		kfree(ug_tty_driver->ports[slot]);
-		ug_tty_driver->ports[slot] = NULL;
+	mutex_lock(&adapter->mutex);
+	held_spi = adapter->spi_device;
+	adapter->spi_device = NULL;
+	poller = adapter->poller;
+	adapter->poller = ERR_PTR(-EINVAL);
+	mutex_unlock(&adapter->mutex);
+
+	if (!IS_ERR_OR_NULL(poller))
+		kthread_stop(poller);
+
+	port = ug_tty_driver->ports[slot];
+	if (port) {
+		tty_port_tty_hangup(port, false);
+		tty_port_unregister_device(port, ug_tty_driver, slot);
 	}
 
 
 	spi_set_drvdata(spi_device, NULL);
-	adapter->spi_device = NULL;
-	spi_dev_put(spi_device);
-
-
-	mutex_destroy(&adapter->mutex);
+	spi_dev_put(held_spi);
 
 	dev_info(&spi_device->dev, "USB Gecko removed from memcard slot-%c\n",
 		   'A'+slot);
