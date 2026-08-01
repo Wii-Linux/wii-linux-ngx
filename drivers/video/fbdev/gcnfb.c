@@ -3250,6 +3250,9 @@ static struct platform_driver vifb_of_driver = {
 static int __init vifb_init_module(void)
 {
 	int error;
+#ifdef CONFIG_WII_AVE_RVL
+	bool ave_registered = false;
+#endif
 	char *option = NULL;
 
 	pr_info("%s - version %s\n", DRV_DESCRIPTION,
@@ -3272,9 +3275,20 @@ static int __init vifb_init_module(void)
 	error = i2c_add_driver(&vi_ave_driver);
 	if (error)
 		pr_err("failed to register AVE (%d)\n", error);
+	else
+		ave_registered = true;
 #endif
 
-	return platform_driver_register(&vifb_of_driver);
+	error = platform_driver_register(&vifb_of_driver);
+	if (error) {
+		pr_err("failed to register driver (%d)\n", error);
+#ifdef CONFIG_WII_AVE_RVL
+		if (ave_registered)
+			i2c_del_driver(&vi_ave_driver);
+#endif
+	}
+
+	return error;
 }
 
 static void __exit vifb_exit_module(void)
