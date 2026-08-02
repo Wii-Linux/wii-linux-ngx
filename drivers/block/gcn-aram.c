@@ -15,7 +15,6 @@
 #include <linux/blkdev.h>
 #include <linux/dma-mapping.h>
 #include <linux/hdreg.h>
-#include <linux/highmem.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -23,6 +22,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/scatterlist.h>
 
 
 #define DRV_DESCRIPTION "Nintendo GameCube Auxiliary RAM (ARAM) block driver"
@@ -48,6 +48,7 @@
 #define AR_DMA_CNT		0x028
 #define  AR_READ		BIT(31)
 #define  AR_WRITE		0
+#define  AR_DMA_LEN_MASK	GENMASK(30, 5)
 
 /*
  * Driver settings
@@ -55,7 +56,6 @@
 #define ARAM_NAME		"gcn-aram"
 
 #define ARAM_SECTOR_SIZE	PAGE_SIZE
-#define ARAM_DMA_BUF_SIZE	PAGE_SIZE
 
 
 /*
@@ -71,12 +71,13 @@ struct aram_drvdata {
 	struct gendisk			*disk;
 
 	struct request			*req;	/* protected by ->io_lock */
-	dma_addr_t			bounce_dma;
+	struct scatterlist		sg;
+	enum dma_data_direction		dma_dir;
+	dma_addr_t			dma_addr;
 	size_t				dma_len;
 
 	struct blk_mq_tag_set		tag_set;
 
-	void				*bounce_buf;
 	struct device			*dev;
 };
 
@@ -110,64 +111,19 @@ static void aram_start_dma(struct aram_drvdata *drvdata, sector_t sector,
 	u32 aram_addr = lower_32_bits((u64)sector << SECTOR_SHIFT);
 	u32 aram_dir = op == REQ_OP_READ ? AR_READ : AR_WRITE;
 
-	WARN_ON_ONCE((drvdata->bounce_dma & ARAM_DMA_ALIGN) ||
+	WARN_ON_ONCE((drvdata->dma_addr & ARAM_DMA_ALIGN) ||
 		     (drvdata->dma_len & ARAM_DMA_ALIGN));
 
-	aram_writel(drvdata, AR_DMA_MMADDR, lower_32_bits(drvdata->bounce_dma));
+	aram_writel(drvdata, AR_DMA_MMADDR, lower_32_bits(drvdata->dma_addr));
 	aram_writel(drvdata, AR_DMA_ARADDR, aram_addr);
 	aram_writel(drvdata, AR_DMA_CNT, aram_dir | drvdata->dma_len);
-}
-
-static blk_status_t aram_copy_to_bounce(struct aram_drvdata *drvdata,
-					struct request *req)
-{
-	struct req_iterator iter;
-	struct bio_vec bvec;
-	size_t offset = 0;
-
-	rq_for_each_segment(bvec, req, iter) {
-		void *src;
-
-		if (offset + bvec.bv_len > ARAM_DMA_BUF_SIZE)
-			return BLK_STS_IOERR;
-
-		src = bvec_kmap_local(&bvec);
-		memcpy((u8 *)drvdata->bounce_buf + offset, src, bvec.bv_len);
-		kunmap_local(src);
-		offset += bvec.bv_len;
-	}
-
-	return BLK_STS_OK;
-}
-
-static blk_status_t aram_copy_from_bounce(struct aram_drvdata *drvdata,
-					  struct request *req, size_t len)
-{
-	struct req_iterator iter;
-	struct bio_vec bvec;
-	size_t offset = 0;
-
-	rq_for_each_segment(bvec, req, iter) {
-		void *dst;
-
-		if (offset + bvec.bv_len > len)
-			return BLK_STS_IOERR;
-
-		dst = bvec_kmap_local(&bvec);
-		memcpy(dst, (u8 *)drvdata->bounce_buf + offset, bvec.bv_len);
-		kunmap_local(dst);
-		offset += bvec.bv_len;
-	}
-
-	return BLK_STS_OK;
 }
 
 static irqreturn_t aram_irq_handler(int irq, void *data)
 {
 	struct aram_drvdata *drvdata = data;
 	struct request *req;
-	blk_status_t status = BLK_STS_OK;
-	size_t dma_len;
+	enum dma_data_direction dma_dir;
 	u16 csr;
 
 	spin_lock(&drvdata->io_lock);
@@ -181,7 +137,7 @@ static irqreturn_t aram_irq_handler(int irq, void *data)
 	aram_ack_irq(drvdata, csr);
 
 	req = drvdata->req;
-	dma_len = drvdata->dma_len;
+	dma_dir = drvdata->dma_dir;
 	drvdata->req = NULL;
 	drvdata->dma_len = 0;
 
@@ -192,10 +148,8 @@ static irqreturn_t aram_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	if (req_op(req) == REQ_OP_READ)
-		status = aram_copy_from_bounce(drvdata, req, dma_len);
-
-	blk_mq_end_request(req, status);
+	dma_unmap_sg(drvdata->dev, &drvdata->sg, 1, dma_dir);
+	blk_mq_end_request(req, BLK_STS_OK);
 	return IRQ_HANDLED;
 }
 
@@ -208,7 +162,7 @@ static blk_status_t aram_queue_rq(struct blk_mq_hw_ctx *hctx,
 	u64 aram_addr = (u64)sector << SECTOR_SHIFT;
 	size_t len = blk_rq_bytes(req);
 	enum req_op op = req_op(req);
-	blk_status_t status;
+	int mapped_nents;
 	unsigned long flags;
 
 	if (op != REQ_OP_READ && op != REQ_OP_WRITE)
@@ -221,37 +175,56 @@ static blk_status_t aram_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 	spin_unlock_irqrestore(&drvdata->io_lock, flags);
 
-	blk_mq_start_request(req);
-
-	if (len > ARAM_DMA_BUF_SIZE || (len & ARAM_DMA_ALIGN) ||
+	if (len > AR_DMA_LEN_MASK || (len & ARAM_DMA_ALIGN) ||
 	    (aram_addr & ARAM_DMA_ALIGN)) {
-		status = BLK_STS_IOERR;
-		goto end;
+		return BLK_STS_IOERR;
 	}
 
 	if (aram_addr + len > drvdata->size) {
 		dev_err(drvdata->dev, "bad access: block=%llu size=%zu\n",
 			(unsigned long long)sector, len);
-		status = BLK_STS_IOERR;
-		goto end;
+		return BLK_STS_IOERR;
 	}
 
-	if (op == REQ_OP_WRITE) {
-		status = aram_copy_to_bounce(drvdata, req);
-		if (status != BLK_STS_OK)
-			goto end;
+	if (WARN_ON_ONCE(blk_rq_nr_phys_segments(req) != 1))
+		return BLK_STS_IOERR;
+
+	/* A physical segment can contain several adjacent bio vectors. */
+	sg_init_table(&drvdata->sg, 1);
+	if (WARN_ON_ONCE(blk_rq_map_sg(req, &drvdata->sg) != 1))
+		return BLK_STS_IOERR;
+
+	drvdata->dma_dir = rq_dma_dir(req);
+	mapped_nents = dma_map_sg(drvdata->dev, &drvdata->sg, 1,
+				  drvdata->dma_dir);
+	if (!mapped_nents)
+		return BLK_STS_RESOURCE;
+
+	drvdata->dma_addr = sg_dma_address(&drvdata->sg);
+	drvdata->dma_len = sg_dma_len(&drvdata->sg);
+	if (WARN_ON_ONCE(mapped_nents != 1 || drvdata->dma_len != len ||
+			 upper_32_bits(drvdata->dma_addr) ||
+			 (drvdata->dma_addr & ARAM_DMA_ALIGN))) {
+		dma_unmap_sg(drvdata->dev, &drvdata->sg, 1,
+			     drvdata->dma_dir);
+		drvdata->dma_len = 0;
+		return BLK_STS_IOERR;
 	}
 
 	spin_lock_irqsave(&drvdata->io_lock, flags);
+	if (drvdata->req) {
+		spin_unlock_irqrestore(&drvdata->io_lock, flags);
+		dma_unmap_sg(drvdata->dev, &drvdata->sg, 1,
+			     drvdata->dma_dir);
+		drvdata->dma_len = 0;
+		return BLK_STS_RESOURCE;
+	}
+
+	blk_mq_start_request(req);
 	drvdata->req = req;
-	drvdata->dma_len = len;
 	aram_start_dma(drvdata, sector, op);
 	spin_unlock_irqrestore(&drvdata->io_lock, flags);
 
-	return BLK_STS_OK;
-
-end:
-	blk_mq_end_request(req, status);
 	return BLK_STS_OK;
 }
 
@@ -336,23 +309,29 @@ static const struct block_device_operations aram_fops = {
 
 static int aram_probe(struct platform_device *pdev)
 {
-	struct queue_limits lim = {
-		.logical_block_size	= ARAM_SECTOR_SIZE,
-		.physical_block_size	= ARAM_SECTOR_SIZE,
-		.io_min			= ARAM_SECTOR_SIZE,
-		.dma_alignment		= ARAM_DMA_ALIGN,
-		.max_hw_sectors		= ARAM_DMA_BUF_SIZE >> SECTOR_SHIFT,
-		.max_segments		= 1,
-		.max_segment_size	= ARAM_DMA_BUF_SIZE,
-	};
+	struct queue_limits lim = { };
 	struct device *dev = &pdev->dev;
 	struct aram_drvdata *drvdata;
+	u32 max_dma_len;
 	u64 size;
 	int ret;
 
 	ret = aram_get_size(dev->of_node, &size);
 	if (ret)
 		return ret;
+
+	max_dma_len = min_t(u64, size, AR_DMA_LEN_MASK);
+	max_dma_len &= ~(ARAM_SECTOR_SIZE - 1);
+	if (!max_dma_len)
+		return -EINVAL;
+
+	lim.logical_block_size = ARAM_SECTOR_SIZE;
+	lim.physical_block_size = ARAM_SECTOR_SIZE;
+	lim.io_min = ARAM_SECTOR_SIZE;
+	lim.dma_alignment = ARAM_DMA_ALIGN;
+	lim.max_hw_sectors = max_dma_len >> SECTOR_SHIFT;
+	lim.max_segments = 1;
+	lim.max_segment_size = max_dma_len;
 
 	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
@@ -371,11 +350,6 @@ static int aram_probe(struct platform_device *pdev)
 	drvdata->irq = platform_get_irq(pdev, 0);
 	if (drvdata->irq < 0)
 		return drvdata->irq;
-
-	drvdata->bounce_buf = dmam_alloc_coherent(dev, ARAM_DMA_BUF_SIZE,
-					       &drvdata->bounce_dma, GFP_KERNEL);
-	if (!drvdata->bounce_buf)
-		return -ENOMEM;
 
 	ret = devm_request_irq(dev, drvdata->irq, aram_irq_handler, IRQF_SHARED,
 			       ARAM_NAME, drvdata);
