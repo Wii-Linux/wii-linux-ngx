@@ -71,6 +71,7 @@ static struct usb_driver btusb_driver;
 #define BTUSB_ACTIONS_SEMI		BIT(27)
 #define BTUSB_BARROT			BIT(28)
 #define BTUSB_QUALCOMM			BIT(30)
+#define BTUSB_WII			BIT(31)
 
 static const struct usb_device_id btusb_table[] = {
 	/*
@@ -200,7 +201,8 @@ static const struct usb_device_id quirks_table[] = {
 	/* Broadcom BCM2045 devices */
 	{ USB_DEVICE(0x0a5c, 0x2045), .driver_info = BTUSB_BCM2045 },
 	/* Nintendo Wii/Wii U Bluetooth card, rebadged BCM2045A */
-	{ USB_DEVICE(0x057e, 0x0305), .driver_info = BTUSB_BCM2045 },
+	{ USB_DEVICE(0x057e, 0x0305),
+	  .driver_info = BTUSB_BCM2045 | BTUSB_WII },
 
 	/* Atheros 3011 with sflash firmware */
 	{ USB_DEVICE(0x0489, 0xe027), .driver_info = BTUSB_IGNORE },
@@ -4564,6 +4566,9 @@ static int btusb_probe(struct usb_interface *intf,
 
 	if (id->driver_info & BTUSB_BCM2045)
 		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_STORED_LINK_KEY);
+
+	if (id->driver_info & BTUSB_WII)
+		hci_set_quirk(hdev, HCI_QUIRK_IMPORT_STORED_LINK_KEYS);
 
 	if (id->driver_info & BTUSB_BCM92035)
 		hdev->setup = btusb_setup_bcm92035;
