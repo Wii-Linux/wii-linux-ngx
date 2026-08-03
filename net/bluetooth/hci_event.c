@@ -4714,6 +4714,46 @@ not_found:
 	hci_dev_unlock(hdev);
 }
 
+static void hci_return_link_keys_evt(struct hci_dev *hdev, void *data,
+				     struct sk_buff *skb)
+{
+	struct hci_ev_return_link_keys *ev = data;
+	int i;
+
+	if (!hci_test_quirk(hdev, HCI_QUIRK_IMPORT_STORED_LINK_KEYS))
+		return;
+
+	if (!hci_ev_skb_pull(hdev, skb, HCI_EV_RETURN_LINK_KEYS,
+			     flex_array_size(ev, keys, ev->num_keys)))
+		return;
+
+	bt_dev_dbg(hdev, "num_keys %u", ev->num_keys);
+
+	hci_dev_lock(hdev);
+
+	for (i = 0; i < ev->num_keys; i++) {
+		struct hci_return_link_key *info = &ev->keys[i];
+		struct link_key *key;
+		bool persistent;
+
+		/* Ignore NULL link keys against CVE-2020-26555. */
+		if (!crypto_memneq(info->link_key, ZERO_KEY,
+				   HCI_LINK_KEY_SIZE)) {
+			bt_dev_dbg(hdev, "Ignore NULL link key (ZERO KEY) for %pMR",
+				   &info->bdaddr);
+			continue;
+		}
+
+		key = hci_add_link_key(hdev, NULL, &info->bdaddr,
+				       info->link_key, HCI_LK_COMBINATION, 0,
+				       &persistent);
+		if (key && hci_dev_test_flag(hdev, HCI_MGMT))
+			mgmt_new_link_key(hdev, key, persistent);
+	}
+
+	hci_dev_unlock(hdev);
+}
+
 static void hci_link_key_notify_evt(struct hci_dev *hdev, void *data,
 				    struct sk_buff *skb)
 {
@@ -7681,6 +7721,9 @@ static const struct hci_ev {
 	/* [0x14 = HCI_EV_MODE_CHANGE] */
 	HCI_EV(HCI_EV_MODE_CHANGE, hci_mode_change_evt,
 	       sizeof(struct hci_ev_mode_change)),
+	/* [0x15 = HCI_EV_RETURN_LINK_KEYS] */
+	HCI_EV_VL(HCI_EV_RETURN_LINK_KEYS, hci_return_link_keys_evt,
+		  sizeof(struct hci_ev_return_link_keys), HCI_MAX_EVENT_SIZE),
 	/* [0x16 = HCI_EV_PIN_CODE_REQ] */
 	HCI_EV(HCI_EV_PIN_CODE_REQ, hci_pin_code_request_evt,
 	       sizeof(struct hci_ev_pin_code_req)),

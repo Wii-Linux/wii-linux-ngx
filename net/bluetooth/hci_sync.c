@@ -4310,8 +4310,9 @@ static int hci_read_stored_link_key_sync(struct hci_dev *hdev)
 {
 	struct hci_cp_read_stored_link_key cp;
 
-	if (!(hdev->commands[6] & 0x20) ||
-	    hci_test_quirk(hdev, HCI_QUIRK_BROKEN_STORED_LINK_KEY))
+	if (!hci_test_quirk(hdev, HCI_QUIRK_IMPORT_STORED_LINK_KEYS) &&
+	    (!(hdev->commands[6] & 0x20) ||
+	     hci_test_quirk(hdev, HCI_QUIRK_BROKEN_STORED_LINK_KEY)))
 		return 0;
 
 	memset(&cp, 0, sizeof(cp));

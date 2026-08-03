@@ -3027,7 +3027,12 @@ static int load_link_keys(struct sock *sk, struct hci_dev *hdev, void *data,
 
 	hci_dev_lock(hdev);
 
-	hci_link_keys_clear(hdev);
+	/* Controllers with stored keys may report them before the management
+	 * interface is initialized. Keep those keys when merging the keys loaded
+	 * by userspace.
+	 */
+	if (!hci_test_quirk(hdev, HCI_QUIRK_IMPORT_STORED_LINK_KEYS))
+		hci_link_keys_clear(hdev);
 
 	if (cp->debug_keys)
 		changed = !hci_dev_test_and_set_flag(hdev, HCI_KEEP_DEBUG_KEYS);

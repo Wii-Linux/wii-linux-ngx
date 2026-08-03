@@ -375,6 +375,17 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, link keys reported by the controller through
+	 * the HCI Return Link Keys event are imported into the host key database.
+	 * The Read Stored Link Key command is sent even if the controller does
+	 * not advertise support for it or HCI_QUIRK_BROKEN_STORED_LINK_KEY is
+	 * set, while deletion remains disabled. Imported keys are preserved when
+	 * userspace loads its keys.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_IMPORT_STORED_LINK_KEYS,
+
 	__HCI_NUM_QUIRKS,
 };
 
@@ -2632,6 +2643,17 @@ struct hci_ev_mode_change {
 	__le16   handle;
 	__u8     mode;
 	__le16   interval;
+} __packed;
+
+#define HCI_EV_RETURN_LINK_KEYS		0x15
+struct hci_return_link_key {
+	bdaddr_t bdaddr;
+	__u8     link_key[HCI_LINK_KEY_SIZE];
+} __packed;
+
+struct hci_ev_return_link_keys {
+	__u8 num_keys;
+	struct hci_return_link_key keys[];
 } __packed;
 
 #define HCI_EV_PIN_CODE_REQ		0x16
