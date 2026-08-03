@@ -249,6 +249,9 @@ int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
 
 	state = (struct mini_state *)ipc->flavor_state;
 
+	if (num_args < 0 || num_args > ARRAY_SIZE(state->in_queue[0].args))
+		return -EINVAL;
+
 	if (inqueue_full(ipc)) {
 		pr_warn("in queue full, this might be bad...\n");
 		while (inqueue_full(ipc)) {
