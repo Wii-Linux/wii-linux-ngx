@@ -73,7 +73,7 @@ static void wiimote_queue(struct wiimote_data *wdata, const __u8 *buffer,
 	unsigned long flags;
 	__u8 newhead;
 
-	if (count > HID_MAX_BUFFER_SIZE) {
+	if (count > WIIMOTE_MAX_REPORT_SIZE) {
 		hid_warn(wdata->hdev, "Sending too large output report\n");
 
 		spin_lock_irqsave(&wdata->queue.lock, flags);

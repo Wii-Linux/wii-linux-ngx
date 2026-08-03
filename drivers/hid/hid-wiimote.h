@@ -23,6 +23,7 @@
 
 #define WIIMOTE_NAME "Nintendo Wii Remote"
 #define WIIMOTE_BUFSIZE 32
+#define WIIMOTE_MAX_REPORT_SIZE 22
 
 #define WIIPROTO_FLAG_LED1		0x01
 #define WIIPROTO_FLAG_LED2		0x02
@@ -101,7 +102,7 @@ enum wiimote_mptype {
 };
 
 struct wiimote_buf {
-	__u8 data[HID_MAX_BUFFER_SIZE];
+	__u8 data[WIIMOTE_MAX_REPORT_SIZE];
 	size_t size;
 };
 
