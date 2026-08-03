@@ -146,7 +146,7 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 	state->out_size = infohdr->ipc_out_size;
 
 	/* map the in queue */
-	state->in_queue = ioremap((u32)infohdr->ipc_in, state->in_size);
+	state->in_queue = ioremap((u32)infohdr->ipc_in, state->in_size * sizeof(struct ipc_request_mini));
 	if (!state->in_queue) {
 		pr_err("failed to map in_queue at %p\n", infohdr->ipc_in);
 		ret = -ENOMEM;
@@ -154,7 +154,7 @@ int ipc_init_mini(struct hlwd_ipc *ipc)
 	}
 
 	/* map the out queue */
-	state->out_queue = ioremap((u32)infohdr->ipc_out, state->out_size);
+	state->out_queue = ioremap((u32)infohdr->ipc_out, state->out_size * sizeof(struct ipc_request_mini));
 	if (!state->out_queue) {
 		pr_err("failed to map out_queue at %p\n", infohdr->ipc_out);
 		ret = -ENOMEM;
