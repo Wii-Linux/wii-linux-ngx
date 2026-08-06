@@ -67,6 +67,23 @@ config WII
 	  Select WII if configuring for the Nintendo Wii.
 	  More information at: <http://gc-linux.sourceforge.net/>
 
+config WII_NETCFG_HANDOFF
+	bool "Wii bootloader network configuration handoff"
+	depends on WII
+	default y
+	help
+	  Expose a Wii network configuration file supplied by the bootloader in
+	  reserved memory through a root-only misc device. Userspace can consume
+	  the configuration after importing it, causing the kernel to wipe the
+	  handoff and return its memory to the page allocator.
+
+	  This permits userspace to import network configurations from the Wii's
+	  official firmware settings without the kernel needing to know how to
+	  read the proprietary encrypted filesystem via the proprietary NAND
+	  Interface.
+
+	  If in doubt, say Y here.
+
 config TSI108_BRIDGE
 	bool
 	select FORCE_PCI
