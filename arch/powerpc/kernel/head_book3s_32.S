@@ -877,7 +877,11 @@ SYM_FUNC_START_LOCAL(early_hash_table)
 	TLBSYNC			/* ... on all CPUs */
 	/* Load the SDR1 register (hash table base & size) */
 	lis	r6, early_hash - PAGE_OFFSET@h
+#if defined(CONFIG_GAMECUBE_COMMON)
+	/* HTABSIZE 0 describes the 64 KiB early hash table. */
+#else
 	ori	r6, r6, 3	/* 256kB table */
+#endif
 	mtspr	SPRN_SDR1, r6
 	blr
 SYM_FUNC_END(early_hash_table)
