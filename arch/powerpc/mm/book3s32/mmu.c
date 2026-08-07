@@ -30,7 +30,20 @@
 
 #include <mm/mmu_decl.h>
 
+/*
+ * The early hash only has to cover mappings used before MMU_init_hw()
+ * allocates the final table.  A 64 KiB table provides 8192 PTE slots, more
+ * than the number of pages in the consoles' 24 MiB MEM1, and avoids carrying
+ * a 256 KiB temporary table in these memory-constrained kernels.  Keep it in
+ * a separate input section so other init data does not create another 64 KiB
+ * alignment hole ahead of the array.
+ */
+#if defined(CONFIG_GAMECUBE_COMMON)
+u8 early_hash[SZ_64K] __section(".init.data.early_hash")
+	__aligned(SZ_64K) = {0};
+#else
 u8 __initdata early_hash[SZ_256K] __aligned(SZ_256K) = {0};
+#endif
 
 static struct hash_pte __initdata *Hash = (struct hash_pte *)early_hash;
 static unsigned long __initdata Hash_size, Hash_mask;
@@ -366,7 +379,13 @@ void __init MMU_init_hw(void)
 		n_hpteg = MIN_N_HPTEG;
 	lg_n_hpteg = __ilog2(n_hpteg);
 	if (n_hpteg & (n_hpteg - 1)) {
-		++lg_n_hpteg;		/* round up if not power of 2 */
+		/*
+		 * A 128 KiB table still provides 16384 PTEs on Wii.  Prefer
+		 * that footprint to rounding up to 256 KiB on a machine with
+		 * only 88 MiB of conventional RAM.
+		 */
+		if (!IS_ENABLED(CONFIG_WII))
+			++lg_n_hpteg;	/* round up if not power of 2 */
 		n_hpteg = 1 << lg_n_hpteg;
 	}
 	Hash_size = n_hpteg << LG_HPTEG_SIZE;
