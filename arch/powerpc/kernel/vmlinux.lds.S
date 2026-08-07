@@ -278,6 +278,13 @@ SECTIONS
 
 	. = ALIGN(PAGE_SIZE);
 
+#if defined(CONFIG_GAMECUBE_COMMON)
+	/* Place the aligned temporary hash before ordinary init data. */
+	.init.data.early_hash : AT(ADDR(.init.data.early_hash) - LOAD_OFFSET) {
+		*(.init.data.early_hash)
+	}
+#endif
+
 	INIT_DATA_SECTION(16)
 
 	. = ALIGN(8);
