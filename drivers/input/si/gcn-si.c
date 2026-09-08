@@ -195,6 +195,7 @@ struct si_drvdata {
 	void __iomem *io_base;
 	int irq;
 	struct completion transfer_done;
+	bool ignore_collisions;
 
 	struct device *dev;
 };
@@ -316,7 +317,13 @@ static enum si_comerr_result si_handle_comerr(struct si_drvdata *drvdata,
 	sr = in_be32(io_base + SISR);
 	out_be32(io_base + SISR, SI_SR_ERR_MASK(index));
 
-	/* FIXME: Latte always reports COLL; add quirk if this driver is ever to work on it */
+	/* Latte reports a collision on every transfer, even successful ones. */
+	if (drvdata->ignore_collisions) {
+		sr &= ~SI_SR_COLL(index);
+		if (!(sr & SI_SR_ERR_MASK(index)))
+			return SI_COMERR_NONE;
+	}
+
 	if (sr & (SI_SR_COLL(index) | SI_SR_OVRUN(index) |
 		  SI_SR_UNRUN(index))) {
 		dev_warn(drvdata->dev,
@@ -926,6 +933,8 @@ static int si_of_probe(struct platform_device *odev)
 	dev_set_drvdata(dev, drvdata);
 	drvdata->dev = dev;
 	drvdata->io_base = io_base;
+	drvdata->ignore_collisions =
+		of_device_is_compatible(dev->of_node, "nintendo,latte-si");
 	init_completion(&drvdata->transfer_done);
 
 	INIT_DELAYED_WORK(&drvdata->hotplug_work, si_hotplug_work);
@@ -1012,6 +1021,7 @@ static void si_of_shutdown(struct platform_device *odev)
 static const struct of_device_id si_of_match[] = {
 	{ .compatible = "nintendo,flipper-si" },
 	{ .compatible = "nintendo,hollywood-si" },
+	{ .compatible = "nintendo,latte-si" },
 	{ },
 };
 
