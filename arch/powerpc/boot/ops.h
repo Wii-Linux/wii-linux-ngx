@@ -87,6 +87,7 @@ struct fdt_mapped_range {
 
 void start(void);
 void fdt_init(void *blob);
+int fdt_range_is_reserved(unsigned long start, unsigned long size);
 void fdt_init_from_loader(unsigned long r3, unsigned long r4,
 			  unsigned long r5,
 			  const struct fdt_mapped_range *ranges,
