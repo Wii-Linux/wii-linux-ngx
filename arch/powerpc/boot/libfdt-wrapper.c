@@ -155,6 +155,29 @@ static unsigned long fdt_wrapper_finalize(void)
 	return (unsigned long)fdt;
 }
 
+/* Check the reservation map copied from the loader's device tree. */
+int fdt_range_is_reserved(unsigned long start, unsigned long size)
+{
+	uint64_t base, length, offset;
+	int i, count;
+
+	if (!size)
+		return 0;
+
+	count = fdt_num_mem_rsv(fdt);
+	for (i = 0; i < count; i++) {
+		if (fdt_get_mem_rsv(fdt, i, &base, &length))
+			return 0;
+		if (start < base)
+			continue;
+		offset = start - base;
+		if (offset < length && size <= length - offset)
+			return 1;
+	}
+
+	return 0;
+}
+
 static int range_contains(const struct fdt_mapped_range *range,
 			  unsigned long addr, unsigned long size)
 {
