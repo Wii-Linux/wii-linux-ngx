@@ -188,7 +188,7 @@ static void platform_fixups(void)
 	if (!mem)
 		fatal("Can't find memory node\n");
 
-	/* two ranges of (address, size) words */
+	/* three ranges of (address, size) words */
 	len = getprop(mem, "reg", reg, sizeof(reg));
 	if (len != sizeof(reg)) {
 		/* nothing to do */
@@ -201,6 +201,16 @@ static void platform_fixups(void)
 		/* if that fails use a sane value */
 		mem2_boundary = MEM2_TOP - FIRMWARE_DEFAULT_SIZE;
 	}
+
+	/*
+	 * The bootloader may already reserve MINI below 64 MiB while exposing
+	 * additional MEM2 above it (for example on devkits or Wii U "vWii").
+	 * Do not discard that RAM when the complete firmware region is
+	 * covered by a reservation.
+	 */
+	if (mem2_boundary >= 0x10000000 && mem2_boundary < MEM2_TOP &&
+	    fdt_range_is_reserved(mem2_boundary, MEM2_TOP - mem2_boundary))
+		goto out;
 
 	if (mem2_boundary > reg[4] && mem2_boundary < reg[4] + reg[5]) {
 		reg[5] = mem2_boundary - reg[4];
