@@ -1129,7 +1129,7 @@ static int exi_spi_transfer_one(struct spi_controller *ctlr,
 	if (rx && tx)
 		ret = exi_xfer_imm_buf(channel, &tx, &rx, len);
 	else
-		ret = exi_xfer_half_duplex(channel, &tx, &rx, len, &spi->dev);
+		ret = exi_xfer_half_duplex(channel, &tx, &rx, len, exi->dev);
 
 	exi_unlock(channel);
 
