@@ -41,5 +41,6 @@ obj-$(CONFIG_BLK_DEV_RUST_NULL) += rnull/
 
 obj-$(CONFIG_BLK_DEV_UBLK)			+= ublk_drv.o
 obj-$(CONFIG_BLK_DEV_ZONED_LOOP) += zloop.o
+obj-$(CONFIG_BLK_DEV_GCN_MEMORY_CARD)	+= gcn-memory-card.o
 
 swim_mod-y	:= swim.o swim_asm.o
