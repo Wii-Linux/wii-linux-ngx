@@ -99,6 +99,19 @@ config BLK_DEV_GCN_ARAM
 	  To compile this driver as a module, choose M here: the
 	  module will be called gcn-aram.
 
+config BLK_DEV_GCN_MEMORY_CARD
+	tristate "Nintendo GameCube Memory Card"
+	depends on SPI
+	help
+	  Saying Y here will allow you to use Nintendo GameCube Memory Cards
+	  connected over SPI, including the GameCube/Wii/Wii U's official
+	  "EXI" bus (in which case you'll also want CONFIG_SPI_EXI).
+
+	  This driver can also be built as a module. If so, the module
+	  will be called gcn-memory-card.
+
+	  If unsure, say N.
+
 config BLK_DEV_HLWD_DI
 	tristate "Nintendo Hollywood Drive Interface support"
 	depends on WII || GAMECUBE
