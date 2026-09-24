@@ -23,19 +23,15 @@ BSS_STACK(8192);
 #define EXI_CTRL_ENABLE		(1<<0)
 
 #define MEM1_TOP		(24*1024*1024)
-#define XFB_RESERVED_SIZE	(1*1024*1024)
 
 #define MEM2_TOP		(0x10000000 + 64*1024*1024)
 #define FIRMWARE_DEFAULT_SIZE	(12*1024*1024)
 
-#define VI_DCR		0x02 /* u16 */
-#define VI_DCR_SCAN		(0x1<<2)
-#define VI_DCR_SCAN_INTERLACED		(0<<2)
-#define VI_DCR_SCAN_PROGRESSIVE		(1<<2)
-#define VI_TFBL		0x1c /* u32 */
-#define VI_BFBL		0x24 /* u32 */
-#define SCREEN_WIDTH		640
-#define COLOR_BLACK		0x10801080 /* YUYV */
+#define VI_BASE			HW_REG(0x0c002000)
+#define VI_VTR			0x00 /* u16 */
+#define VI_VTR_ACV		0x3ff0
+#define VI_VTO			0x0c /* u32 */
+#define VI_VTE			0x10 /* u32 */
 
 struct mipc_infohdr {
 	char magic[3];
@@ -107,73 +103,31 @@ out:
 
 }
 
-/* Size of the heap without overlapping the xfb or the firmware. */
+/* Size of the heap without overlapping the firmware. */
 static u32 mem_heapsize(void) {
 	u32 bottom = (u32)_end;
 	u32 top = (bottom < MEM1_TOP ?
-		MEM1_TOP - XFB_RESERVED_SIZE :
+		MEM1_TOP :
 		MEM2_TOP - FIRMWARE_DEFAULT_SIZE);
 	return (top > bottom ? top - bottom : 0);
 }
 
-/* Check if the memory ranges overlap. */
-static bool mem_overlaps(u32 addr1, u32 size1, u32 addr2, u32 size2)
+/* Blank active video without changing the inherited sync timing. */
+static void vi_set_black(void)
 {
-	return (addr1 > addr2 ?
-		addr1 - addr2 < size2 :
-		addr2 - addr1 < size1);
-}
+	u16 vtr = in_be16(VI_BASE + VI_VTR);
+	u32 acv = (vtr & VI_VTR_ACV) >> 4;
+	u32 vto, vte;
 
-static void vi_fixups(void)
-{
-	void *vi;
-	void *io_base;
-	void *xfb_base;
-	u32 reg[2];
-	u32 xfb_start;
-	u32 xfb_size;
-	u32 offset;
-	int len;
-
-	vi = find_node_by_compatible(NULL, "nintendo,hollywood-vi");
-	if (!vi)
+	if (!acv)
 		return;
 
-	len = getprop(vi, "reg", reg, sizeof(reg));
-	if (len != sizeof(reg))
-		return;
-
-	len = getprop(vi, "xfb-start", &xfb_start, sizeof(xfb_start));
-	if (len != sizeof(xfb_start))
-		return;
-
-	len = getprop(vi, "xfb-size", &xfb_size, sizeof(xfb_size));
-	if (len != sizeof(xfb_size))
-		return;
-
-	if ((xfb_start & 0x1f) != 0 || (xfb_size & 0x1f) != 0)
-		printf("xfb is not 32 byte aligned!\n");
-	if (mem_overlaps(xfb_start, xfb_size, (u32)_end, mem_heapsize()))
-		printf("xfb overlaps the heap!\n");
-
-	/* clear xfb */
-	xfb_base = (void *)xfb_start;
-	for (offset = xfb_start & 0x3; offset + 4 <= xfb_size; offset += 4)
-		out_be32(xfb_base + offset, COLOR_BLACK);
-
-	/* update the framebuffer address */
-	io_base = (void *)reg[0];
-	switch (in_be16(io_base + VI_DCR) & VI_DCR_SCAN) {
-		case VI_DCR_SCAN_INTERLACED:
-			out_be32(io_base + VI_TFBL, 0x10000000 | (xfb_start >> 5));
-			xfb_start += 2 * SCREEN_WIDTH;	/* line length */
-			out_be32(io_base + VI_BFBL, 0x10000000 | (xfb_start >> 5));
-			break;
-		case VI_DCR_SCAN_PROGRESSIVE:
-			out_be32(io_base + VI_TFBL, 0x10000000 | (xfb_start >> 5));
-			break;
-	}
-	printf("xfb @ %08X\n", xfb_start);
+	vto = in_be32(VI_BASE + VI_VTO);
+	vte = in_be32(VI_BASE + VI_VTE);
+	/* Move active half-lines into blanking, as VIDEO_SetBlack() does. */
+	out_be16(VI_BASE + VI_VTR, vtr & ~VI_VTR_ACV);
+	out_be32(VI_BASE + VI_VTO, vto + (2 << 16) + 2 * acv - 2);
+	out_be32(VI_BASE + VI_VTE, vte + (2 << 16) + 2 * acv - 2);
 }
 
 static void platform_fixups(void)
@@ -219,7 +173,6 @@ static void platform_fixups(void)
 	}
 
 out:
-	vi_fixups();
 	return;
 }
 
@@ -234,6 +187,8 @@ void platform_init(unsigned long r3, unsigned long r4, unsigned long r5)
 	if (!heapsize)
 		fatal("no heap\n");
 
+	/* Stop VI from fetching the loader's XFB until our own 'gcnfb' initializes */
+	vi_set_black();
 	simple_alloc_init(_end, heapsize, 32, 64);
 	fdt_init_from_loader(r3, r4, r5, mapped_ram, ARRAY_SIZE(mapped_ram));
 

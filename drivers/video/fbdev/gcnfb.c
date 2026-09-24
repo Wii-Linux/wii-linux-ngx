@@ -35,6 +35,7 @@
 #define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
 
 #include <linux/completion.h>
+#include <linux/console.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -42,12 +43,15 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
@@ -279,7 +283,6 @@ enum vi_tv_mode_flags {
 #define VI_HORZ_ALIGN		0xf	/* in pixels-1 */
 #define VI_HORZ_WORD_SIZE	32	/* bytes */
 
-#define VI_XFB_WIDTH		640
 #define TV_BYTES_PER_PIXEL	2 /* all supported TV modes are native YUYV */
 #define VI_YUYV_BLACK		0x10801080
 
@@ -454,10 +457,54 @@ struct vi_tv_mode {
 	int lines;		/* total lines */
 };
 
+/* Keep mapped storage alive until the last VMA closes after device removal. */
+struct vifb_rgb_buffer {
+	struct kref ref;
+	atomic_t map_count;
+	struct device *dev;
+	void *cpu;
+	dma_addr_t dma;
+	size_t size;
+};
+
+static void vifb_rgb_release(struct kref *ref)
+{
+	struct vifb_rgb_buffer *buf = container_of(ref, struct vifb_rgb_buffer, ref);
+
+	dma_free_noncoherent(buf->dev, buf->size, buf->cpu, buf->dma,
+			     DMA_TO_DEVICE);
+	put_device(buf->dev);
+	kfree(buf);
+}
+
+static struct vifb_rgb_buffer *vifb_rgb_alloc(struct device *dev, size_t size)
+{
+	struct vifb_rgb_buffer *buf = kzalloc(sizeof(*buf), GFP_KERNEL);
+
+	if (!buf)
+		return NULL;
+	buf->cpu = dma_alloc_noncoherent(dev, size, &buf->dma,
+					DMA_TO_DEVICE, GFP_KERNEL);
+	if (!buf->cpu) {
+		kfree(buf);
+		return NULL;
+	}
+	kref_init(&buf->ref);
+	atomic_set(&buf->map_count, 0);
+	buf->dev = get_device(dev);
+	buf->size = size;
+	memset(buf->cpu, 0, size);
+	return buf;
+}
+
 /*
  * Video control data structure.
  */
 struct vi_ctl {
+	struct mutex mode_lock;
+	bool irq_requested;
+	bool interrupts_enabled;
+	struct vifb_rgb_buffer *rgb_buffer;
 	spinlock_t lock;
 
 	void __iomem *io_base;
@@ -468,6 +515,10 @@ struct vi_ctl {
 	phys_addr_t gx_fifo_base;
 	void *fifo;
 	dma_addr_t fifo_dma;
+	void *xfb;
+	dma_addr_t xfb_dma;
+	size_t xfb_size;
+	unsigned int xfb_stride;
 	void *rgb_fb;
 	dma_addr_t rgb_fb_dma;
 	size_t rgb_fb_size;
@@ -586,10 +637,6 @@ static u32 pseudo_palette[16];
  * texture to undo GX's 4x4 RGB565 tiling in texture-coordinate space, renders
  * the result to EFB, then copies EFB to the YUYV XFB consumed by VI.
  */
-static unsigned long gx_xfb_start;
-static void *xfb_mem;
-static unsigned int gx_xfb_size;
-
 #define GX_INDIRECT_WIDTH		16
 #define GX_INDIRECT_HEIGHT		4
 #define GX_WIDE_EFB_WIDTH		672
@@ -1036,36 +1083,13 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 /*
  * Initialize the video hardware for a given TV mode.
  */
-static int vi_setup_tv_mode(struct vi_ctl *ctl, bool force_detect)
+static void vi_setup_tv_mode(struct vi_ctl *ctl)
 {
 	void __iomem *io_base = ctl->io_base;
 	struct vi_mode_timings *timings = &ctl->timings;
 	struct fb_var_screeninfo *var = &ctl->info->var;
-	struct vi_tv_mode *mode;
-	int has_component_cable;
+	struct vi_tv_mode *mode = ctl->mode;
 	u16 std, ppl;
-
-	/* we need to re-detect the tv mode if the cable type changes */
-	if (force_detect) {
-		int error = vi_detect_tv_mode(ctl);
-		if (error)
-			return error;
-	} else {
-		has_component_cable = vi_has_component_cable(ctl);
-		if ((ctl->has_component_cable && !has_component_cable) ||
-			(!ctl->has_component_cable && has_component_cable)) {
-			int error = vi_detect_tv_mode(ctl);
-			if (error)
-				return error;
-		}
-	}
-
-	mode = ctl->mode;
-
-	out_be16(io_base + VI_DCR,
-		 vi_dcr_fmt((mode->lines == 625) ? VI_FMT_PAL : VI_FMT_NTSC) |
-		 vi_dcr_nin((mode->flags & VI_VMF_PROGRESSIVE) ?  1 : 0) |
-		 vi_dcr_enb(1));
 
 	out_be16(io_base + VI_VTR,
 		 vi_vtr_equ(timings->equ) | vi_vtr_acv(timings->acv));
@@ -1096,7 +1120,7 @@ static int vi_setup_tv_mode(struct vi_ctl *ctl, bool force_detect)
 	out_be32(io_base + VI_TFBR, 0);
 	out_be32(io_base + VI_BFBR, 0);
 
-	std = (var->xres_virtual * TV_BYTES_PER_PIXEL) / VI_HORZ_WORD_SIZE;
+	std = ctl->xfb_stride / VI_HORZ_WORD_SIZE;
 	if (!(mode->flags & VI_VMF_PROGRESSIVE))
 		std *= 2;
 	ppl = ALIGN((var->xoffset & VI_HORZ_ALIGN) + var->xres,
@@ -1131,7 +1155,11 @@ static int vi_setup_tv_mode(struct vi_ctl *ctl, bool force_detect)
 	out_be32(io_base + VI_UNK2, 0x00ff00ff);
 	out_be32(io_base + VI_UNK3, 0x00ff00ff);
 
-	return 0;
+	/* Enable scanout only after all timing and stride registers agree. */
+	out_be16(io_base + VI_DCR,
+		 vi_dcr_fmt((mode->lines == 625) ? VI_FMT_PAL : VI_FMT_NTSC) |
+		 vi_dcr_nin((mode->flags & VI_VMF_PROGRESSIVE) ?  1 : 0) |
+		 vi_dcr_enb(1));
 }
 
 /*
@@ -1143,7 +1171,7 @@ static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 	void __iomem *io_base = ctl->io_base;
 	u32 top, bot;
 	u8 xof;
-	int gx_ll = VI_XFB_WIDTH * TV_BYTES_PER_PIXEL;
+	unsigned int gx_ll = ctl->xfb_stride;
 
 	top = bot = addr;
 	if (!vi_vmode_is_progressive(info->var.vmode)) {
@@ -1173,6 +1201,8 @@ static inline void vi_flip_page(struct vi_ctl *ctl)
 static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 {
 	void __iomem *io_base = ctl->io_base;
+
+	ctl->interrupts_enabled = enable;
 
 	if (enable) {
 		/*
@@ -1889,6 +1919,23 @@ static int gx_wait_cp_idle(struct vi_ctl *ctl)
 	return 0;
 }
 
+static void gx_configure_mode(struct vi_ctl *ctl)
+{
+	gx_set_viewport(ctl);
+	gx_set_scissor(ctl, ctl->mode->width, ctl->mode->height);
+	gx_bp_set_reg(ctl, BP_REG_ZMODE | 0x1f);
+	gx_bp_set_reg(ctl, BP_REG_COPY_Y_SCALE |
+		      (ctl->mode->height == GX_TALL_EFB_HEIGHT ? 0x127 : 0x100));
+	gx_bp_set_reg(ctl, BP_REG_BLEND_MODE | 0x4bc);
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MIN | GX_COORDS(0, 0));
+	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MAX |
+		      GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
+	gx_bp_set_reg(ctl, BP_REG_XFB_STRIDE | (ctl->mode->width >> 4));
+	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR |
+		      GX_TEX_IMAGE_ADDR(ctl->xfb_dma));
+	gx_setup_indirect_renderer(ctl);
+}
+
 static int gx_init(struct vi_ctl *ctl)
 {
 	u32 fifo_base, fifo_end, fifo_hiwat, fifo_lowat;
@@ -1897,7 +1944,6 @@ static int gx_init(struct vi_ctl *ctl)
 	u16 tmp;
 	int error, n;
 
-	dma_coerce_mask_and_coherent(ctl->dev, DMA_BIT_MASK(32));
 	ctl->fifo = dma_alloc_noncoherent(ctl->dev, GX_FIFO_SIZE,
 					  &ctl->fifo_dma, DMA_BIDIRECTIONAL,
 					  GFP_KERNEL);
@@ -1995,19 +2041,7 @@ static int gx_init(struct vi_ctl *ctl)
 	gx_bp_set_reg(ctl, BP_REG_COPY_CLEAR_GB);
 	gx_bp_set_reg(ctl, BP_REG_COPY_CLEAR_Z | 0xffffff);
 
-	gx_set_viewport(ctl);
-	gx_set_scissor(ctl, ctl->mode->width, ctl->mode->height);
-	gx_bp_set_reg(ctl, BP_REG_ZMODE | 0x1f);
-	if (ctl->mode->height == GX_TALL_EFB_HEIGHT)
-		gx_bp_set_reg(ctl, BP_REG_COPY_Y_SCALE | 0x127);
-	gx_bp_set_reg(ctl, BP_REG_BLEND_MODE | 0x4bc);
-	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MIN | GX_COORDS(0, 0));
-	gx_bp_set_reg(ctl, BP_REG_EFB_COORDS_MAX |
-		      GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
-	gx_bp_set_reg(ctl, BP_REG_XFB_STRIDE | (ctl->mode->width >> 4));
-	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR |
-		      GX_TEX_IMAGE_ADDR(gx_xfb_start));
-	gx_setup_indirect_renderer(ctl);
+	gx_configure_mode(ctl);
 
 	gx_flush(ctl);
 	error = gx_wait_cp_idle(ctl);
@@ -2378,8 +2412,12 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 	spin_unlock(&ctl->lock);
 }
 
+static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect);
+
 static int vi_ave_probe(struct i2c_client *client)
 {
+	struct fb_var_screeninfo var;
+	struct fb_videomode mode;
 	int error;
 
 	if (!first_vi_ctl)
@@ -2398,12 +2436,20 @@ static int vi_ave_probe(struct i2c_client *client)
 	}
 
 	first_vi_ave = client;
-	error = vi_ave_setup(first_vi_ctl);
-	if (error)
-		goto err_detach;
 
 	/* setup again the video mode using the a/v encoder */
-	error = vi_setup_tv_mode(first_vi_ctl, true);
+	console_lock();
+	lock_fb_info(first_vi_ctl->info);
+	error = vifb_apply_mode(first_vi_ctl, true);
+	if (!error) {
+		var = first_vi_ctl->info->var;
+		fb_var_to_videomode(&mode, &var);
+		error = fb_add_videomode(&mode, &first_vi_ctl->info->modelist);
+		if (!error)
+			error = fb_set_var_from_user(first_vi_ctl->info, &var);
+	}
+	unlock_fb_info(first_vi_ctl->info);
+	console_unlock();
 	if (error)
 		goto err_detach;
 
@@ -2634,54 +2680,171 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 
 static void vifb_clear_all(struct fb_info *info)
 {
+	struct vi_ctl *ctl = info->par;
 	u32 *xfb;
 	int i;
 
 	memset(info->screen_buffer, 0, info->screen_size);
 
-	i = gx_xfb_size >> 2;
-	xfb = xfb_mem;
+	i = ctl->xfb_size >> 2;
+	xfb = ctl->xfb;
 	while (i--)
 		*(xfb++) = VI_YUYV_BLACK;
 }
 
-/*
- * Set the video mode according to info->var.
- */
+/* Called with fbdev/console serialization; mode_lock also excludes file I/O. */
+static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
+{
+	struct fb_info *info = ctl->info;
+	struct vifb_rgb_buffer *old_rgb, *new_rgb = NULL;
+	struct vi_tv_mode *old_mode;
+	struct vi_mode_timings old_timings;
+	struct fb_var_screeninfo old_var;
+	struct fb_fix_screeninfo old_fix;
+	void *old_xfb, *new_xfb = NULL;
+	dma_addr_t old_dma, new_dma = 0;
+	size_t old_size, new_size;
+	unsigned int old_stride, new_stride, y;
+	bool old_cable, enabled, resized = false;
+	u16 dcr;
+	int error;
+
+	mutex_lock(&ctl->mode_lock);
+	old_mode = ctl->mode;
+	old_cable = ctl->has_component_cable;
+	old_timings = ctl->timings;
+	old_var = info->var;
+	old_fix = info->fix;
+	old_rgb = ctl->rgb_buffer;
+	old_xfb = ctl->xfb;
+	old_dma = ctl->xfb_dma;
+	old_size = ctl->xfb_size;
+	old_stride = ctl->xfb_stride;
+	enabled = ctl->interrupts_enabled;
+	vi_enable_interrupts(ctl, 0);
+	/* Leave PE interrupts enabled so an in-flight copy can finish. */
+	if (ctl->irq_requested)
+		synchronize_irq(ctl->irq);
+	if (ctl->gx_faulted) {
+		error = -EIO;
+		goto restore;
+	}
+
+	if (force_detect || old_cable != vi_has_component_cable(ctl)) {
+		error = vi_detect_tv_mode(ctl);
+		if (error)
+			goto restore;
+	}
+	new_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
+	new_size = new_stride * ctl->mode->height;
+	if (new_stride != old_stride || new_size != old_size) {
+		if (atomic_read(&old_rgb->map_count)) {
+			error = -EBUSY;
+			goto restore;
+		}
+		new_xfb = dma_alloc_coherent(ctl->dev, new_size, &new_dma,
+					    GFP_KERNEL);
+		if (!new_xfb) {
+			error = -ENOMEM;
+			goto restore;
+		}
+		new_rgb = vifb_rgb_alloc(ctl->dev, new_size);
+		if (!new_rgb) {
+			error = -ENOMEM;
+			goto restore;
+		}
+		for (y = 0; y < new_size / sizeof(u32); y++)
+			((u32 *)new_xfb)[y] = VI_YUYV_BLACK;
+		for (y = 0; y < min_t(unsigned int, old_var.yres,
+					 ctl->mode->height); y++)
+			memcpy(new_rgb->cpu + y * new_stride,
+			       old_rgb->cpu + y * old_fix.line_length,
+			       min(old_fix.line_length, new_stride));
+		ctl->rgb_buffer = new_rgb;
+		ctl->rgb_fb = new_rgb->cpu;
+		ctl->rgb_fb_dma = new_rgb->dma;
+		ctl->rgb_fb_size = new_rgb->size;
+		ctl->xfb = new_xfb;
+		ctl->xfb_dma = new_dma;
+		ctl->xfb_size = new_size;
+		ctl->xfb_stride = new_stride;
+		resized = true;
+	}
+	if (ctl->mode != old_mode) {
+		info->var.xres = info->var.xres_virtual = ctl->mode->width;
+		info->var.yres = info->var.yres_virtual = ctl->mode->height;
+		info->var.xoffset = info->var.yoffset = 0;
+	}
+	error = vifb_check_var(&info->var, info);
+	if (error)
+		goto restore;
+
+	info->fix.smem_start = ctl->rgb_fb_dma;
+	info->fix.line_length = info->var.xres_virtual * sizeof(u16);
+	info->fix.smem_len = info->fix.line_length * info->var.yres_virtual;
+	info->fix.visual = FB_VISUAL_TRUECOLOR;
+	info->screen_buffer = ctl->rgb_fb;
+	info->screen_size = info->fix.smem_len;
+
+#ifdef CONFIG_WII_AVE_RVL
+	if (ctl->i2c_client) {
+		error = vi_ave_setup(ctl);
+		if (error)
+			goto restore;
+	}
+#endif
+
+	/* Stop scanout before replacing its address and GX's buffer layout. */
+	dcr = in_be16(ctl->io_base + VI_DCR);
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_enb(dcr, 0));
+	gx_configure_mode(ctl);
+	gx_flush(ctl);
+	error = gx_wait_cp_idle(ctl);
+	if (error) {
+		ctl->gx_faulted = true;
+		out_be16(ctl->io_base + VI_DCR, dcr);
+		goto restore;
+	}
+	ctl->page_address[0] = ctl->page_address[1] = ctl->xfb_dma;
+	ctl->visible_page = 0;
+	ctl->flip_pending = 0;
+	vi_set_framebuffer(ctl, ctl->xfb_dma);
+	vi_setup_tv_mode(ctl);
+	if (resized) {
+		dma_free_coherent(ctl->dev, old_size, old_xfb, old_dma);
+		kref_put(&old_rgb->ref, vifb_rgb_release);
+	}
+	goto out;
+
+restore:
+	ctl->mode = old_mode;
+	ctl->has_component_cable = old_cable;
+	ctl->timings = old_timings;
+	info->var = old_var;
+	info->fix = old_fix;
+	ctl->rgb_buffer = old_rgb;
+	ctl->rgb_fb = old_rgb->cpu;
+	ctl->rgb_fb_dma = old_rgb->dma;
+	ctl->rgb_fb_size = old_rgb->size;
+	info->screen_buffer = old_rgb->cpu;
+	info->screen_size = old_fix.smem_len;
+	ctl->xfb = old_xfb;
+	ctl->xfb_dma = old_dma;
+	ctl->xfb_size = old_size;
+	ctl->xfb_stride = old_stride;
+	if (new_rgb)
+		kref_put(&new_rgb->ref, vifb_rgb_release);
+	if (new_xfb)
+		dma_free_coherent(ctl->dev, new_size, new_xfb, new_dma);
+out:
+	vi_enable_interrupts(ctl, enabled);
+	mutex_unlock(&ctl->mode_lock);
+	return error;
+}
+
 static int vifb_set_par(struct fb_info *info)
 {
 	struct vi_ctl *ctl = info->par;
-	struct fb_var_screeninfo *var = &info->var;
-	unsigned long flags;
-	int gx_ll;
-#ifdef CONFIG_WII_AVE_RVL
-	int error;
-#endif
-
-	if (vifb_format_is_fourcc(var) || var->bits_per_pixel != 16)
-		return -EINVAL;
-
-	info->fix.line_length = var->xres_virtual * sizeof(u16);
-	info->fix.smem_len = info->fix.line_length * var->yres_virtual;
-	info->screen_size = info->fix.smem_len;
-	info->fix.visual = FB_VISUAL_TRUECOLOR;
-	/* info->fix.smem_* refer to the virtual framebuffer, here however
-	 * we want to store physical fb info, namely the
-	 * addresses of the two pages used for flipping
-	 */
-	gx_ll = VI_XFB_WIDTH * TV_BYTES_PER_PIXEL;
-	ctl->page_address[0] = gx_xfb_start;
-	if (var->yres * gx_ll <= gx_xfb_size / 2)
-		ctl->page_address[1] =
-		    gx_xfb_start + var->yres * gx_ll;
-	else /* this is weird but I don't understand it, so I don't touch it */
-		ctl->page_address[1] = gx_xfb_start;
-
-	/* set page 1 as the visible page and cancel pending flips */
-	spin_lock_irqsave(&ctl->lock, flags);
-	ctl->visible_page = 1;
-	vi_flip_page(ctl);
-	spin_unlock_irqrestore(&ctl->lock, flags);
 
 	if (want_ypan) {
 		info->fix.xpanstep = 2;
@@ -2691,17 +2854,7 @@ static int vifb_set_par(struct fb_info *info)
 		info->fix.xpanstep = 0;
 		info->fix.ypanstep = 0;
 	}
-
-	vi_setup_tv_mode(ctl, false);
-#ifdef CONFIG_WII_AVE_RVL
-	if (ctl->i2c_client) {
-		error = vi_ave_setup(ctl);
-		if (error)
-			return error;
-	}
-#endif
-
-	return 0;
+	return vifb_apply_mode(ctl, false);
 }
 
 static void __maybe_unused vifb_fillrect(struct fb_info *info,
@@ -2901,18 +3054,73 @@ vifb_write(struct fb_info *info, const char __user *buf,
 	return done;
 }
 
+static void vifb_vma_open(struct vm_area_struct *vma)
+{
+	struct vifb_rgb_buffer *buf = vma->vm_private_data;
+
+	kref_get(&buf->ref);
+	atomic_inc(&buf->map_count);
+}
+
+static void vifb_vma_close(struct vm_area_struct *vma)
+{
+	struct vifb_rgb_buffer *buf = vma->vm_private_data;
+
+	atomic_dec(&buf->map_count);
+	kref_put(&buf->ref, vifb_rgb_release);
+}
+
+static const struct vm_operations_struct vifb_vm_ops = {
+	.open = vifb_vma_open,
+	.close = vifb_vma_close,
+};
+
 static int vifb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct vi_ctl *ctl = info->par;
+	struct vifb_rgb_buffer *buf;
+	int error;
 
-	return dma_mmap_pages(ctl->dev, vma, ctl->rgb_fb_size,
-			      virt_to_page(ctl->rgb_fb));
+	mutex_lock(&ctl->mode_lock);
+	buf = ctl->rgb_buffer;
+	error = dma_mmap_pages(ctl->dev, vma, buf->size, virt_to_page(buf->cpu));
+	if (!error) {
+		vma->vm_private_data = buf;
+		vma->vm_ops = &vifb_vm_ops;
+		vifb_vma_open(vma);
+	}
+	mutex_unlock(&ctl->mode_lock);
+	return error;
+}
+
+static ssize_t vifb_buffer_read(struct fb_info *info, char __user *buf,
+			 size_t count, loff_t *ppos)
+{
+	struct vi_ctl *ctl = info->par;
+	ssize_t ret;
+
+	mutex_lock(&ctl->mode_lock);
+	ret = fb_sys_read(info, buf, count, ppos);
+	mutex_unlock(&ctl->mode_lock);
+	return ret;
+}
+
+static ssize_t vifb_buffer_write(struct fb_info *info, const char __user *buf,
+			  size_t count, loff_t *ppos)
+{
+	struct vi_ctl *ctl = info->par;
+	ssize_t ret;
+
+	mutex_lock(&ctl->mode_lock);
+	ret = fb_sys_write(info, buf, count, ppos);
+	mutex_unlock(&ctl->mode_lock);
+	return ret;
 }
 
 struct fb_ops vifb_ops = {
 	.owner = THIS_MODULE,
-	.fb_read = fb_sys_read,
-	.fb_write = fb_sys_write,
+	.fb_read = vifb_buffer_read,
+	.fb_write = vifb_buffer_write,
 	.fb_mmap = vifb_mmap,
 	.fb_setcolreg = vifb_setcolreg,
 	/*.fb_ioctl = vifb_ioctl,*/
@@ -3014,14 +3222,12 @@ static int vifb_of_probe(struct platform_device *odev)
 	struct device *dev = &odev->dev;
 	struct fb_info *info;
 	struct vi_ctl *ctl;
-	u32 xfb_start, xfb_size, efb_start, efb_size;
+	u32 efb_start, efb_size;
 	int error;
 
-	if (of_property_read_u32(dev->of_node, "xfb-start", &xfb_start) ||
-	    of_property_read_u32(dev->of_node, "xfb-size", &xfb_size) ||
-	    of_property_read_u32(dev->of_node, "efb-start", &efb_start) ||
+	if (of_property_read_u32(dev->of_node, "efb-start", &efb_start) ||
 	    of_property_read_u32(dev->of_node, "efb-size", &efb_size)) {
-		dev_err(dev, "missing EFB or XFB description\n");
+		dev_err(dev, "missing EFB description\n");
 		return -ENODEV;
 	}
 
@@ -3059,28 +3265,36 @@ static int vifb_of_probe(struct platform_device *odev)
 		goto err_release_info;
 	}
 
-	xfb_mem = devm_ioremap(dev, xfb_start, xfb_size);
-	if (!xfb_mem) {
-		dev_err(dev, "unable to map XFB\n");
-		error = -ENOMEM;
-		goto err_release_info;
-	}
-	gx_xfb_start = xfb_start;
-	gx_xfb_size = xfb_size;
-
+	mutex_init(&ctl->mode_lock);
 	spin_lock_init(&ctl->lock);
 	init_waitqueue_head(&ctl->vtrace_waitq);
 	vi_reset_video(ctl);
-	vi_detect_tv_mode(ctl);
+	error = vi_detect_tv_mode(ctl);
+	if (error)
+		goto err_release_info;
 
-	ctl->rgb_fb_size = ctl->mode->width * ctl->mode->height * sizeof(u16);
-	ctl->rgb_fb = dma_alloc_noncoherent(dev, ctl->rgb_fb_size,
-					    &ctl->rgb_fb_dma, DMA_TO_DEVICE,
-					    GFP_KERNEL);
-	if (!ctl->rgb_fb) {
+	/* GX BP addresses contain 24 bits in units of 32 bytes. */
+	error = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(29));
+	if (error)
+		goto err_release_info;
+
+	ctl->xfb_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
+	ctl->xfb_size = ctl->xfb_stride * ctl->mode->height;
+	ctl->xfb = dma_alloc_coherent(dev, ctl->xfb_size, &ctl->xfb_dma,
+				      GFP_KERNEL);
+	if (!ctl->xfb) {
 		error = -ENOMEM;
 		goto err_release_info;
 	}
+
+	ctl->rgb_fb_size = ctl->mode->width * ctl->mode->height * sizeof(u16);
+	ctl->rgb_buffer = vifb_rgb_alloc(dev, ctl->rgb_fb_size);
+	if (!ctl->rgb_buffer) {
+		error = -ENOMEM;
+		goto err_free_xfb;
+	}
+	ctl->rgb_fb = ctl->rgb_buffer->cpu;
+	ctl->rgb_fb_dma = ctl->rgb_buffer->dma;
 	ctl->indirect_map = dma_alloc_noncoherent(dev, GX_INDIRECT_MAP_SIZE,
 						  &ctl->indirect_map_dma,
 						  DMA_TO_DEVICE, GFP_KERNEL);
@@ -3106,8 +3320,6 @@ static int vifb_of_probe(struct platform_device *odev)
 	}
 
 #ifdef CONFIG_WII_AVE_RVL
-	if (!first_vi_ctl)
-		first_vi_ctl = ctl;
 	if (first_vi_ave) {
 		error = vi_attach_ave(ctl, first_vi_ave);
 		if (error)
@@ -3142,6 +3354,7 @@ static int vifb_of_probe(struct platform_device *odev)
 			    DRV_MODULE_NAME "-pe", dev);
 	if (error)
 		goto err_vi_irq;
+	ctl->irq_requested = true;
 	error = register_framebuffer(info);
 	if (error)
 		goto err_pe_irq;
@@ -3149,9 +3362,15 @@ static int vifb_of_probe(struct platform_device *odev)
 	pr_info("fb%d: %s frame buffer device (GX indirect RGB565)\n",
 		info->node, info->fix.id);
 	vi_enable_interrupts(ctl, 1);
+#ifdef CONFIG_WII_AVE_RVL
+	/* AVE re-detection needs fully registered fbdev and IRQ state. */
+	if (!first_vi_ctl)
+		first_vi_ctl = ctl;
+#endif
 	return 0;
 
 err_pe_irq:
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_enb(0));
 	free_irq(ctl->irq, dev);
 	free_irq(ctl->pe_irq, dev);
 	goto err_drvdata;
@@ -3168,8 +3387,9 @@ err_free_indirect_map:
 	dma_free_noncoherent(dev, GX_INDIRECT_MAP_SIZE, ctl->indirect_map,
 			     ctl->indirect_map_dma, DMA_TO_DEVICE);
 err_free_rgb_fb:
-	dma_free_noncoherent(dev, ctl->rgb_fb_size, ctl->rgb_fb,
-			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
+	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
+err_free_xfb:
+	dma_free_coherent(dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
 err_release_info:
 	framebuffer_release(info);
 	return error;
@@ -3189,14 +3409,16 @@ static void vifb_of_remove(struct platform_device *odev)
 	free_irq(ctl->irq, &odev->dev);
 	free_irq(ctl->pe_irq, &odev->dev);
 	unregister_framebuffer(info);
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_enb(0));
 	fb_dealloc_cmap(&info->cmap);
 	dma_free_noncoherent(&odev->dev, GX_FIFO_SIZE, ctl->fifo,
 			     ctl->fifo_dma, DMA_BIDIRECTIONAL);
 	dma_free_noncoherent(&odev->dev, GX_INDIRECT_MAP_SIZE,
 			     ctl->indirect_map, ctl->indirect_map_dma,
 			     DMA_TO_DEVICE);
-	dma_free_noncoherent(&odev->dev, ctl->rgb_fb_size, ctl->rgb_fb,
-			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
+	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
+
+	dma_free_coherent(&odev->dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
 
 	dev_set_drvdata(&odev->dev, NULL);
 

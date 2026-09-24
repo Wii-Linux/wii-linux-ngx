@@ -30,11 +30,6 @@
 		#size-cells = <1>;
 		ranges;
 
-		XFB: xfb@176a000 {
-			reg = <0x01774000 0x0008c000>;
-			no-map;
-		};
-
 		EFB: efb@8000000 {
 			reg = <0x08000000 0x00300000>;
 			no-map;
@@ -85,8 +80,6 @@
 			interrupts = <8>;
 			efb-start = <0x08000000>;
 			efb-size = <0x00300000>;
-			xfb-start = <0x01774000>; /* end-of-ram - xfb-size */
-			xfb-size = <0x8c000>;
 		};
 
 		processor-interface@c003000 {
