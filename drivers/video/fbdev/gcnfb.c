@@ -815,7 +815,7 @@ static int vi_pal_625_calc_timings(struct vi_mode_timings *timings,
 	timings->bs2 = (2 * (318-313 + 1)) - 1;
 
 	/* from mid of line 313, field 2 to end of line 621, field 2 */
-	timings->be2 = (2 * (612-617 + 1)) - 1;
+	timings->be2 = (2 * (621-313 + 1)) - 1;
 
 	/* from start of line 1, field 3 to end of line 5, field 3 */
 	timings->bs3 = 2 * (5-1 + 1);
