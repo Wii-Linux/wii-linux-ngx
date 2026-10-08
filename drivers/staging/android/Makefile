@@ -2,3 +2,4 @@
 ccflags-y += -I$(src)			# needed for trace events
 
 obj-$(CONFIG_ASHMEM)			+= ashmem.o
+obj-$(CONFIG_ANDROID_LOGGER)		+= logger.o
