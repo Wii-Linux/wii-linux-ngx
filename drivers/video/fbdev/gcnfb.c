@@ -1155,11 +1155,26 @@ static void vi_setup_tv_mode(struct vi_ctl *ctl)
 	out_be32(io_base + VI_UNK2, 0x00ff00ff);
 	out_be32(io_base + VI_UNK3, 0x00ff00ff);
 
-	/* Enable scanout only after all timing and stride registers agree. */
+	/*
+	 * Leave scanout disabled; the caller enables it once the A/V encoder
+	 * has been configured.
+	 */
 	out_be16(io_base + VI_DCR,
 		 vi_dcr_fmt((mode->lines == 625) ? VI_FMT_PAL : VI_FMT_NTSC) |
-		 vi_dcr_nin((mode->flags & VI_VMF_PROGRESSIVE) ?  1 : 0) |
-		 vi_dcr_enb(1));
+		 vi_dcr_nin((mode->flags & VI_VMF_PROGRESSIVE) ?  1 : 0));
+}
+
+/*
+ * Start sync generation and scanout.  The AVE must already be configured.
+ * It samples the incoming sync/pixel phase when the signal starts, so
+ * interrupting or restarting VI after the AVE is set up can leave it
+ * with swapped Cb/Cr, a field/line offset, or garbage lines.
+ */
+static void vi_enable_scanout(struct vi_ctl *ctl)
+{
+	u16 dcr = in_be16(ctl->io_base + VI_DCR);
+
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_enb(dcr, 1));
 }
 
 /*
@@ -2707,7 +2722,7 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	unsigned int old_stride, new_stride, y;
 	bool old_cable, enabled, resized = false;
 	u16 dcr;
-	int error;
+	int ave_error, error;
 
 	mutex_lock(&ctl->mode_lock);
 	old_mode = ctl->mode;
@@ -2786,14 +2801,6 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	info->screen_buffer = ctl->rgb_fb;
 	info->screen_size = info->fix.smem_len;
 
-#ifdef CONFIG_WII_AVE_RVL
-	if (ctl->i2c_client) {
-		error = vi_ave_setup(ctl);
-		if (error)
-			goto restore;
-	}
-#endif
-
 	/* Stop scanout before replacing its address and GX's buffer layout. */
 	dcr = in_be16(ctl->io_base + VI_DCR);
 	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_enb(dcr, 0));
@@ -2808,8 +2815,27 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	ctl->page_address[0] = ctl->page_address[1] = ctl->xfb_dma;
 	ctl->visible_page = 0;
 	ctl->flip_pending = 0;
+
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_rst(0, 1));
+	udelay(2);
+	out_be16(ctl->io_base + VI_DCR, 0);
 	vi_set_framebuffer(ctl, ctl->xfb_dma);
 	vi_setup_tv_mode(ctl);
+#ifdef CONFIG_WII_AVE_RVL
+	if (ctl->i2c_client) {
+		ave_error = vi_ave_setup(ctl);
+
+		if (ave_error) {
+			dev_err(ctl->dev, "AVE setup failed: %d\n", ave_error);
+			/* new mode is already committed, don't leave VI off */
+			vi_enable_scanout(ctl);
+			error = ave_error;
+			goto committed;
+		}
+	}
+#endif
+	vi_enable_scanout(ctl);
+committed:
 	if (resized) {
 		dma_free_coherent(ctl->dev, old_size, old_xfb, old_dma);
 		kref_put(&old_rgb->ref, vifb_rgb_release);
