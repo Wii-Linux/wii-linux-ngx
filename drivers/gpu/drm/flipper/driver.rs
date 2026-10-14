@@ -68,7 +68,7 @@ pub(crate) struct FlipperDrmRegistrationData<'drm> {
     /// Parent platform device.
     pub(crate) pdev: &'drm platform::Device<Bound>,
 
-    pub(crate) cp_regs: Arc<IoMem<'drm, 0x100>>,
+    pub(crate) cp_regs: Arc<IoMem<'drm, 0x80>>,
     pub(crate) pe_regs: Arc<IoMem<'drm, 0x100>>,
     pub(crate) vi_regs: Arc<IoMem<'drm, 0x100>>,
     pub(crate) pi_regs: Arc<IoMem<'drm, 0x100>>,
@@ -125,7 +125,7 @@ fn draw_triangle(wg_pipe: &IoMem<4>, vertices: &[[u8; 2]]) {
 }
 */
 
-pub(crate) fn print_cp_regs(cp: &BigEndianMmio<'_, Region<0x100>>) {
+pub(crate) fn print_cp_regs(cp: &BigEndianMmio<'_, Region<0x80>>) {
     let reg_00 = cp.read(regs::cp::STATUS);
     let reg_02 = cp.read(regs::cp::CONTROL);
     let reg_04 = cp.read(regs::cp::CLEAR);
@@ -308,7 +308,7 @@ impl platform::Driver for FlipperPlatformDriver {
         dev_info!(pdev, "Starting to init flipper!");
         let gx = Arc::pin_init(GxQueue::new(), GFP_KERNEL)?;
         let request = pdev.io_request_by_index(0).ok_or(ENODEV)?;
-        let cp_regs = Arc::new(request.iomap_sized::<256>()?, GFP_KERNEL)?;
+        let cp_regs = Arc::new(request.iomap_sized::<128>()?, GFP_KERNEL)?;
         let request = pdev.io_request_by_index(1).ok_or(ENODEV)?;
         let pe_regs = Arc::new(request.iomap_sized::<256>()?, GFP_KERNEL)?;
         let request = pdev.io_request_by_index(2).ok_or(ENODEV)?;

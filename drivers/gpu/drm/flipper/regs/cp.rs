@@ -10,7 +10,7 @@ use kernel::{
 };
 
 register! {
-    base: Region<0x100>;
+    base: Region<0x80>;
 
     /// TODO
     pub(crate) STATUS(u16) @ 0x00 {
