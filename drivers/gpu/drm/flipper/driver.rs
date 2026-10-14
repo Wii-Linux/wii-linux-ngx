@@ -42,6 +42,7 @@ pub(crate) struct FlipperPlatformDriver;
 
 #[pin_data(PinnedDrop)]
 pub(crate) struct FlipperPlatformDriverData<'bound> {
+    #[pin]
     _reg: drm::Registration<'bound, FlipperDrmDriver>,
 }
 
@@ -463,6 +464,7 @@ impl platform::Driver for FlipperPlatformDriver {
         pdev: &'bound platform::Device<Core<'_>>,
         _info: Option<&'bound Self::IdInfo>,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
+        pin_init::pin_init_scope(move || {
         dev_info!(pdev, "Starting to init flipper!");
         let request = pdev.io_request_by_index(0).ok_or(ENODEV)?;
         let cp_regs = Arc::new(request.iomap_sized::<256>()?, GFP_KERNEL)?;
@@ -568,28 +570,29 @@ impl platform::Driver for FlipperPlatformDriver {
 
         let unreg_dev = drm::UnregisteredDevice::<FlipperDrmDriver>::new(pdev, Ok(()))?;
 
-        let reg_data = pin_init!(FlipperDrmRegistrationData {
-            pdev,
-            cp_regs,
-            pe_regs,
-            vi_regs,
-            pi_regs,
-            wg_pipe,
-            //fifo,
-            //xfb,
-            efb,
-            pos_vec <- new_mutex!(pos_vec),
-            color_vec <- new_mutex!(color_vec),
-        });
-
-        // SAFETY: `reg` is stored in `FlipperPlatformDriverData` and dropped when the driver is
-        // unbound; it is never forgotten.
-        let reg = unsafe { drm::Registration::new(pdev.as_ref(), unreg_dev, reg_data, 0)? };
-
-        let driver = FlipperPlatformDriverData { _reg: reg };
-
-        dev_dbg!(pdev, "Flipper initialized correctly.");
-        Ok(driver)
+        Ok(try_pin_init!(FlipperPlatformDriverData {
+            // SAFETY: `_reg` is stored in `FlipperPlatformDriverData` and dropped when the
+            // driver is unbound; it is never forgotten.
+            _reg <- unsafe { drm::Registration::new(
+                pdev.as_ref(),
+                unreg_dev,
+                pin_init!(FlipperDrmRegistrationData {
+                    pdev,
+                    cp_regs,
+                    pe_regs,
+                    vi_regs,
+                    pi_regs,
+                    wg_pipe,
+                    //fifo,
+                    //xfb,
+                    efb,
+                    pos_vec <- new_mutex!(pos_vec),
+                    color_vec <- new_mutex!(color_vec),
+                }),
+            )},
+            _: { dev_dbg!(pdev, "Flipper initialized correctly.") },
+        }))
+        })
     }
 }
 
