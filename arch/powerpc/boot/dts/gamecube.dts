@@ -58,28 +58,24 @@
 		#size-cells = <1>;
 		compatible = "nintendo,flipper";
 		clock-frequency = <162000000>; /* 162MHz */
-		ranges = <0x0c000000 0x0c000000 0x00010000>;
+		ranges = <0x08000000 0x08000000 0x00400000>, /* EFB */
+			 <0x0c000000 0x0c000000 0x00010000>;
 		interrupt-parent = <&PIC>;
 		dma-ranges;
 		dma-noncoherent;
 
-		gx-command-processor@c000000 {
-			compatible = "nintendo,flipper-gx-cp";
-			reg = <0x0c000000 0x80>;
-		};
-
-		gx-pixel-engine@c001000 {
-			compatible = "nintendo,flipper-gx-pe";
-			reg = <0x0c001000 0x100>;
-			interrupts = <9 10>;
-		};
-
-		video@c002000 {
+		/* GX and VI blocks */
+		video@c000000 {
 			compatible = "nintendo,flipper-vi";
-			reg = <0x0c002000 0x100>;
-			interrupts = <8>;
-			efb-start = <0x08000000>;
-			efb-size = <0x00300000>;
+			reg = <0x0c000000 0x80>,	/* 0: Command Processor */
+			      <0x0c001000 0x100>,	/* 1: Pixel Engine */
+			      <0x0c002000 0x100>,	/* 2: Video Interface */
+			      <0x0c003000 0x100>,	/* 3: Processor Interface */
+			      <0x0c008000 0x4>,		/* 4: PI FIFO (bound to write-gather pipe) */
+			      <0x08000000 0x400000>;	/* 5: EFB */
+			reg-names = "cp", "pe", "vi", "pi", "pififo", "efb";
+			interrupts = <8 9 10>;
+			interrupt-names = "vi", "pe-token", "pe-finish";
 		};
 
 		processor-interface@c003000 {
@@ -131,11 +127,6 @@
 			reg = <0x0c006800 0x40>;
 			virtual-reg = <0x0c006800>;
 			interrupts = <4>;
-		};
-
-		gx-fifo@c008000 {
-			compatible = "nintendo,flipper-gx-fifo";
-			reg = <0x0c008000 0x4>;
 		};
         };
 };
