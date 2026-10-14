@@ -180,7 +180,8 @@ impl FlipperDrmFileData {
                             }
                         }
                     }
-                    // Flush the write-gather pipe, since the user probably wants to run stuff asap.
+                    // Flush the write-gather pipe (by padding it out to a full burst, so it gets issued to
+                    // the PI FIFO), since the user probably wants to run stuff asap.
                     for _ in 0..31 {
                         wg_pipe.write8(0x00, 0x0);
                     }

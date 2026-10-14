@@ -173,13 +173,19 @@ register! {
     // We also say that the address goes to bit 0 instead of to bit 5, because that way users of
     // this API can pass direct addresses, instead of having to shift them right by 5 all the time.
 
-    /// Address of the base of the FIFO.
+    // These registers describe the PI FIFO: the bus-side target which burst writes to the FIFO
+    // register block (0x0c008000) land in. It is not the write-gather pipe; that lives inside
+    // the CPU, and merely issues its bursts to whatever address WPAR points at (normally here).
+    // Any other store which reaches that block (plain stores, locked cache stores, etc.) feeds
+    // the PI FIFO just the same.
+
+    /// Address of the base of the PI FIFO.
     pub(crate) FIFO_BASE(u32) @ 0x0c {
         /// Address
         31:0 address;
     }
 
-    /// Address of the end of the FIFO.
+    /// Address of the end of the PI FIFO.
     pub(crate) FIFO_END(u32) @ 0x10 {
         /// Address
         31:0 address;

@@ -285,12 +285,16 @@ fn setup_fifo(
     vi_regs: &Arc<IoMem<'_, 256>>,
     wg_pipe: &Arc<IoMem<'_, 4>>,
 ) -> Result<u32> {
-    // Enable the write-gather pipe.
+    // Enable the write-gather pipe (HID2[WPE]). Once enabled, the CPU sees the write-gather
+    // pipe, not the PI FIFO, at the address in WPAR: stores there are collected by the pipe, and
+    // it issues burst transactions to that address once enough data has accumulated.
     let hid2 = mfspr!(920) | 0x4000_0000;
     dev_info!(pdev, "HID2 = 0x{hid2:08x}");
     mtspr!(920, hid2);
 
-    // Hardcoded in the device-tree…
+    // Point the write-gather pipe's bursts at the PI FIFO register block (0x0c008000). That
+    // is where the pipe's output lands on the bus; the PI FIFO itself is what's there, from the
+    // bus's perspective. Hardcoded in the device-tree…
     mtspr!(921, 0x0c008000);
     const FIFO_BASE: u32 = 0x01734000;
     const FIFO_BASE_LO: u16 = (FIFO_BASE & 0xffff) as u16;
@@ -353,11 +357,11 @@ fn setup_fifo(
     cp.write_reg(regs::cp::FIFO_READ_POINTER_LO::zeroed().with_const_lo::<FIFO_BASE_LO>());
     cp.write_reg(regs::cp::FIFO_READ_POINTER_HI::zeroed().with_const_hi::<FIFO_BASE_HI>());
 
-    // Set fifo bounds
+    // Set the PI FIFO bounds (this is where the write-gather pipe's bursts end up)
     pi.write_reg(regs::pi::FIFO_BASE::zeroed().with_const_address::<FIFO_BASE>());
     pi.write_reg(regs::pi::FIFO_END::zeroed().with_const_address::<FIFO_END>());
 
-    // Set write pointer
+    // Set the PI FIFO write pointer
     pi.write_reg(regs::pi::FIFO_WPTR::zeroed().with_const_address::<FIFO_BASE>());
     for _ in 0..7 {
         wg_pipe.write32(0, 0);

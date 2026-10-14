@@ -30,7 +30,10 @@ register! {
     pub(crate) CONTROL(u16) @ 0x02 {
         /// breakpoint enable (default 0)
         5:5 bpe => bool;
-        /// FIFO link enable (YAGCD says CP->PE?) (default 1)
+        /// FIFO link enable (default 1)
+        ///
+        /// Whether the CP consumes data from the PI FIFO. Disabled when the PI FIFO is
+        /// redirected somewhere else into memory (e.g. to write out a display list).
         4:4 gple => bool;
         /// FIFO underflow interrupt (default 0)
         3:3 uf_int => bool;
