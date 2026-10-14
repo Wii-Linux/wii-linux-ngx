@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 or MIT
 
-use core::arch::asm;
 use kernel::{
     bindings,
     device::{
@@ -14,7 +13,6 @@ use kernel::{
         mem::IoMem,
         BigEndianMmio,
         Io,
-        IoBase,
         Region, //
     },
     new_mutex,
@@ -22,6 +20,7 @@ use kernel::{
     platform,
     prelude::*,
     sync::{
+        aref::ARef,
         Arc,
         Mutex, //
     }, //
@@ -29,7 +28,13 @@ use kernel::{
 
 use crate::{
     file::FlipperDrmFileData,
+    gcnfb::{
+        self,
+        Gcnfb,
+        Regs, //
+    },
     gem::Bo,
+    gx::GxQueue,
     regs, //
 };
 
@@ -50,8 +55,16 @@ pub(crate) struct FlipperPlatformDriverData<'bound> {
 ///
 /// This data can have references tied to the parent platform device binding scope
 /// and is accessible only while the DRM device is registered with userspace.
-#[pin_data]
+///
+/// Fields are dropped in declaration order, after [`PinnedDrop::drop`] has turned the outputs off.
+#[pin_data(PinnedDrop)]
 pub(crate) struct FlipperDrmRegistrationData<'drm> {
+    /// GX and VI bring-up. Must go first: it uses the mappings and the GX queue below.
+    pub(crate) gcn: Gcnfb,
+
+    /// Serializes GX users: userspace and the framebuffer conversion in `gcnfb.c`.
+    pub(crate) gx: Arc<GxQueue>,
+
     /// Parent platform device.
     pub(crate) pdev: &'drm platform::Device<Bound>,
 
@@ -70,23 +83,20 @@ pub(crate) struct FlipperDrmRegistrationData<'drm> {
 
     #[pin]
     pub(crate) color_vec: Mutex<KVec<u8>>,
+
+    /// Keeps the DRM device alive until the outputs have been turned off in `drop()`.
+    drm: ARef<FlipperDrmDevice>,
 }
 
-macro_rules! mfspr {
-    ($R:tt) => {{
-        let mut output: u32;
-        // SAFETY: TODO
-        unsafe { asm!(concat!("mfspr {0}, ", stringify!($R)), out(reg) output, options(nostack)) };
-        output
-    }}
-}
-
-macro_rules! mtspr {
-    ($R:tt, $v:tt) => {{
-        let input: u32 = $v;
-        // SAFETY: TODO
-        unsafe { asm!(concat!("mtspr ", stringify!($R), ", {0}"), in(reg) input, options(nostack)) };
-    }}
+#[pinned_drop]
+impl PinnedDrop for FlipperDrmRegistrationData<'_> {
+    fn drop(self: Pin<&mut Self>) {
+        // The device is unregistered by now. Stop `gcnfb.c` from poking the DRM device, then turn
+        // the outputs off while `self.gcn` and the register mappings are still around.
+        self.gx.set_drm(core::ptr::null_mut());
+        // SAFETY: `self.drm` is set up with `init_kms()` and `self.gcn` outlives this call.
+        unsafe { gcnfb::stop_outputs(self.drm.as_raw()) };
+    }
 }
 
 /*
@@ -276,180 +286,6 @@ pub(crate) fn print_vi_regs(vi: &BigEndianMmio<'_, Region<0x100>>) {
     pr_info!("VI: 74: {reg_74:?}\n");
 }
 
-fn setup_fifo(
-    pdev: &platform::Device<Core<'_>>,
-    //fifo: &NonNull<[u8]>,
-    cp_regs: &Arc<IoMem<'_, 256>>,
-    pe_regs: &Arc<IoMem<'_, 256>>,
-    pi_regs: &Arc<IoMem<'_, 256>>,
-    vi_regs: &Arc<IoMem<'_, 256>>,
-    wg_pipe: &Arc<IoMem<'_, 4>>,
-) -> Result<u32> {
-    // Enable the write-gather pipe (HID2[WPE]). Once enabled, the CPU sees the write-gather
-    // pipe, not the PI FIFO, at the address in WPAR: stores there are collected by the pipe, and
-    // it issues burst transactions to that address once enough data has accumulated.
-    let hid2 = mfspr!(920) | 0x4000_0000;
-    dev_info!(pdev, "HID2 = 0x{hid2:08x}");
-    mtspr!(920, hid2);
-
-    // Point the write-gather pipe's bursts at the PI FIFO register block (0x0c008000). That
-    // is where the pipe's output lands on the bus; the PI FIFO itself is what's there, from the
-    // bus's perspective. Hardcoded in the device-tree…
-    mtspr!(921, 0x0c008000);
-    const FIFO_BASE: u32 = 0x01734000;
-    const FIFO_BASE_LO: u16 = (FIFO_BASE & 0xffff) as u16;
-    const FIFO_BASE_HI: u16 = (FIFO_BASE >> 16) as u16;
-    const FIFO_END: u32 = 0x01774000;
-    const FIFO_END_LO: u16 = (FIFO_END & 0xffff) as u16;
-    const FIFO_END_HI: u16 = (FIFO_END >> 16) as u16;
-    const HI_WATERMARK: u32 = (FIFO_END - FIFO_BASE) * 3 / 4;
-    const HI_WATERMARK_LO: u16 = (HI_WATERMARK & 0xffff) as u16;
-    const HI_WATERMARK_HI: u16 = (HI_WATERMARK >> 16) as u16;
-
-    /*
-    let fifo_start = unsafe { vmalloc_to_phys(fifo.as_ptr() as *mut c_void) };
-    let fifo_end = fifo_start + fifo.len() as u32;
-    let hi_watermark = (fifo_end - fifo_start) * 3 / 4;
-    dev_info!(pdev, "0x{fifo_start:08x} to 0x{fifo_end:08x}\n");
-    */
-
-    let cp = cp_regs.as_view().big_endian();
-    let pe = pe_regs.as_view().big_endian();
-    let pi = pi_regs.as_view().big_endian();
-    let vi = vi_regs.as_view().big_endian();
-    let wg_pipe = wg_pipe.as_view().big_endian();
-
-    print_cp_regs(&cp);
-    print_pe_regs(&pe);
-    print_pi_regs(&pi);
-    print_vi_regs(&vi);
-
-    // FIFO Control
-    cp.write_reg(regs::cp::STATUS::zeroed());
-
-    // FIFO Clear
-    cp.write_reg(
-        regs::cp::CLEAR::zeroed()
-            .with_metrics(true)
-            .with_fifo_underflow(true)
-            .with_fifo_overflow(true),
-    );
-
-    // FIFO Start
-    cp.write_reg(regs::cp::FIFO_BASE_LO::zeroed().with_const_lo::<FIFO_BASE_LO>());
-    cp.write_reg(regs::cp::FIFO_BASE_HI::zeroed().with_const_hi::<FIFO_BASE_HI>());
-
-    // FIFO End
-    cp.write_reg(regs::cp::FIFO_END_LO::zeroed().with_const_lo::<FIFO_END_LO>());
-    cp.write_reg(regs::cp::FIFO_END_HI::zeroed().with_const_hi::<FIFO_END_HI>());
-
-    // Set watermarks, high at 75%, low at 0%
-    cp.write_reg(regs::cp::FIFO_HI_WATERMARK_LO::zeroed().with_const_lo::<HI_WATERMARK_LO>());
-    cp.write_reg(regs::cp::FIFO_HI_WATERMARK_HI::zeroed().with_const_hi::<HI_WATERMARK_HI>());
-    cp.write_reg(regs::cp::FIFO_LO_WATERMARK_LO::zeroed());
-    cp.write_reg(regs::cp::FIFO_LO_WATERMARK_HI::zeroed());
-
-    // Set R/W pointers to fifo start
-    cp.write_reg(regs::cp::FIFO_RW_DISTANCE_LO::zeroed());
-    cp.write_reg(regs::cp::FIFO_RW_DISTANCE_HI::zeroed());
-    cp.write_reg(regs::cp::FIFO_WRITE_POINTER_LO::zeroed().with_const_lo::<FIFO_BASE_LO>());
-    cp.write_reg(regs::cp::FIFO_WRITE_POINTER_HI::zeroed().with_const_hi::<FIFO_BASE_HI>());
-    cp.write_reg(regs::cp::FIFO_READ_POINTER_LO::zeroed().with_const_lo::<FIFO_BASE_LO>());
-    cp.write_reg(regs::cp::FIFO_READ_POINTER_HI::zeroed().with_const_hi::<FIFO_BASE_HI>());
-
-    // Set the PI FIFO bounds (this is where the write-gather pipe's bursts end up)
-    pi.write_reg(regs::pi::FIFO_BASE::zeroed().with_const_address::<FIFO_BASE>());
-    pi.write_reg(regs::pi::FIFO_END::zeroed().with_const_address::<FIFO_END>());
-
-    // Set the PI FIFO write pointer
-    pi.write_reg(regs::pi::FIFO_WPTR::zeroed().with_const_address::<FIFO_BASE>());
-    for _ in 0..7 {
-        wg_pipe.write32(0, 0);
-    }
-    wg_pipe.write16(0, 0);
-    wg_pipe.write8(0, 0);
-    pi.write_reg(regs::pi::FIFO_WPTR::zeroed().with_const_address::<FIFO_BASE>());
-
-    /*
-    // Draw a triangle!
-    bp(wg_pipe, 0x40, 0x000017);
-    bp(wg_pipe, 0x41, 0x0004bc);
-    bp(wg_pipe, 0x43, 0x000040);
-    for _ in 0..8 {
-        wg_pipe.write32(0, 0);
-    }
-    xf(
-        wg_pipe,
-        0x101a,
-        &[
-            0x43a00000, 0xc3700000, 0x4b7fffff, 0x44258000, 0x44118000, 0x4b7fffff,
-        ],
-    );
-    wg_pipe.write32(0x48, 0);
-    bp(wg_pipe, 0x0f, 0x000000);
-    bp(wg_pipe, 0x66, 0x001000);
-    bp(wg_pipe, 0x66, 0x001100);
-    bp(wg_pipe, 0x0f, 0x000000);
-    xf(
-        wg_pipe,
-        0x0000,
-        &[
-            0x3f7fffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x3f7ffffe, 0x00000000,
-            0x00000000, 0x00000000, 0x00000000, 0x3f7fffff, 0xc247ffff,
-        ],
-    );
-    draw_triangle(wg_pipe, &[[0, 0], [1, 1], [2, 2]]);
-    bp(wg_pipe, 0x45, 0x000002);
-    for _ in 0..8 {
-        wg_pipe.write32(0, 0);
-    }
-    bp(wg_pipe, 0x40, 0x000017);
-    bp(wg_pipe, 0x41, 0x0004bc);
-    bp(wg_pipe, 0x40, 0x00001f);
-    bp(wg_pipe, 0x41, 0x0004bc);
-    bp(wg_pipe, 0x43, 0x000000);
-    bp(wg_pipe, 0x49, 0x000000);
-    bp(wg_pipe, 0x4a, 0x077e7f);
-    bp(wg_pipe, 0x4d, 0x000028);
-    bp(wg_pipe, 0x4b, 0xbba000);
-    bp(wg_pipe, 0x52, 0x004c03);
-    */
-
-    // enable read & GP link
-    cp.write_reg(
-        regs::cp::STATUS::zeroed()
-            .with_breakpoint(true)
-            .with_overflow_hi_watermark(true),
-    );
-
-    let flipper_rev = match pi.read(regs::pi::FLIPPER_REV) {
-        regs::pi::FLIPPER_REV::A => 'A',
-        regs::pi::FLIPPER_REV::B => 'B',
-        regs::pi::FLIPPER_REV::C => 'C',
-        _ => '?',
-    };
-    dev_info!(pdev, "Flipper rev: {flipper_rev}\n");
-
-    pe.write_reg(
-        regs::pe::CONTROL::zeroed()
-            .with_token_enable(true)
-            .with_finish_enable(true)
-            .with_token(true)
-            .with_finish(true),
-    );
-    cp.write_reg(
-        regs::cp::CONTROL::zeroed()
-            .with_gple(true)
-            .with_fifo_enable(true),
-    );
-
-    print_cp_regs(&cp);
-    print_pe_regs(&pe);
-    print_pi_regs(&pi);
-
-    Ok(0)
-}
-
 kernel::of_device_table!(
     OF_TABLE,
     <FlipperPlatformDriver as platform::Driver>::IdInfo,
@@ -470,6 +306,7 @@ impl platform::Driver for FlipperPlatformDriver {
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         pin_init::pin_init_scope(move || {
         dev_info!(pdev, "Starting to init flipper!");
+        let gx = Arc::pin_init(GxQueue::new(), GFP_KERNEL)?;
         let request = pdev.io_request_by_index(0).ok_or(ENODEV)?;
         let cp_regs = Arc::new(request.iomap_sized::<256>()?, GFP_KERNEL)?;
         let request = pdev.io_request_by_index(1).ok_or(ENODEV)?;
@@ -530,10 +367,6 @@ impl platform::Driver for FlipperPlatformDriver {
         }
         */
 
-        setup_fifo(
-            pdev, /*, &fifo*/
-            &cp_regs, &pe_regs, &pi_regs, &vi_regs, &wg_pipe,
-        )?;
 
         /*
         {
@@ -573,6 +406,28 @@ impl platform::Driver for FlipperPlatformDriver {
         );
 
         let unreg_dev = drm::UnregisteredDevice::<FlipperDrmDriver>::new(pdev, Ok(()))?;
+        let drm_raw = unreg_dev.as_raw();
+        let drm_ref: ARef<FlipperDrmDevice> = (&*unreg_dev).into();
+
+        // GX, VI and the interrupts are brought up by gcnfb.c. It must be dropped before the
+        // mappings and the GX queue it uses, which is the case for locals (and the reg data).
+        // SAFETY: `drm_raw` is a valid DRM device with `pdev` as its parent, and `gcn` is
+        // dropped before the mappings and `gx`.
+        let gcn = unsafe {
+            Gcnfb::new(
+                drm_raw,
+                &Regs {
+                    cp: Regs::raw(&cp_regs),
+                    pe: Regs::raw(&pe_regs),
+                    vi: Regs::raw(&vi_regs),
+                    pi: Regs::raw(&pi_regs),
+                    wgpipe: Regs::raw(&wg_pipe),
+                },
+                &gx,
+            )?
+        };
+        gcn.init_kms(drm_raw)?;
+        let reg_gx = gx.clone();
 
         Ok(try_pin_init!(FlipperPlatformDriverData {
             // SAFETY: `_reg` is stored in `FlipperPlatformDriverData` and dropped when the
@@ -581,6 +436,8 @@ impl platform::Driver for FlipperPlatformDriver {
                 pdev.as_ref(),
                 unreg_dev,
                 pin_init!(FlipperDrmRegistrationData {
+                    gcn,
+                    gx: reg_gx,
                     pdev,
                     cp_regs,
                     pe_regs,
@@ -592,9 +449,15 @@ impl platform::Driver for FlipperPlatformDriver {
                     efb,
                     pos_vec <- new_mutex!(pos_vec),
                     color_vec <- new_mutex!(color_vec),
+                    drm: drm_ref,
                 }),
             )},
-            _: { dev_dbg!(pdev, "Flipper initialized correctly.") },
+            _: {
+                // SAFETY: The device is registered and was set up with `init_kms()`.
+                unsafe { gcnfb::start_clients(drm_raw) };
+                gx.set_drm(drm_raw);
+                dev_dbg!(pdev, "Flipper initialized correctly.")
+            },
         }))
         })
     }
@@ -623,6 +486,8 @@ impl drm::Driver for FlipperDrmDriver {
 
     const INFO: drm::DriverInfo = INFO;
     const FEAT_RENDER: bool = true;
+    const FEAT_MODESET: bool = true;
+    const FBDEV_SHMEM: bool = true;
 
     kernel::declare_drm_ioctls! {
         (FLIPPER_RUN_CMDS, drm_flipper_run_cmds, ioctl::RENDER_ALLOW, FlipperDrmFileData::run_cmds),

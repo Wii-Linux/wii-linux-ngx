@@ -15,10 +15,13 @@ use kernel::{
     uapi,
 };
 
-use crate::driver::{
-    FlipperDrmDevice,
-    FlipperDrmDriver,
-    FlipperDrmRegistrationData, //
+use crate::{
+    driver::{
+        FlipperDrmDevice,
+        FlipperDrmDriver,
+        FlipperDrmRegistrationData, //
+    },
+    gx::GxClient,
 };
 
 #[pin_data]
@@ -42,6 +45,10 @@ impl FlipperDrmFileData {
         cmd_list: &mut uapi::drm_flipper_run_cmds,
         _file: &FlipperDrmFile,
     ) -> Result<u32> {
+        // GX is shared with the framebuffer conversion, which runs at every retrace and leaves
+        // its own state behind, so nothing may be assumed to survive past this submission.
+        let _gx = reg_data.gx.lock(GxClient::User);
+
         let cmds_len = cmd_list.cmds_len as usize;
         //pr_info!("Got {cmds_len} commands: {cmd_list:?}\n");
         pr_info!("Got {cmds_len} commands\n");

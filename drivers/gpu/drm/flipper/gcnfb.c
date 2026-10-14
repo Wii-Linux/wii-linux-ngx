@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * Nintendo GameCube/Wii Video Interface (VI) frame buffer driver
+ * Nintendo GameCube/Wii Video Interface (VI) and GX bring-up for the Flipper
+ * DRM driver.  This started life as the gcnfb frame buffer driver; the fbdev
+ * front-end is gone, and the DRM driver now owns the device and drives this
+ * file through the interface declared in gcnfb.h.
  * Copyright (C) 2004-2009 The GameCube Linux Team
  * Copyright (C) 2004 Michael Steil <mist@c64.org>
  * Copyright (C) 2004,2005 Todd Jeffreys <todd@voidpointer.org>
@@ -9,6 +12,7 @@
  * Copyright (C) 2024-2026 Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
  *
  * Based on vesafb (c) 1998 Gerd Knorr <kraxel@goldbach.in-berlin.de>
+ * (historical; the fbdev code derived from it has been removed)
  *
  * GX code partially based on the following sources:
  *   - NetBSD WiiFB:
@@ -24,46 +28,40 @@
  *     Dave Murphy (WinterMute)
  */
 
-#define DRV_MODULE_NAME   "gcn-vifb"
+#define DRV_MODULE_NAME   "flipper-vi"
 #define DRV_DESCRIPTION   "Nintendo GameCube/Wii Video Interface (VI) driver"
-#define DRV_AUTHOR        "Michael Steil <mist@c64.org>, " \
-			  "Todd Jeffreys <todd@voidpointer.org>, " \
-			  "Albert Herranz, " \
-			  "neagix, " \
-			  "Techflash <officialTechflashYT@gmail.com>"
 
 #define pr_fmt(fmt)     DRV_MODULE_NAME ": " fmt
 
 #include <linux/completion.h>
-#include <linux/console.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
-#include <linux/fb.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/kref.h>
-#include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/uaccess.h>
-#include <linux/wait.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <asm/reg.h>
+#include <uapi/linux/fb.h>
 #ifdef CONFIG_WII_AVE_RVL
 #include <linux/i2c.h>
 #endif
 
+#include "gcnfb.h"
+
+/* Timing calculations below are expressed in terms of the fbdev UAPI struct. */
+#ifndef KHZ2PICOS
+#define KHZ2PICOS(a)	(1000000000UL / (a))
+#endif
+
 /*
  * Driver changelog, since the git history has been screwed up over the years.
+ * (Entries below predate the move into the flipper DRM driver.)
  * 1.0i - Albert Herranz (1/24/2009) - Initial release of the driver, based on vesafb
  *
  * 2.0i - Albert Herranz (3/01/2009 - 5/30/2009)
@@ -87,6 +85,9 @@
  * 2.4t - Techflash (11/16/2025) - Massive cleanups, make nostalgic mode the only option, fixup resolutions
  *
  * 2.5t - Techflash (07/29/2026) - Use GX for all copying and conversion
+ *
+ * 3.0  - Moved into drivers/gpu/drm/flipper, fbdev front-end removed.  GX jobs
+ *        are submitted through the DRM driver.
  */
 static char vifb_driver_version[] = "2.5t";
 
@@ -457,46 +458,6 @@ struct vi_tv_mode {
 	int lines;		/* total lines */
 };
 
-/* Keep mapped storage alive until the last VMA closes after device removal. */
-struct vifb_rgb_buffer {
-	struct kref ref;
-	atomic_t map_count;
-	struct device *dev;
-	void *cpu;
-	dma_addr_t dma;
-	size_t size;
-};
-
-static void vifb_rgb_release(struct kref *ref)
-{
-	struct vifb_rgb_buffer *buf = container_of(ref, struct vifb_rgb_buffer, ref);
-
-	dma_free_noncoherent(buf->dev, buf->size, buf->cpu, buf->dma,
-			     DMA_TO_DEVICE);
-	put_device(buf->dev);
-	kfree(buf);
-}
-
-static struct vifb_rgb_buffer *vifb_rgb_alloc(struct device *dev, size_t size)
-{
-	struct vifb_rgb_buffer *buf = kzalloc(sizeof(*buf), GFP_KERNEL);
-
-	if (!buf)
-		return NULL;
-	buf->cpu = dma_alloc_noncoherent(dev, size, &buf->dma,
-					DMA_TO_DEVICE, GFP_KERNEL);
-	if (!buf->cpu) {
-		kfree(buf);
-		return NULL;
-	}
-	kref_init(&buf->ref);
-	atomic_set(&buf->map_count, 0);
-	buf->dev = get_device(dev);
-	buf->size = size;
-	memset(buf->cpu, 0, size);
-	return buf;
-}
-
 /*
  * Video control data structure.
  */
@@ -504,7 +465,6 @@ struct vi_ctl {
 	struct mutex mode_lock;
 	bool irq_requested;
 	bool interrupts_enabled;
-	struct vifb_rgb_buffer *rgb_buffer;
 	spinlock_t lock;
 
 	void __iomem *io_base;
@@ -529,23 +489,23 @@ struct vi_ctl {
 	unsigned int irq;
 	unsigned int pe_irq;
 
-	int in_vtrace;
-	wait_queue_head_t vtrace_waitq;
-
-	int visible_page;
-	unsigned long page_address[2];
-	unsigned long flip_pending;
-
 	struct vi_tv_mode *mode;
 	struct vi_mode_timings timings;
+	struct fb_var_screeninfo var;	/* input to the timing calculations */
 	int has_component_cable:1;	/* at last detection time */
 
-	struct fb_info *info;
 #ifdef CONFIG_WII_AVE_RVL
 	struct i2c_client *i2c_client;
+	bool ave_registered;
 #endif
 	struct device *dev;
+	const struct gcnfb_ops *ops;
+	void *priv;
 };
+
+static int gcnfb_gx_submit(struct vi_ctl *ctl, gcnfb_gx_job_fn job, void *data);
+static int gcnfb_present_job(void *data, bool state_lost);
+static int gcnfb_configure_job(void *data, bool state_lost);
 
 
 /*
@@ -599,35 +559,19 @@ static const u32 vi_fct[] = {
 
 
 /*
- * Default fix and var framebuffer data.
+ * Parameters formerly selected with the fbdev "video=" option.  Nothing sets
+ * them any more; they are kept so the mode detection logic stays as it was.
  */
-static struct fb_fix_screeninfo vifb_fix = {
-	.id = DRV_MODULE_NAME,
-	.type = FB_TYPE_PACKED_PIXELS,
-	.visual = FB_VISUAL_TRUECOLOR,	/* lies, lies, lies, ... */
-	.accel = FB_ACCEL_NONE,
-	.capabilities = FB_CAP_FOURCC,
-};
+static const int force_scan;
+static const int force_rate;
+static const int force_tv;
 
-static struct fb_var_screeninfo vifb_var = {
-	.activate = FB_ACTIVATE_NOW,
+static const struct fb_var_screeninfo gcnfb_default_var = {
 	.width = 640,
 	.height = 448,
 	.bits_per_pixel = 16,
 	.vmode = FB_VMODE_INTERLACED,
 };
-
-
-/*
- * Setup parameters.
- */
-static int want_ypan = 1;		/* 0..nothing, 1..ypan */
-
-static int force_scan;
-static int force_rate;
-static int force_tv;
-
-static u32 pseudo_palette[16];
 
 /*
  * Framebuffer layout:
@@ -1087,7 +1031,7 @@ static void vi_setup_tv_mode(struct vi_ctl *ctl)
 {
 	void __iomem *io_base = ctl->io_base;
 	struct vi_mode_timings *timings = &ctl->timings;
-	struct fb_var_screeninfo *var = &ctl->info->var;
+	struct fb_var_screeninfo *var = &ctl->var;
 	struct vi_tv_mode *mode = ctl->mode;
 	u16 std, ppl;
 
@@ -1182,14 +1126,13 @@ static void vi_enable_scanout(struct vi_ctl *ctl)
  */
 static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 {
-	struct fb_info *info = ctl->info;
 	void __iomem *io_base = ctl->io_base;
 	u32 top, bot;
 	u8 xof;
 	unsigned int gx_ll = ctl->xfb_stride;
 
 	top = bot = addr;
-	if (!vi_vmode_is_progressive(info->var.vmode)) {
+	if (!vi_vmode_is_progressive(ctl->var.vmode)) {
 		if (ctl->timings.ypos & 0x01)
 			top += gx_ll;
 		else
@@ -1200,17 +1143,6 @@ static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 	out_be32(io_base + VI_TFBL,
 		 vi_tfbl_pob(1) | vi_tfbl_xof(xof) | vi_tfbl_fba(top >> 5));
 	out_be32(io_base + VI_BFBL, vi_bfbl_pob(1) | vi_bfbl_fba(bot >> 5));
-}
-
-/*
- * Swap the visible and back pages.
- */
-static inline void vi_flip_page(struct vi_ctl *ctl)
-{
-	ctl->visible_page ^= 1;
-	vi_set_framebuffer(ctl, ctl->page_address[ctl->visible_page]);
-
-	ctl->flip_pending = 0;
 }
 
 static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
@@ -1442,7 +1374,7 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 #define PI_FIFO_BASE_END		0x10
 #define PI_FIFO_WRITE_PTR		0x14
 
-#define GX_FIFO_SIZE			4096
+#define GX_FIFO_SIZE			(256 * 1024)
 #define GX_FIFO_HIWAT(size)		((size) - 32)
 #define GX_FIFO_LOWAT(size)		(((size) >> 1) & ~0x1f)
 #define GX_COPY_TIMEOUT_US		5000
@@ -2108,37 +2040,20 @@ fault:
 	dev_crit(ctl->dev, "disabling GX submissions after completion failure\n");
 }
 
-static void vi_dispatch_vtrace(struct vi_ctl *ctl)
+static irqreturn_t vi_irq_handler(int irq, void *data)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&ctl->lock, flags);
-	if (ctl->flip_pending)
-		vi_flip_page(ctl);
-	spin_unlock_irqrestore(&ctl->lock, flags);
-
-	wake_up_interruptible(&ctl->vtrace_waitq);
-}
-
-static irqreturn_t vi_irq_handler(int irq, void *dev)
-{
-	struct fb_info *info = dev_get_drvdata((struct device *)dev);
-	struct vi_ctl *ctl = info->par;
+	struct vi_ctl *ctl = data;
 	void __iomem *io_base = ctl->io_base;
 	u32 val;
 
 	/* DI0 and DI1 are used to account for the vertical retrace */
 	val = in_be32(io_base + VI_DI0);
 	if (vi_dix_get_irq(val)) {
-		ctl->in_vtrace = 0;
-
 		out_be32(io_base + VI_DI0, vi_dix_clear_irq(val));
 		return IRQ_HANDLED;
 	}
 	val = in_be32(io_base + VI_DI1);
 	if (vi_dix_get_irq(val)) {
-		ctl->in_vtrace = 1;
-
 		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
 		return IRQ_WAKE_THREAD;
 	}
@@ -2146,21 +2061,18 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	return IRQ_NONE;
 }
 
-static irqreturn_t vi_irq_thread(int irq, void *dev)
+static irqreturn_t vi_irq_thread(int irq, void *data)
 {
-	struct fb_info *info = dev_get_drvdata((struct device *)dev);
-	struct vi_ctl *ctl = info->par;
+	struct vi_ctl *ctl = data;
 
-	gx_copy_efb_to_xfb(ctl);
-	vi_dispatch_vtrace(ctl);
+	gcnfb_gx_submit(ctl, gcnfb_present_job, ctl);
 
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t pe_irq_handler(int irq, void *dev)
+static irqreturn_t pe_irq_handler(int irq, void *data)
 {
-	struct fb_info *info = dev_get_drvdata((struct device *)dev);
-	struct vi_ctl *ctl = info->par;
+	struct vi_ctl *ctl = data;
 
 	/*
 	 * IRQ 10 is the dedicated PE-finish interrupt.  PE_ISR_FINISH is not
@@ -2427,12 +2339,10 @@ static void vi_dettach_ave(struct vi_ctl *ctl)
 	spin_unlock(&ctl->lock);
 }
 
-static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect);
+static int gcnfb_apply_mode(struct vi_ctl *ctl, bool force_detect);
 
 static int vi_ave_probe(struct i2c_client *client)
 {
-	struct fb_var_screeninfo var;
-	struct fb_videomode mode;
 	int error;
 
 	if (!first_vi_ctl)
@@ -2443,7 +2353,7 @@ static int vi_ave_probe(struct i2c_client *client)
 		return 0;
 	}
 
-	/* attach first a/v encoder to first framebuffer */
+	/* attach first a/v encoder to first video interface */
 	error = vi_attach_ave(first_vi_ctl, client);
 	if (error) {
 		dev_err(&client->dev, "vi_ave_probe(): unable to attach AVE: error %d\n", error);
@@ -2453,20 +2363,13 @@ static int vi_ave_probe(struct i2c_client *client)
 	first_vi_ave = client;
 
 	/* setup again the video mode using the a/v encoder */
-	console_lock();
-	lock_fb_info(first_vi_ctl->info);
-	error = vifb_apply_mode(first_vi_ctl, true);
-	if (!error) {
-		var = first_vi_ctl->info->var;
-		fb_var_to_videomode(&mode, &var);
-		error = fb_add_videomode(&mode, &first_vi_ctl->info->modelist);
-		if (!error)
-			error = fb_set_var_from_user(first_vi_ctl->info, &var);
-	}
-	unlock_fb_info(first_vi_ctl->info);
-	console_unlock();
+	error = gcnfb_apply_mode(first_vi_ctl, true);
 	if (error)
 		goto err_detach;
+
+	/* the detected mode may have changed, let the DRM side re-probe */
+	if (first_vi_ctl->ops->mode_changed)
+		first_vi_ctl->ops->mode_changed(first_vi_ctl->priv);
 
 	dev_info(&client->dev, "vi_ave_probe(): AVE attached successfully\n");
 	return 0;
@@ -2511,50 +2414,9 @@ static struct i2c_driver vi_ave_driver = {
  *
  */
 
-static int vifb_setcolreg(unsigned regno, unsigned red, unsigned green,
-			   unsigned blue, unsigned transp, struct fb_info *info)
+static int gcnfb_check_var_timings(struct fb_var_screeninfo *var,
+				   struct vi_ctl *ctl)
 {
-	/*
-	 *  Set a single color register. The values supplied are
-	 *  already rounded down to the hardware's capabilities
-	 *  (according to the entries in the `var' structure). Return
-	 *  != 0 for invalid regno.
-	 */
-
-	if (regno >= info->cmap.len)
-		return 1;
-
-	switch (info->var.bits_per_pixel) {
-	case 16:
-		if (info->var.red.offset == 10) {
-			/* 1:5:5:5, not used currently */
-			((u32 *) (info->pseudo_palette))[regno] =
-			    ((red & 0xf800) >> 1) |
-			    ((green & 0xf800) >> 6) | ((blue & 0xf800) >> 11);
-		} else {
-			/* 0:5:6:5 */
-			((u32 *) (info->pseudo_palette))[regno] =
-			    ((red & 0xf800)) |
-			    ((green & 0xfc00) >> 5) | ((blue & 0xf800) >> 11);
-		}
-		break;
-	case 8:
-	case 15:
-	case 24:
-	case 32:
-		((u32 *)info->pseudo_palette)[regno] =
-			((red >> 8) << 16) |
-			((green >> 8) << 8) |
-			(blue >> 8);
-		break;
-	}
-	return 0;
-}
-
-static int vifb_check_var_timings(struct fb_var_screeninfo *var,
-				  struct fb_info *info)
-{
-	struct vi_ctl *ctl = info->par;
 	struct vi_tv_mode *mode = ctl->mode;
 	struct vi_mode_timings timings;
 	u32 yres = var->yres;
@@ -2587,19 +2449,13 @@ err_out:
 	return error;
 }
 
-static int vifb_format_is_fourcc(const struct fb_var_screeninfo *var)
-{
-	return var->grayscale > 1;
-}
-
 
 /*
  * Check var and eventually tweak it to something supported.
  * Do not modify par here.
  */
-static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
+static int gcnfb_check_var(struct vi_ctl *ctl, struct fb_var_screeninfo *var)
 {
-	struct vi_ctl *ctl = info->par;
 	struct vi_tv_mode *mode = ctl->mode;
 	int error = -EINVAL;
 	__u32 xres, yres, xres_virtual, yres_virtual;
@@ -2607,12 +2463,9 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	/* no custom viewports, sorry */
 	if ((var->xoffset != 0) ||
 		(var->yoffset != 0)) {
-		dev_err(info->device, "Non-zero x/y offsets are not supported\n");
+		dev_err(ctl->dev, "Non-zero x/y offsets are not supported\n");
 		return -EINVAL;
 	}
-
-	if (vifb_format_is_fourcc(var))
-		return -EINVAL;
 
 	var->nonstd = 0;
 	if (var->bits_per_pixel == 16) {
@@ -2625,7 +2478,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		var->transp.offset = 0;
 		var->transp.length = 0;
 	} else {
-		dev_err(info->device, "unsupported depth %u\n",
+		dev_err(ctl->dev, "unsupported depth %u\n",
 			var->bits_per_pixel);
 		return -EINVAL;
 	}
@@ -2636,11 +2489,11 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (yres & VI_VERT_ALIGN)
 		yres = ALIGN(yres, VI_VERT_ALIGN+1);
 	if (yres > mode->height) {
-		dev_err(info->device, "yres %u out of bounds\n", yres);
+		dev_err(ctl->dev, "yres %u out of bounds\n", yres);
 		return -EINVAL;
 	}
 	if (yres < 16) {
-		dev_err(info->device, "yres %u < 16 is too small\n", yres);
+		dev_err(ctl->dev, "yres %u < 16 is too small\n", yres);
 		return -EINVAL;
 	}
 	if (!yres)
@@ -2654,7 +2507,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (xres & VI_HORZ_ALIGN)
 		xres = ALIGN(xres, VI_HORZ_ALIGN+1);
 	if (xres > mode->width) {
-		dev_err(info->device, "xres %u (%u) out of bounds (max %u)\n", var->xres, xres, mode->width);
+		dev_err(ctl->dev, "xres %u (%u) out of bounds (max %u)\n", var->xres, xres, mode->width);
 		return -EINVAL;
 	}
 	if (!xres)
@@ -2668,7 +2521,7 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 
 	if (xres_virtual * yres_virtual * sizeof(u16) >
 	    ctl->rgb_fb_size) {
-		dev_err(info->device, "not enough memory for virtual resolution (%ux%ux%u)\n",
+		dev_err(ctl->dev, "not enough memory for virtual resolution (%ux%ux%u)\n",
 			   xres_virtual, yres_virtual, var->bits_per_pixel);
 		return -EINVAL;
 	}
@@ -2686,20 +2539,19 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	} else
 		var->vmode = FB_VMODE_INTERLACED;
 
-	error = vifb_check_var_timings(var, info);
+	error = gcnfb_check_var_timings(var, ctl);
 	if (error)
 		return error;
 
 	return 0;
 }
 
-static void vifb_clear_all(struct fb_info *info)
+static void gcnfb_clear_all(struct vi_ctl *ctl)
 {
-	struct vi_ctl *ctl = info->par;
 	u32 *xfb;
 	int i;
 
-	memset(info->screen_buffer, 0, info->screen_size);
+	memset(ctl->rgb_fb, 0, ctl->rgb_fb_size);
 
 	i = ctl->xfb_size >> 2;
 	xfb = ctl->xfb;
@@ -2707,19 +2559,51 @@ static void vifb_clear_all(struct fb_info *info)
 		*(xfb++) = VI_YUYV_BLACK;
 }
 
-/* Called with fbdev/console serialization; mode_lock also excludes file I/O. */
-static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
+/*
+ * GX job callbacks.  All GX FIFO access goes through the flipper DRM driver's
+ * job submission, which serializes us against userspace command submission
+ * and tells us whether anybody else touched the GX state since our last job.
+ */
+
+static int gcnfb_gx_submit(struct vi_ctl *ctl, gcnfb_gx_job_fn job, void *data)
 {
-	struct fb_info *info = ctl->info;
-	struct vifb_rgb_buffer *old_rgb, *new_rgb = NULL;
+	return ctl->ops->gx_submit(ctl->priv, job, data);
+}
+
+static int gcnfb_present_job(void *data, bool state_lost)
+{
+	struct vi_ctl *ctl = data;
+
+	if (READ_ONCE(ctl->gx_faulted))
+		return -EIO;
+	if (state_lost)
+		gx_configure_mode(ctl);
+	gx_copy_efb_to_xfb(ctl);
+	return READ_ONCE(ctl->gx_faulted) ? -EIO : 0;
+}
+
+static int gcnfb_configure_job(void *data, bool state_lost)
+{
+	struct vi_ctl *ctl = data;
+
+	gx_configure_mode(ctl);
+	gx_flush(ctl);
+	return gx_wait_cp_idle(ctl);
+}
+
+/* Takes mode_lock, which also excludes framebuffer writes. */
+static int gcnfb_apply_mode(struct vi_ctl *ctl, bool force_detect)
+{
 	struct vi_tv_mode *old_mode;
 	struct vi_mode_timings old_timings;
 	struct fb_var_screeninfo old_var;
-	struct fb_fix_screeninfo old_fix;
+	void *old_rgb, *new_rgb = NULL;
+	dma_addr_t old_rgb_dma, new_rgb_dma = 0;
+	size_t old_rgb_size;
 	void *old_xfb, *new_xfb = NULL;
 	dma_addr_t old_dma, new_dma = 0;
 	size_t old_size, new_size;
-	unsigned int old_stride, new_stride, y;
+	unsigned int old_stride, new_stride, old_pitch, y;
 	bool old_cable, enabled, resized = false;
 	u16 dcr;
 	int ave_error, error;
@@ -2728,9 +2612,11 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	old_mode = ctl->mode;
 	old_cable = ctl->has_component_cable;
 	old_timings = ctl->timings;
-	old_var = info->var;
-	old_fix = info->fix;
-	old_rgb = ctl->rgb_buffer;
+	old_var = ctl->var;
+	old_pitch = old_var.xres_virtual * sizeof(u16);
+	old_rgb = ctl->rgb_fb;
+	old_rgb_dma = ctl->rgb_fb_dma;
+	old_rgb_size = ctl->rgb_fb_size;
 	old_xfb = ctl->xfb;
 	old_dma = ctl->xfb_dma;
 	old_size = ctl->xfb_size;
@@ -2753,32 +2639,30 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	new_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
 	new_size = new_stride * ctl->mode->height;
 	if (new_stride != old_stride || new_size != old_size) {
-		if (atomic_read(&old_rgb->map_count)) {
-			error = -EBUSY;
-			goto restore;
-		}
 		new_xfb = dma_alloc_coherent(ctl->dev, new_size, &new_dma,
 					    GFP_KERNEL);
 		if (!new_xfb) {
 			error = -ENOMEM;
 			goto restore;
 		}
-		new_rgb = vifb_rgb_alloc(ctl->dev, new_size);
+		new_rgb = dma_alloc_noncoherent(ctl->dev, new_size,
+						&new_rgb_dma, DMA_TO_DEVICE,
+						GFP_KERNEL);
 		if (!new_rgb) {
 			error = -ENOMEM;
 			goto restore;
 		}
+		memset(new_rgb, 0, new_size);
 		for (y = 0; y < new_size / sizeof(u32); y++)
 			((u32 *)new_xfb)[y] = VI_YUYV_BLACK;
 		for (y = 0; y < min_t(unsigned int, old_var.yres,
 					 ctl->mode->height); y++)
-			memcpy(new_rgb->cpu + y * new_stride,
-			       old_rgb->cpu + y * old_fix.line_length,
-			       min(old_fix.line_length, new_stride));
-		ctl->rgb_buffer = new_rgb;
-		ctl->rgb_fb = new_rgb->cpu;
-		ctl->rgb_fb_dma = new_rgb->dma;
-		ctl->rgb_fb_size = new_rgb->size;
+			memcpy(new_rgb + y * new_stride,
+			       old_rgb + y * old_pitch,
+			       min(old_pitch, new_stride));
+		ctl->rgb_fb = new_rgb;
+		ctl->rgb_fb_dma = new_rgb_dma;
+		ctl->rgb_fb_size = new_size;
 		ctl->xfb = new_xfb;
 		ctl->xfb_dma = new_dma;
 		ctl->xfb_size = new_size;
@@ -2786,35 +2670,23 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 		resized = true;
 	}
 	if (ctl->mode != old_mode) {
-		info->var.xres = info->var.xres_virtual = ctl->mode->width;
-		info->var.yres = info->var.yres_virtual = ctl->mode->height;
-		info->var.xoffset = info->var.yoffset = 0;
+		ctl->var.xres = ctl->var.xres_virtual = ctl->mode->width;
+		ctl->var.yres = ctl->var.yres_virtual = ctl->mode->height;
+		ctl->var.xoffset = ctl->var.yoffset = 0;
 	}
-	error = vifb_check_var(&info->var, info);
+	error = gcnfb_check_var(ctl, &ctl->var);
 	if (error)
 		goto restore;
-
-	info->fix.smem_start = ctl->rgb_fb_dma;
-	info->fix.line_length = info->var.xres_virtual * sizeof(u16);
-	info->fix.smem_len = info->fix.line_length * info->var.yres_virtual;
-	info->fix.visual = FB_VISUAL_TRUECOLOR;
-	info->screen_buffer = ctl->rgb_fb;
-	info->screen_size = info->fix.smem_len;
 
 	/* Stop scanout before replacing its address and GX's buffer layout. */
 	dcr = in_be16(ctl->io_base + VI_DCR);
 	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_enb(dcr, 0));
-	gx_configure_mode(ctl);
-	gx_flush(ctl);
-	error = gx_wait_cp_idle(ctl);
+	error = gcnfb_gx_submit(ctl, gcnfb_configure_job, ctl);
 	if (error) {
 		ctl->gx_faulted = true;
 		out_be16(ctl->io_base + VI_DCR, dcr);
 		goto restore;
 	}
-	ctl->page_address[0] = ctl->page_address[1] = ctl->xfb_dma;
-	ctl->visible_page = 0;
-	ctl->flip_pending = 0;
 
 	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_rst(0, 1));
 	udelay(2);
@@ -2838,7 +2710,8 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 committed:
 	if (resized) {
 		dma_free_coherent(ctl->dev, old_size, old_xfb, old_dma);
-		kref_put(&old_rgb->ref, vifb_rgb_release);
+		dma_free_noncoherent(ctl->dev, old_rgb_size, old_rgb,
+				     old_rgb_dma, DMA_TO_DEVICE);
 	}
 	goto out;
 
@@ -2846,20 +2719,17 @@ restore:
 	ctl->mode = old_mode;
 	ctl->has_component_cable = old_cable;
 	ctl->timings = old_timings;
-	info->var = old_var;
-	info->fix = old_fix;
-	ctl->rgb_buffer = old_rgb;
-	ctl->rgb_fb = old_rgb->cpu;
-	ctl->rgb_fb_dma = old_rgb->dma;
-	ctl->rgb_fb_size = old_rgb->size;
-	info->screen_buffer = old_rgb->cpu;
-	info->screen_size = old_fix.smem_len;
+	ctl->var = old_var;
+	ctl->rgb_fb = old_rgb;
+	ctl->rgb_fb_dma = old_rgb_dma;
+	ctl->rgb_fb_size = old_rgb_size;
 	ctl->xfb = old_xfb;
 	ctl->xfb_dma = old_dma;
 	ctl->xfb_size = old_size;
 	ctl->xfb_stride = old_stride;
 	if (new_rgb)
-		kref_put(&new_rgb->ref, vifb_rgb_release);
+		dma_free_noncoherent(ctl->dev, new_size, new_rgb, new_rgb_dma,
+				     DMA_TO_DEVICE);
 	if (new_xfb)
 		dma_free_coherent(ctl->dev, new_size, new_xfb, new_dma);
 out:
@@ -2868,441 +2738,124 @@ out:
 	return error;
 }
 
-static int vifb_set_par(struct fb_info *info)
-{
-	struct vi_ctl *ctl = info->par;
-
-	if (want_ypan) {
-		info->fix.xpanstep = 2;
-		info->fix.ypanstep = 1;
-		info->flags |= FBINFO_HWACCEL_YPAN;
-	} else {
-		info->fix.xpanstep = 0;
-		info->fix.ypanstep = 0;
-	}
-	return vifb_apply_mode(ctl, false);
-}
-
-static void __maybe_unused vifb_fillrect(struct fb_info *info,
-			  const struct fb_fillrect *rect)
-{
-	u32 __iomem *dst;
-	u32 color;
-	unsigned int x, y;
-
-	if (!rect->width || !rect->height)
-		return;
-
-	color = rect->color;
-	if (info->fix.visual == FB_VISUAL_TRUECOLOR)
-		color = ((u32 *)info->pseudo_palette)[color];
-
-	for (y = 0; y < rect->height; y++) {
-		dst = (u32 __iomem *)
-			((u8 __iomem *)info->screen_base +
-			 (rect->dy + y) * info->fix.line_length) + rect->dx;
-		for (x = 0; x < rect->width; x++) {
-			if (rect->rop == ROP_XOR)
-				out_be32(dst + x, in_be32(dst + x) ^ color);
-			else
-				out_be32(dst + x, color);
-		}
-	}
-}
-
-static void __maybe_unused vifb_copyarea(struct fb_info *info,
-			  const struct fb_copyarea *area)
-{
-	u32 __iomem *src, *dst;
-	int x, y, x_start, x_end, x_step;
-	int y_start, y_end, y_step;
-
-	if (!area->width || !area->height)
-		return;
-
-	if (area->dy > area->sy) {
-		y_start = area->height - 1;
-		y_end = -1;
-		y_step = -1;
-	} else {
-		y_start = 0;
-		y_end = area->height;
-		y_step = 1;
-	}
-	if (area->dy == area->sy && area->dx > area->sx) {
-		x_start = area->width - 1;
-		x_end = -1;
-		x_step = -1;
-	} else {
-		x_start = 0;
-		x_end = area->width;
-		x_step = 1;
-	}
-
-	for (y = y_start; y != y_end; y += y_step) {
-		src = (u32 __iomem *)
-			((u8 __iomem *)info->screen_base +
-			 (area->sy + y) * info->fix.line_length) + area->sx;
-		dst = (u32 __iomem *)
-			((u8 __iomem *)info->screen_base +
-			 (area->dy + y) * info->fix.line_length) + area->dx;
-		for (x = x_start; x != x_end; x += x_step)
-			out_be32(dst + x, in_be32(src + x));
-	}
-}
-
-static void __maybe_unused vifb_imageblit(struct fb_info *info,
-			   const struct fb_image *image)
-{
-	const u8 *src = image->data;
-	u32 __iomem *dst;
-	u32 fg, bg, color;
-	unsigned int pitch, x, y;
-
-	if (!image->width || !image->height)
-		return;
-
-	fg = image->fg_color;
-	bg = image->bg_color;
-	if (info->fix.visual == FB_VISUAL_TRUECOLOR) {
-		fg = ((u32 *)info->pseudo_palette)[fg];
-		bg = ((u32 *)info->pseudo_palette)[bg];
-	}
-
-	if (image->depth == 1) {
-		pitch = DIV_ROUND_UP(image->width, 8);
-		for (y = 0; y < image->height; y++) {
-			dst = (u32 __iomem *)
-				((u8 __iomem *)info->screen_base +
-				 (image->dy + y) * info->fix.line_length) +
-				image->dx;
-			for (x = 0; x < image->width; x++) {
-				color = src[y * pitch + x / 8] &
-					BIT(7 - (x & 7)) ? fg : bg;
-				out_be32(dst + x, color);
-			}
-		}
-	} else if (image->depth == 32) {
-		pitch = image->width * sizeof(color);
-		for (y = 0; y < image->height; y++) {
-			dst = (u32 __iomem *)
-				((u8 __iomem *)info->screen_base +
-				 (image->dy + y) * info->fix.line_length) +
-				image->dx;
-			for (x = 0; x < image->width; x++) {
-				memcpy(&color, src + y * pitch +
-				       x * sizeof(color), sizeof(color));
-				out_be32(dst + x, color);
-			}
-		}
-	}
-}
-
-static bool __maybe_unused
-vifb_efb_word_valid(struct fb_info *info, unsigned long offset)
-{
-	unsigned long line = offset / info->fix.line_length;
-	unsigned long column = offset % info->fix.line_length;
-
-	return line < info->var.yres_virtual &&
-	       column + sizeof(u32) <= info->var.xres_virtual * sizeof(u32);
-}
-
-static ssize_t __maybe_unused
-vifb_read(struct fb_info *info, char __user *buf, size_t count,
-			 loff_t *ppos)
-{
-	unsigned long limit = info->fix.line_length * info->var.yres_virtual;
-	unsigned long pos = *ppos;
-	size_t done = 0;
-
-	if (pos >= limit)
-		return 0;
-	count = min_t(size_t, count, limit - pos);
-
-	while (done < count) {
-		unsigned long word_pos = pos & ~(sizeof(u32) - 1);
-		size_t word_off = pos & (sizeof(u32) - 1);
-		size_t len = min_t(size_t, sizeof(u32) - word_off,
-				   count - done);
-		u32 value = 0;
-
-		if (vifb_efb_word_valid(info, word_pos))
-			value = in_be32((u32 __iomem *)
-				((u8 __iomem *)info->screen_base + word_pos));
-		if (copy_to_user(buf + done, (u8 *)&value + word_off, len))
-			return done ? done : -EFAULT;
-
-		pos += len;
-		done += len;
-	}
-
-	*ppos = pos;
-	return done;
-}
-
-static ssize_t __maybe_unused
-vifb_write(struct fb_info *info, const char __user *buf,
-			  size_t count, loff_t *ppos)
-{
-	unsigned long limit = info->fix.line_length * info->var.yres_virtual;
-	unsigned long pos = *ppos;
-	size_t done = 0;
-
-	if (pos > limit)
-		return -EFBIG;
-	count = min_t(size_t, count, limit - pos);
-
-	while (done < count) {
-		unsigned long word_pos = pos & ~(sizeof(u32) - 1);
-		size_t word_off = pos & (sizeof(u32) - 1);
-		size_t len = min_t(size_t, sizeof(u32) - word_off,
-				   count - done);
-		u32 __iomem *dst = (u32 __iomem *)
-			((u8 __iomem *)info->screen_base + word_pos);
-		u32 value = 0;
-
-		if (vifb_efb_word_valid(info, word_pos) &&
-		    len != sizeof(value))
-			value = in_be32(dst);
-
-		if (copy_from_user((u8 *)&value + word_off, buf + done, len))
-			return done ? done : -EFAULT;
-
-		if (vifb_efb_word_valid(info, word_pos))
-			out_be32(dst, value);
-
-		pos += len;
-		done += len;
-	}
-
-	*ppos = pos;
-	return done;
-}
-
-static void vifb_vma_open(struct vm_area_struct *vma)
-{
-	struct vifb_rgb_buffer *buf = vma->vm_private_data;
-
-	kref_get(&buf->ref);
-	atomic_inc(&buf->map_count);
-}
-
-static void vifb_vma_close(struct vm_area_struct *vma)
-{
-	struct vifb_rgb_buffer *buf = vma->vm_private_data;
-
-	atomic_dec(&buf->map_count);
-	kref_put(&buf->ref, vifb_rgb_release);
-}
-
-static const struct vm_operations_struct vifb_vm_ops = {
-	.open = vifb_vma_open,
-	.close = vifb_vma_close,
-};
-
-static int vifb_mmap(struct fb_info *info, struct vm_area_struct *vma)
-{
-	struct vi_ctl *ctl = info->par;
-	struct vifb_rgb_buffer *buf;
-	int error;
-
-	mutex_lock(&ctl->mode_lock);
-	buf = ctl->rgb_buffer;
-	error = dma_mmap_pages(ctl->dev, vma, buf->size, virt_to_page(buf->cpu));
-	if (!error) {
-		vma->vm_private_data = buf;
-		vma->vm_ops = &vifb_vm_ops;
-		vifb_vma_open(vma);
-	}
-	mutex_unlock(&ctl->mode_lock);
-	return error;
-}
-
-static ssize_t vifb_buffer_read(struct fb_info *info, char __user *buf,
-			 size_t count, loff_t *ppos)
-{
-	struct vi_ctl *ctl = info->par;
-	ssize_t ret;
-
-	mutex_lock(&ctl->mode_lock);
-	ret = fb_sys_read(info, buf, count, ppos);
-	mutex_unlock(&ctl->mode_lock);
-	return ret;
-}
-
-static ssize_t vifb_buffer_write(struct fb_info *info, const char __user *buf,
-			  size_t count, loff_t *ppos)
-{
-	struct vi_ctl *ctl = info->par;
-	ssize_t ret;
-
-	mutex_lock(&ctl->mode_lock);
-	ret = fb_sys_write(info, buf, count, ppos);
-	mutex_unlock(&ctl->mode_lock);
-	return ret;
-}
-
-struct fb_ops vifb_ops = {
-	.owner = THIS_MODULE,
-	.fb_read = vifb_buffer_read,
-	.fb_write = vifb_buffer_write,
-	.fb_mmap = vifb_mmap,
-	.fb_setcolreg = vifb_setcolreg,
-	/*.fb_ioctl = vifb_ioctl,*/
-	.fb_set_par = vifb_set_par,
-	.fb_check_var = vifb_check_var,
-	.fb_fillrect = sys_fillrect,
-	.fb_copyarea = sys_copyarea,
-	.fb_imageblit = sys_imageblit
-};
-
-#ifndef MODULE
-
-static int vifb_setup(char *options)
-{
-	char *this_opt;
-
-	if (!options || !*options)
-		return 0;
-
-	pr_info("options: %s\n", options);
-
-	while ((this_opt = strsep(&options, ",")) != NULL) {
-		if (!*this_opt)
-			continue;
-
-		if (!strcmp(this_opt, "redraw"))
-			want_ypan = 0;
-		else if (!strcmp(this_opt, "interlaced"))
-			force_scan = VI_SCAN_INTERLACED;
-		else if (!strcmp(this_opt, "progressive"))
-			force_scan = VI_SCAN_PROGRESSIVE;
-		else if (!strcmp(this_opt, "50Hz"))
-			force_rate = VI_RATE_50Hz;
-		else if (!strcmp(this_opt, "60Hz"))
-			force_rate = VI_RATE_60Hz;
-		else if (!strncmp(this_opt, "tv=", 3)) {
-			if (!strncmp(this_opt + 3, "PAL", 3))
-				force_tv = VI_TV_PAL;
-			else if (!strncmp(this_opt + 3, "NTSC", 4))
-				force_tv = VI_TV_NTSC;
-		}
-	}
-
-	if (force_scan == VI_SCAN_PROGRESSIVE || force_tv == VI_TV_NTSC) {
-		if (force_rate == VI_RATE_50Hz) {
-			pr_info("ignoring forced 50Hz setting\n");
-			force_rate = VI_RATE_DONTCARE;
-		}
-	}
-	return 0;
-}
-
-#endif	/* MODULE */
-
-
 /*
- * OF platform driver hooks.
- *
+ * Public interface used by the flipper DRM driver.
  */
 
-static void __iomem *vifb_iomap_compatible(struct device *dev,
-					   const char *compatible,
-					   phys_addr_t *start)
+void gcnfb_get_mode(struct vi_ctl *ctl, struct gcnfb_mode *out)
 {
-	struct device_node *np;
-	struct resource res;
-	void __iomem *base;
+	mutex_lock(&ctl->mode_lock);
+	out->name = ctl->mode->name;
+	out->width = ctl->mode->width;
+	out->height = ctl->mode->height;
+	out->lines = ctl->mode->lines;
+	out->progressive = !!(ctl->mode->flags & VI_VMF_PROGRESSIVE);
+	out->pal = !!(ctl->mode->flags & VI_VMF_PAL_COLOR);
+	mutex_unlock(&ctl->mode_lock);
+}
 
-	np = of_find_compatible_node(NULL, NULL, compatible);
-	if (!np)
-		return NULL;
-	if (of_address_to_resource(np, 0, &res)) {
-		of_node_put(np);
-		return NULL;
+int gcnfb_modeset(struct vi_ctl *ctl)
+{
+	return gcnfb_apply_mode(ctl, false);
+}
+
+void gcnfb_scanout_disable(struct vi_ctl *ctl)
+{
+	u16 dcr;
+
+	mutex_lock(&ctl->mode_lock);
+	dcr = in_be16(ctl->io_base + VI_DCR);
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_enb(dcr, 0));
+	mutex_unlock(&ctl->mode_lock);
+}
+
+/*
+ * Copy a clip rectangle of an RGB565 source buffer into the buffer GX samples
+ * at the next retrace.  The source must cover at least the clip rectangle.
+ */
+void gcnfb_write_fb(struct vi_ctl *ctl, const void *src,
+		    unsigned int src_pitch, unsigned int x1, unsigned int y1,
+		    unsigned int x2, unsigned int y2)
+{
+	unsigned int dst_pitch, y;
+
+	mutex_lock(&ctl->mode_lock);
+	dst_pitch = ctl->mode->width * sizeof(u16);
+	x2 = min(x2, (unsigned int)ctl->mode->width);
+	y2 = min(y2, (unsigned int)ctl->mode->height);
+	if (x1 < x2) {
+		for (y = y1; y < y2; y++)
+			memcpy(ctl->rgb_fb + y * dst_pitch + x1 * sizeof(u16),
+			       src + y * src_pitch + x1 * sizeof(u16),
+			       (x2 - x1) * sizeof(u16));
 	}
-	base = devm_ioremap(dev, res.start, resource_size(&res));
-	if (start)
-		*start = res.start;
-	of_node_put(np);
-	return base;
+	mutex_unlock(&ctl->mode_lock);
 }
 
-static unsigned int vifb_irq_compatible(const char *compatible,
-					unsigned int index)
+void gcnfb_shutdown(struct vi_ctl *ctl)
 {
-	struct device_node *np;
-	unsigned int irq;
+	void __iomem *io_base = ctl->io_base;
 
-	np = of_find_compatible_node(NULL, NULL, compatible);
-	if (!np)
-		return 0;
-	irq = irq_of_parse_and_map(np, index);
-	of_node_put(np);
-	return irq;
+	vi_enable_interrupts(ctl, 0);
+	synchronize_irq(ctl->irq);
+	vi_reset_video(ctl);
+	out_be16(io_base + VI_DCR, vi_dcr_enb(0));
 }
 
-static int vifb_of_probe(struct platform_device *odev)
+struct vi_ctl *gcnfb_create(struct device *dev,
+			    const struct gcnfb_regs *regs,
+			    const struct gcnfb_ops *ops, void *priv)
 {
-	struct device *dev = &odev->dev;
-	struct fb_info *info;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct resource *res;
 	struct vi_ctl *ctl;
-	u32 efb_start, efb_size;
 	int error;
 
-	if (of_property_read_u32(dev->of_node, "efb-start", &efb_start) ||
-	    of_property_read_u32(dev->of_node, "efb-size", &efb_size)) {
-		dev_err(dev, "missing EFB description\n");
-		return -ENODEV;
-	}
+	pr_info("%s - version %s\n", DRV_DESCRIPTION, vifb_driver_version);
 
-	info = framebuffer_alloc(sizeof(struct vi_ctl), dev);
-	if (!info)
-		return -ENOMEM;
+	ctl = kzalloc(sizeof(*ctl), GFP_KERNEL);
+	if (!ctl)
+		return ERR_PTR(-ENOMEM);
 
-	info->fbops = &vifb_ops;
-	info->var = vifb_var;
-	info->fix = vifb_fix;
-	ctl = info->par;
-	ctl->info = info;
-	ctl->irq = irq_of_parse_and_map(dev->of_node, 0);
-	ctl->pe_irq = vifb_irq_compatible("nintendo,flipper-gx-pe", 1);
 	ctl->dev = dev;
-	ctl->io_base = devm_of_iomap(dev, dev->of_node, 0, NULL);
-	if (IS_ERR(ctl->io_base)) {
-		error = PTR_ERR(ctl->io_base);
-		goto err_release_info;
-	}
+	ctl->ops = ops;
+	ctl->priv = priv;
+	ctl->io_base = regs->vi;
+	ctl->cp_base = regs->cp;
+	ctl->pe_base = regs->pe;
+	ctl->pi_base = regs->pi;
+	ctl->wgpipe = regs->wgpipe;
 
-	ctl->cp_base = vifb_iomap_compatible(dev,
-					     "nintendo,flipper-gx-cp", NULL);
-	ctl->pe_base = vifb_iomap_compatible(dev,
-					     "nintendo,flipper-gx-pe", NULL);
-	ctl->pi_base = vifb_iomap_compatible(dev,
-					     "nintendo,flipper-pi", NULL);
-	ctl->wgpipe = vifb_iomap_compatible(dev,
-					    "nintendo,flipper-gx-fifo",
-					    &ctl->gx_fifo_base);
-	if (!ctl->cp_base || !ctl->pe_base || !ctl->pi_base || !ctl->wgpipe ||
-	    !ctl->pe_irq) {
-		dev_err(dev, "unable to map GX registers\n");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pififo");
+	if (!res) {
+		dev_err(dev, "missing PI FIFO resource\n");
 		error = -ENODEV;
-		goto err_release_info;
+		goto err_free_ctl;
 	}
+	ctl->gx_fifo_base = res->start;
+
+	error = platform_get_irq_byname(pdev, "vi");
+	if (error < 0)
+		goto err_free_ctl;
+	ctl->irq = error;
+	error = platform_get_irq_byname(pdev, "pe-finish");
+	if (error < 0)
+		goto err_free_ctl;
+	ctl->pe_irq = error;
+
+	ctl->var = gcnfb_default_var;
 
 	mutex_init(&ctl->mode_lock);
 	spin_lock_init(&ctl->lock);
-	init_waitqueue_head(&ctl->vtrace_waitq);
 	vi_reset_video(ctl);
 	error = vi_detect_tv_mode(ctl);
 	if (error)
-		goto err_release_info;
+		goto err_free_ctl;
 
 	/* GX BP addresses contain 24 bits in units of 32 bytes. */
 	error = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(29));
 	if (error)
-		goto err_release_info;
+		goto err_free_ctl;
 
 	ctl->xfb_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
 	ctl->xfb_size = ctl->xfb_stride * ctl->mode->height;
@@ -3310,17 +2863,18 @@ static int vifb_of_probe(struct platform_device *odev)
 				      GFP_KERNEL);
 	if (!ctl->xfb) {
 		error = -ENOMEM;
-		goto err_release_info;
+		goto err_free_ctl;
 	}
 
 	ctl->rgb_fb_size = ctl->mode->width * ctl->mode->height * sizeof(u16);
-	ctl->rgb_buffer = vifb_rgb_alloc(dev, ctl->rgb_fb_size);
-	if (!ctl->rgb_buffer) {
+	ctl->rgb_fb = dma_alloc_noncoherent(dev, ctl->rgb_fb_size,
+					    &ctl->rgb_fb_dma, DMA_TO_DEVICE,
+					    GFP_KERNEL);
+	if (!ctl->rgb_fb) {
 		error = -ENOMEM;
 		goto err_free_xfb;
 	}
-	ctl->rgb_fb = ctl->rgb_buffer->cpu;
-	ctl->rgb_fb_dma = ctl->rgb_buffer->dma;
+	memset(ctl->rgb_fb, 0, ctl->rgb_fb_size);
 	ctl->indirect_map = dma_alloc_noncoherent(dev, GX_INDIRECT_MAP_SIZE,
 						  &ctl->indirect_map_dma,
 						  DMA_TO_DEVICE, GFP_KERNEL);
@@ -3331,12 +2885,6 @@ static int vifb_of_probe(struct platform_device *odev)
 	gx_init_indirect_map(ctl);
 	dma_sync_single_for_device(dev, ctl->indirect_map_dma,
 				   GX_INDIRECT_MAP_SIZE, DMA_TO_DEVICE);
-	info->fix.smem_start = ctl->rgb_fb_dma;
-	info->fix.smem_len = ctl->rgb_fb_size;
-	info->fix.line_length = ctl->mode->width * sizeof(u16);
-	info->screen_buffer = ctl->rgb_fb;
-	info->screen_size = ctl->rgb_fb_size;
-	info->flags |= FBINFO_VIRTFB;
 
 	error = gx_init(ctl);
 	if (error) {
@@ -3353,59 +2901,41 @@ static int vifb_of_probe(struct platform_device *odev)
 	}
 #endif
 
-	info->var.xres = ctl->mode->width;
-	info->var.yres = ctl->mode->height;
-	ctl->visible_page = 0;
+	ctl->var.xres = ctl->mode->width;
+	ctl->var.yres = ctl->mode->height;
 	ctl->gx_faulted = false;
 	init_completion(&ctl->pe_finished);
-	info->pseudo_palette = pseudo_palette;
 
-	error = fb_alloc_cmap(&info->cmap, 16, 0);
+	error = gcnfb_check_var(ctl, &ctl->var);
 	if (error)
 		goto err_free_fifo;
-	error = vifb_check_var(&info->var, info);
-	if (error)
-		goto err_cmap;
-	info->fix.smem_len = info->fix.line_length * info->var.yres_virtual;
-	info->screen_size = info->fix.smem_len;
 
-	vifb_clear_all(info);
-	dev_set_drvdata(dev, info);
+	gcnfb_clear_all(ctl);
 	vi_enable_interrupts(ctl, 0);
 	error = request_threaded_irq(ctl->irq, vi_irq_handler, vi_irq_thread,
-				     IRQF_ONESHOT, DRV_MODULE_NAME, dev);
+				     IRQF_ONESHOT, DRV_MODULE_NAME, ctl);
 	if (error)
-		goto err_drvdata;
+		goto err_free_fifo;
 	error = request_irq(ctl->pe_irq, pe_irq_handler, IRQF_NO_THREAD,
-			    DRV_MODULE_NAME "-pe", dev);
+			    DRV_MODULE_NAME "-pe", ctl);
 	if (error)
 		goto err_vi_irq;
 	ctl->irq_requested = true;
-	error = register_framebuffer(info);
-	if (error)
-		goto err_pe_irq;
 
-	pr_info("fb%d: %s frame buffer device (GX indirect RGB565)\n",
-		info->node, info->fix.id);
 	vi_enable_interrupts(ctl, 1);
 #ifdef CONFIG_WII_AVE_RVL
-	/* AVE re-detection needs fully registered fbdev and IRQ state. */
-	if (!first_vi_ctl)
-		first_vi_ctl = ctl;
+	/* AVE re-detection needs fully set up mode and IRQ state. */
+	first_vi_ctl = ctl;
+	error = i2c_add_driver(&vi_ave_driver);
+	if (error)
+		dev_err(dev, "failed to register AVE driver (%d)\n", error);
+	else
+		ctl->ave_registered = true;
 #endif
-	return 0;
+	return ctl;
 
-err_pe_irq:
-	out_be16(ctl->io_base + VI_DCR, vi_dcr_enb(0));
-	free_irq(ctl->irq, dev);
-	free_irq(ctl->pe_irq, dev);
-	goto err_drvdata;
 err_vi_irq:
-	free_irq(ctl->irq, dev);
-err_drvdata:
-	dev_set_drvdata(dev, NULL);
-err_cmap:
-	fb_dealloc_cmap(&info->cmap);
+	free_irq(ctl->irq, ctl);
 err_free_fifo:
 	dma_free_noncoherent(dev, GX_FIFO_SIZE, ctl->fifo, ctl->fifo_dma,
 			     DMA_BIDIRECTIONAL);
@@ -3413,143 +2943,37 @@ err_free_indirect_map:
 	dma_free_noncoherent(dev, GX_INDIRECT_MAP_SIZE, ctl->indirect_map,
 			     ctl->indirect_map_dma, DMA_TO_DEVICE);
 err_free_rgb_fb:
-	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
+	dma_free_noncoherent(dev, ctl->rgb_fb_size, ctl->rgb_fb,
+			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
 err_free_xfb:
 	dma_free_coherent(dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
-err_release_info:
-	framebuffer_release(info);
-	return error;
+err_free_ctl:
+	kfree(ctl);
+	return ERR_PTR(error);
 }
 
-static void vifb_of_remove(struct platform_device *odev)
+void gcnfb_destroy(struct vi_ctl *ctl)
 {
-	struct vi_ctl *ctl;
-	struct fb_info *info = dev_get_drvdata(&odev->dev);
-
-	if (!info)
-		return;
-
-	ctl = info->par;
-
-	vi_enable_interrupts(ctl, 0);
-	free_irq(ctl->irq, &odev->dev);
-	free_irq(ctl->pe_irq, &odev->dev);
-	unregister_framebuffer(info);
-	out_be16(ctl->io_base + VI_DCR, vi_dcr_enb(0));
-	fb_dealloc_cmap(&info->cmap);
-	dma_free_noncoherent(&odev->dev, GX_FIFO_SIZE, ctl->fifo,
-			     ctl->fifo_dma, DMA_BIDIRECTIONAL);
-	dma_free_noncoherent(&odev->dev, GX_INDIRECT_MAP_SIZE,
-			     ctl->indirect_map, ctl->indirect_map_dma,
-			     DMA_TO_DEVICE);
-	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
-
-	dma_free_coherent(&odev->dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
-
-	dev_set_drvdata(&odev->dev, NULL);
+	struct device *dev = ctl->dev;
 
 #ifdef CONFIG_WII_AVE_RVL
+	if (ctl->ave_registered)
+		i2c_del_driver(&vi_ave_driver);
 	vi_dettach_ave(ctl);
 	if (first_vi_ctl == ctl)
 		first_vi_ctl = NULL;
 #endif
-	framebuffer_release(info);
-}
-
-static void vifb_of_shutdown(struct platform_device *odev)
-{
-	struct fb_info *info = dev_get_drvdata(&odev->dev);
-	struct vi_ctl *ctl = info->par;
-	void __iomem *io_base = ctl->io_base;
 
 	vi_enable_interrupts(ctl, 0);
-	synchronize_irq(ctl->irq);
-	vi_reset_video(ctl);
-	out_be16(io_base + VI_DCR, vi_dcr_enb(0));
-
-	return;
+	free_irq(ctl->irq, ctl);
+	free_irq(ctl->pe_irq, ctl);
+	out_be16(ctl->io_base + VI_DCR, vi_dcr_enb(0));
+	dma_free_noncoherent(dev, GX_FIFO_SIZE, ctl->fifo, ctl->fifo_dma,
+			     DMA_BIDIRECTIONAL);
+	dma_free_noncoherent(dev, GX_INDIRECT_MAP_SIZE, ctl->indirect_map,
+			     ctl->indirect_map_dma, DMA_TO_DEVICE);
+	dma_free_noncoherent(dev, ctl->rgb_fb_size, ctl->rgb_fb,
+			     ctl->rgb_fb_dma, DMA_TO_DEVICE);
+	dma_free_coherent(dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
+	kfree(ctl);
 }
-
-
-static struct of_device_id vifb_of_match[] = {
-	{ .compatible = "nintendo,flipper-vi", },
-	{ .compatible = "nintendo,hollywood-vi", },
-	{ },
-};
-
-MODULE_DEVICE_TABLE(of, vifb_of_match);
-
-static struct platform_driver vifb_of_driver = {
-	.driver = {
-		.name = DRV_MODULE_NAME,
-		.owner = THIS_MODULE,
-		.of_match_table = vifb_of_match,
-	},
-	.probe = vifb_of_probe,
-	.remove = vifb_of_remove,
-	.shutdown = vifb_of_shutdown,
-};
-
-/*
- * Module interface hooks
- *
- */
-
-static int __init vifb_init_module(void)
-{
-	int error;
-#ifdef CONFIG_WII_AVE_RVL
-	bool ave_registered = false;
-#endif
-	char *option = NULL;
-
-	pr_info("%s - version %s\n", DRV_DESCRIPTION,
-		   vifb_driver_version);
-
-#ifndef MODULE
-	if (fb_get_options(DRV_MODULE_NAME, &option))
-		return -ENODEV;
-	if (!option) {
-		/* for backwards compatibility */
-		if (fb_get_options("gcnfb", &option))
-			return -ENODEV;
-	}
-	error = vifb_setup(option);
-	if (error)
-		return error;
-#endif
-
-#ifdef CONFIG_WII_AVE_RVL
-	error = i2c_add_driver(&vi_ave_driver);
-	if (error)
-		pr_err("failed to register AVE (%d)\n", error);
-	else
-		ave_registered = true;
-#endif
-
-	error = platform_driver_register(&vifb_of_driver);
-	if (error) {
-		pr_err("failed to register driver (%d)\n", error);
-#ifdef CONFIG_WII_AVE_RVL
-		if (ave_registered)
-			i2c_del_driver(&vi_ave_driver);
-#endif
-	}
-
-	return error;
-}
-
-static void __exit vifb_exit_module(void)
-{
-	platform_driver_unregister(&vifb_of_driver);
-#ifdef CONFIG_WII_AVE_RVL
-	i2c_del_driver(&vi_ave_driver);
-#endif
-}
-
-module_init(vifb_init_module);
-module_exit(vifb_exit_module);
-
-MODULE_DESCRIPTION(DRV_DESCRIPTION);
-MODULE_AUTHOR(DRV_AUTHOR);
-MODULE_LICENSE("GPL");

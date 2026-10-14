@@ -22,6 +22,28 @@ pub(crate) const FEAT_GEM: u32 = bindings::drm_driver_feature_DRIVER_GEM;
 /// Driver supports render nodes, i.e.: /dev/dri/renderDXX devices.
 pub(crate) const FEAT_RENDER: u32 = bindings::drm_driver_feature_DRIVER_RENDER;
 
+/// Driver supports mode setting (KMS).
+pub(crate) const FEAT_MODESET: u32 = bindings::drm_driver_feature_DRIVER_MODESET;
+/// Driver supports atomic mode setting.
+pub(crate) const FEAT_ATOMIC: u32 = bindings::drm_driver_feature_DRIVER_ATOMIC;
+
+/// `fbdev_probe` implementation for DRM fbdev emulation on top of shmem GEM objects.
+#[cfg(CONFIG_DRM_FBDEV_EMULATION)]
+pub(crate) const FBDEV_SHMEM_PROBE: Option<
+    unsafe extern "C" fn(
+        *mut bindings::drm_fb_helper,
+        *mut bindings::drm_fb_helper_surface_size,
+    ) -> crate::ffi::c_int,
+> = Some(bindings::drm_fbdev_shmem_driver_fbdev_probe);
+/// `fbdev_probe` implementation for DRM fbdev emulation on top of shmem GEM objects.
+#[cfg(not(CONFIG_DRM_FBDEV_EMULATION))]
+pub(crate) const FBDEV_SHMEM_PROBE: Option<
+    unsafe extern "C" fn(
+        *mut bindings::drm_fb_helper,
+        *mut bindings::drm_fb_helper_surface_size,
+    ) -> crate::ffi::c_int,
+> = None;
+
 /// Information data for a DRM Driver.
 pub struct DriverInfo {
     /// Driver major version.
@@ -141,6 +163,19 @@ pub trait Driver {
     /// usable from the render node (i.e. marked DRM_RENDER_ALLOW), whereas
     /// userspace processes using the master node can invoke any ioctl.
     const FEAT_RENDER: bool = false;
+
+    /// Sets the `DRIVER_MODESET` and `DRIVER_ATOMIC` features for this driver.
+    ///
+    /// The driver is then responsible for setting up the mode configuration (KMS) before the
+    /// device is registered. There are no Rust abstractions for KMS yet, so this is only useful
+    /// for drivers that do so through C helpers.
+    const FEAT_MODESET: bool = false;
+
+    /// Uses the shmem GEM based fbdev emulation (`drm_fbdev_shmem`) for the fbdev client.
+    ///
+    /// This requires [`Driver::FEAT_MODESET`] and has no effect unless `CONFIG_DRM_FBDEV_EMULATION`
+    /// is enabled.
+    const FBDEV_SHMEM: bool = false;
 }
 
 /// The registration type of a `drm::Device`.

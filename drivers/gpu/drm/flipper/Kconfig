@@ -6,10 +6,26 @@ config DRM_FLIPPER
 	depends on RUST
 	depends on GAMECUBE_COMMON || COMPILE_TEST
 	default n
+	select DRM_CLIENT_SELECTION
+	select DRM_GEM_SHMEM_HELPER
+	select DRM_KMS_HELPER
 	select RUST_DRM_GEM_SHMEM_HELPER
 	help
 	  Rust DRM driver for Nintendo GameCube and Wii GPUs.
 
+	  This driver also provides the GameCube/Wii video output: it sets up
+	  the Video Interface and the GPU's embedded framebuffer conversion
+	  and, if DRM_FBDEV_EMULATION is enabled, a framebuffer console.
+
 	  This driver is work in progress and may not be functional.
 
 	  If M is selected, the module will be called flipper.
+
+config WII_AVE_RVL
+	bool "Nintendo Wii audio/video encoder support"
+	depends on DRM_FLIPPER && WII
+	select I2C_GPIO
+	default y
+	help
+	  Say Y here to support the audio/video encoder found in the
+	  Nintendo Wii video game console.

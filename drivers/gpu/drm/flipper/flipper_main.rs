@@ -6,7 +6,9 @@ use crate::driver::FlipperPlatformDriver;
 
 mod driver;
 mod file;
+mod gcnfb;
 mod gem;
+mod gx;
 mod regs;
 
 kernel::module_platform_driver! {
