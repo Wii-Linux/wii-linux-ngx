@@ -77,6 +77,9 @@ extern "C" {
     ) -> *mut c_void;
     fn gcnfb_destroy(ctl: *mut c_void);
     fn gcnfb_shutdown(ctl: *mut c_void);
+    fn gcnfb_user_output(ctl: *mut c_void);
+    fn gcnfb_user_fence_arm(ctl: *mut c_void) -> c_int;
+    fn gcnfb_user_fence_wait(ctl: *mut c_void) -> c_int;
 
     fn flipper_kms_init(drm: *mut bindings::drm_device, ctl: *mut c_void) -> c_int;
     fn flipper_kms_register(drm: *mut bindings::drm_device);
@@ -170,6 +173,27 @@ impl Gcnfb {
     pub(crate) fn shutdown(&self) {
         // SAFETY: `self.ctl` is a valid context.
         unsafe { gcnfb_shutdown(self.ctl.as_ptr()) };
+    }
+}
+
+/// Userspace GX submissions. These must only be called while holding the [`GxQueue`].
+impl Gcnfb {
+    /// Userspace rendered to the XFB: stop converting the fbdev framebuffer over it.
+    pub(crate) fn mark_user_output(&self) {
+        // SAFETY: `self.ctl` is a valid context.
+        unsafe { gcnfb_user_output(self.ctl.as_ptr()) };
+    }
+
+    /// Arms the completion that [`Self::fence_wait()`] waits for.
+    pub(crate) fn fence_arm(&self) -> Result {
+        // SAFETY: `self.ctl` is a valid context.
+        to_result(unsafe { gcnfb_user_fence_arm(self.ctl.as_ptr()) })
+    }
+
+    /// Flushes the write-gather pipe and waits for the `PE_DONE` written since [`Self::fence_arm()`].
+    pub(crate) fn fence_wait(&self) -> Result {
+        // SAFETY: `self.ctl` is a valid context.
+        to_result(unsafe { gcnfb_user_fence_wait(self.ctl.as_ptr()) })
     }
 }
 

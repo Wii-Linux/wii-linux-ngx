@@ -485,6 +485,10 @@ struct vi_ctl {
 	void *indirect_map;
 	dma_addr_t indirect_map_dma;
 	bool gx_faulted;
+	/* Userspace renders to the XFB itself, so the fbdev conversion must not. */
+	bool user_output;
+	/* Userspace used GX while the presents were skipped; set up the state again. */
+	bool user_state;
 	struct completion pe_finished;
 	unsigned int irq;
 	unsigned int pe_irq;
@@ -1379,6 +1383,8 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 #define GX_FIFO_LOWAT(size)		(((size) >> 1) & ~0x1f)
 #define GX_COPY_TIMEOUT_US		5000
 #define GX_POLL_INTERVAL_US		50
+#define GX_USER_TIMEOUT_MS		200
+#define GX_FINISH_TIMEOUT_MS		50
 
 static void gx_ppcsync(void)
 {
@@ -1817,7 +1823,11 @@ static int gx_wait_pe_finish(struct vi_ctl *ctl, const char *phase)
 	 * the wait bounded: if GX has wedged, continuing to append frames only
 	 * overwrites the FIFO and obscures the first fault.
 	 */
-	timeout = usecs_to_jiffies(GX_COPY_TIMEOUT_US);
+	/*
+	 * Not GX_COPY_TIMEOUT_US: with a coarse tick that is a single jiffy,
+	 * which can expire immediately, long before a full-screen render ends.
+	 */
+	timeout = msecs_to_jiffies(GX_FINISH_TIMEOUT_MS);
 	timeout = wait_for_completion_timeout(&ctl->pe_finished, timeout);
 	if (!timeout)
 		error = -ETIMEDOUT;
@@ -2576,8 +2586,19 @@ static int gcnfb_present_job(void *data, bool state_lost)
 
 	if (READ_ONCE(ctl->gx_faulted))
 		return -EIO;
-	if (state_lost)
+	/*
+	 * Whatever userspace last copied to the XFB stays on screen.  Skipping
+	 * still takes the GX queue as the framebuffer client, which hides that
+	 * userspace trashed the state in between, so remember it here.
+	 */
+	if (READ_ONCE(ctl->user_output)) {
+		ctl->user_state = true;
+		return 0;
+	}
+	if (state_lost || ctl->user_state) {
 		gx_configure_mode(ctl);
+		ctl->user_state = false;
+	}
 	gx_copy_efb_to_xfb(ctl);
 	return READ_ONCE(ctl->gx_faulted) ? -EIO : 0;
 }
@@ -2780,6 +2801,8 @@ void gcnfb_write_fb(struct vi_ctl *ctl, const void *src,
 	unsigned int dst_pitch, y;
 
 	mutex_lock(&ctl->mode_lock);
+	/* The kernel owns the picture again, e.g. fbcon was restored. */
+	WRITE_ONCE(ctl->user_output, false);
 	dst_pitch = ctl->mode->width * sizeof(u16);
 	x2 = min(x2, (unsigned int)ctl->mode->width);
 	y2 = min(y2, (unsigned int)ctl->mode->height);
@@ -2790,6 +2813,41 @@ void gcnfb_write_fb(struct vi_ctl *ctl, const void *src,
 			       (x2 - x1) * sizeof(u16));
 	}
 	mutex_unlock(&ctl->mode_lock);
+}
+
+/*
+ * Userspace GX submissions, called with the GX queue held (GxClient::User).
+ */
+
+/* Userspace has copied to the XFB: stop converting the fbdev framebuffer. */
+void gcnfb_user_output(struct vi_ctl *ctl)
+{
+	WRITE_ONCE(ctl->user_output, true);
+}
+
+/* Arm the PE finish completion, before submitting the PE_DONE that signals it. */
+int gcnfb_user_fence_arm(struct vi_ctl *ctl)
+{
+	if (READ_ONCE(ctl->gx_faulted))
+		return -EIO;
+	return gx_arm_pe_finish(ctl);
+}
+
+/* Push out the write gather pipe and wait for the armed PE finish. */
+int gcnfb_user_fence_wait(struct vi_ctl *ctl)
+{
+	unsigned long left;
+
+	in_be16(ctl->cp_base + CP_CR);
+	gx_ppcsync();
+
+	left = wait_for_completion_timeout(&ctl->pe_finished,
+					   msecs_to_jiffies(GX_USER_TIMEOUT_MS));
+	if (!left) {
+		dev_err(ctl->dev, "userspace GX submission timed out\n");
+		return -ETIMEDOUT;
+	}
+	return 0;
 }
 
 void gcnfb_shutdown(struct vi_ctl *ctl)

@@ -81,4 +81,13 @@ void gcnfb_write_fb(struct vi_ctl *ctl, const void *src,
 		    unsigned int src_pitch, unsigned int x1, unsigned int y1,
 		    unsigned int x2, unsigned int y2);
 
+/*
+ * Userspace GX submissions, with the GX queue held.  Once userspace has copied
+ * to the XFB, the framebuffer conversion stops until the next gcnfb_write_fb().
+ * The fence is armed before the commands and waited on after a PE_DONE.
+ */
+void gcnfb_user_output(struct vi_ctl *ctl);
+int gcnfb_user_fence_arm(struct vi_ctl *ctl);
+int gcnfb_user_fence_wait(struct vi_ctl *ctl);
+
 #endif /* _FLIPPER_GCNFB_H */

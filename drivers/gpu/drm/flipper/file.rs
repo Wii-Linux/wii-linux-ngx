@@ -24,6 +24,11 @@ use crate::{
     gx::GxClient,
 };
 
+/// `PE_COPY_EXECUTE` bit selecting a copy to the XFB.
+const PE_COPY_TO_XFB: u32 = 1 << 14;
+/// BP 0x45 (`PE_DONE`) with the trigger bits set.
+const PE_DONE_BP: u32 = (0x45 << 24) | 2;
+
 #[pin_data]
 pub(crate) struct FlipperDrmFileData {}
 
@@ -49,26 +54,13 @@ impl FlipperDrmFileData {
         // its own state behind, so nothing may be assumed to survive past this submission.
         let _gx = reg_data.gx.lock(GxClient::User);
 
+        // Every submission is synchronous: PE_DONE is appended and waited for below.
+        reg_data.gcn.fence_arm()?;
+
         let cmds_len = cmd_list.cmds_len as usize;
         //pr_info!("Got {cmds_len} commands: {cmd_list:?}\n");
-        pr_info!("Got {cmds_len} commands\n");
+        pr_debug!("Got {cmds_len} commands\n");
 
-        {
-            let cp = reg_data.cp_regs.as_view().big_endian();
-            crate::driver::print_cp_regs(&cp);
-        }
-        {
-            let pe = reg_data.pe_regs.as_view().big_endian();
-            crate::driver::print_pe_regs(&pe);
-        }
-        {
-            let pi = reg_data.pi_regs.as_view().big_endian();
-            crate::driver::print_pi_regs(&pi);
-        }
-        {
-            let vi = reg_data.vi_regs.as_view().big_endian();
-            crate::driver::print_vi_regs(&vi);
-        }
 
         // Warning: huge hack!
         //const FIFO_END: u32 = 0x01774000;
@@ -82,7 +74,7 @@ impl FlipperDrmFileData {
             let pointer = cmd.pointer as usize;
             let size = cmd.size as usize;
             let mut reader = UserSlice::new(UserPtr::from_addr(pointer), size).reader();
-            pr_info!(
+            pr_debug!(
                 "Command {}, run {size} bytes from 0x{pointer:08x}\n",
                 cmd.command
             );
@@ -111,7 +103,7 @@ impl FlipperDrmFileData {
                                             pos_vec.as_mut_ptr().cast::<c_void>(),
                                         )
                                     } as u32;
-                                    pr_info!("Patching CP 0x{reg:02x} from 0x{old_value:08x} to 0x{value:08x}\n");
+                                    pr_debug!("Patching CP 0x{reg:02x} from 0x{old_value:08x} to 0x{value:08x}\n");
                                 } else if reg == 0xa2 {
                                     let old_value = value;
                                     let mut color_vec = reg_data.color_vec.lock();
@@ -122,7 +114,7 @@ impl FlipperDrmFileData {
                                             color_vec.as_mut_ptr().cast::<c_void>(),
                                         )
                                     } as u32;
-                                    pr_info!("Patching CP 0x{reg:02x} from 0x{old_value:08x} to 0x{value:08x}\n");
+                                    pr_debug!("Patching CP 0x{reg:02x} from 0x{old_value:08x} to 0x{value:08x}\n");
                                 }
                                 //pr_info!("FIFO: Set CP 0x{reg:02x} to 0x{value:08x}\n");
                                 wg_pipe.write8(command, 0x0);
@@ -133,7 +125,7 @@ impl FlipperDrmFileData {
                             0x10 => {
                                 let num: u16 = reader.read()?;
                                 let reg: u16 = reader.read()?;
-                                pr_info!("FIFO: Set {} XF regs, from {reg:04x}\n", num + 1);
+                                pr_debug!("FIFO: Set {} XF regs, from {reg:04x}\n", num + 1);
                                 wg_pipe.write8(command, 0x0);
                                 wg_pipe.write16(num, 0x0);
                                 wg_pipe.write16(reg, 0x0);
@@ -147,20 +139,17 @@ impl FlipperDrmFileData {
                             }
                             // Invalidate vertex cache
                             0x48 => {
-                                pr_info!("FIFO: Invalidate vertex cache\n");
+                                pr_debug!("FIFO: Invalidate vertex cache\n");
                                 wg_pipe.write8(command, 0x0);
                             }
                             // BP
                             0x61 => {
                                 let data: u32 = reader.read()?;
                                 let reg = data >> 24;
-                                let mut value = data & 0x00_ffffff;
-                                if reg == 0x4b {
-                                    value = 0x17740000 >> 5;
-                                    pr_info!(
-                                        "Patching BP 0x{reg:02x} from 0x{data:08x} to 0x{:08x}\n",
-                                        (reg << 24) | value
-                                    );
+                                let value = data & 0x00_ffffff;
+                                // An EFB-to-XFB copy: from now on userspace owns the picture.
+                                if reg == 0x52 && value & PE_COPY_TO_XFB != 0 {
+                                    reg_data.gcn.mark_user_output();
                                 }
                                 //pr_info!("FIFO: Set BP 0x{reg:02x} to 0x{value:06x}\n");
                                 wg_pipe.write8(command, 0x0);
@@ -171,11 +160,11 @@ impl FlipperDrmFileData {
                                 let len: u16 = reader.read()?;
                                 wg_pipe.write8(command, 0x0);
                                 wg_pipe.write16(len, 0x0);
-                                pr_info!("FIFO: Draw triangles ({len} vertices)\n");
+                                pr_debug!("FIFO: Draw triangles ({len} vertices)\n");
                                 for _ in 0..len {
                                     let a = reader.read()?;
                                     let b = reader.read()?;
-                                    pr_info!("{a:02x} {b:02x}\n");
+                                    pr_debug!("{a:02x} {b:02x}\n");
                                     wg_pipe.write8(a, 0x0);
                                     wg_pipe.write8(b, 0x0);
                                 }
@@ -217,6 +206,15 @@ impl FlipperDrmFileData {
                 _ => return Err(EINVAL),
             }
         }
+
+        // Signal PE finish once everything before is done, push it out of the write-gather pipe
+        // and wait for it.
+        wg_pipe.write8(0x61, 0x0);
+        wg_pipe.write32(PE_DONE_BP, 0x0);
+        for _ in 0..31 {
+            wg_pipe.write8(0x00, 0x0);
+        }
+        reg_data.gcn.fence_wait()?;
 
         /*
         {
