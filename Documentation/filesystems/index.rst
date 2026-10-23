@@ -113,6 +113,7 @@ Documentation for filesystem implementations.
    relay
    resctrl
    romfs
+   sffs
    smb/index
    spufs/index
    squashfs
