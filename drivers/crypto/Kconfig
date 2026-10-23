@@ -838,4 +838,23 @@ source "drivers/crypto/starfive/Kconfig"
 source "drivers/crypto/inside-secure/eip93/Kconfig"
 source "drivers/crypto/ti/Kconfig"
 
+config CRYPTO_DEV_HOLLYWOOD_AES
+	tristate "Hollywood/Latte AES-CBC engine"
+	depends on OF && HAS_DMA && (WII || COMPILE_TEST)
+	select CRYPTO_ENGINE
+	select CRYPTO_SKCIPHER
+	select CRYPTO_AES
+	select CRYPTO_CBC
+	help
+	  Accelerate AES-128 CBC using ATI/Nintendo's crypto engine.
+	  AES-192/256 use a software fallback.
+
+config CRYPTO_DEV_HOLLYWOOD_SHA1
+	tristate "Hollywood/Latte SHA-1 engine"
+	depends on OF && HAS_DMA && (WII || COMPILE_TEST)
+	select CRYPTO_ENGINE
+	select CRYPTO_HASH
+	help
+	  Accelerate streaming SHA-1 using ATI/Nintendo's crypto engine.
+
 endif # CRYPTO_HW
