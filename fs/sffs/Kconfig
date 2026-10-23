@@ -1,0 +1,27 @@
+config SFFS_FS
+	tristate "BroadOn/Nintendo SFFS (read-only)"
+	depends on BLOCK || MTD
+	select NINTENDO_NAND_ECC
+	select CRYPTO
+	select CRYPTO_SKCIPHER
+	select CRYPTO_AES
+	select CRYPTO_CBC
+	help
+	  Read-only access to BroadOn/Nintendo's SFFS filesystem, used on the
+	  NAND of the Nintendo Wii video game console, and on both NAND banks
+	  (SLC and SLCCMPT) of the Nintendo Wii U video game console. Supports
+	  console NAND via MTD and raw interleaved page/OOB images via loop
+	  devices. Use the key=<32 hex digits> mount option for backup images
+	  or foreign consoles. File and metadata HMAC authentication is not
+	  implemented.
+
+config SFFS_BLOCK
+	bool "SFFS raw NAND images on block devices"
+	depends on SFFS_FS && BLOCK
+	default y
+	select BUFFER_HEAD
+
+config SFFS_MTD
+	bool "SFFS on MTD NAND devices"
+	depends on SFFS_FS && (MTD=y || MTD=SFFS_FS)
+	default y
