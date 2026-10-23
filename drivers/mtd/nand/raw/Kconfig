@@ -12,6 +12,15 @@ if MTD_RAW_NAND
 
 comment "Raw/parallel NAND flash controllers"
 
+config MTD_NAND_HOLLYWOOD
+	tristate "ATI/Nintendo Hollywood/Latte NAND controller"
+	depends on OF && HAS_DMA && (WII || COMPILE_TEST)
+	select NINTENDO_NAND_ECC
+	help
+	  Access Wii NAND and Wii U SLC/SLCCMPT directly. Program and erase
+	  require hollywood_nand.write_enable=1. This enables writes to all
+	  regions, including bootloaders.
+
 config MTD_NAND_DENALI
 	tristate
 
