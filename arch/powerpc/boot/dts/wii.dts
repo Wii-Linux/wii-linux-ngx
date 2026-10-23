@@ -314,7 +314,7 @@
 					reg = <0x44 0x14>;
 				};
 
-				nand-key@58 {
+				nand_key: nand-key@58 {
 					reg = <0x58 0x10>;
 				};
 
