@@ -162,6 +162,21 @@
 			interrupts = <4>;
 		};
 
+		nand-controller@d010000 {
+			compatible = "nintendo,hollywood-nand";
+			reg = <0x0d010000 0x100>;
+			interrupts = <1>;
+			interrupt-parent = <&PIC1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			nand@0 {
+				reg = <0>;
+				nvmem-cells = <&nand_key>;
+				nvmem-cell-names = "nand-key";
+			};
+		};
+
 		aes@d020000 {
 			compatible = "nintendo,hollywood-aes";
 			reg = <0x0d020000 0x14>;
