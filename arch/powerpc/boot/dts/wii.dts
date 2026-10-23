@@ -162,6 +162,20 @@
 			interrupts = <4>;
 		};
 
+		aes@d020000 {
+			compatible = "nintendo,hollywood-aes";
+			reg = <0x0d020000 0x14>;
+			interrupts = <2>;
+			interrupt-parent = <&PIC1>;
+		};
+
+		sha1@d030000 {
+			compatible = "nintendo,hollywood-sha1";
+			reg = <0x0d030000 0x1c>;
+			interrupts = <3>;
+			interrupt-parent = <&PIC1>;
+		};
+
 		usb@d040000 {
 			compatible = "nintendo,hollywood-usb-ehci";
 			reg = <0x0d040000 0x100>;
