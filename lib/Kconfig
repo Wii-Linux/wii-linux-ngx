@@ -630,3 +630,6 @@ config UNION_FIND
 
 config MIN_HEAP
 	bool
+
+config NINTENDO_NAND_ECC
+	tristate
