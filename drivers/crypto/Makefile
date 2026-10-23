@@ -46,3 +46,5 @@ obj-y += intel/
 obj-y += starfive/
 obj-y += cavium/
 obj-y += ti/
+obj-$(CONFIG_CRYPTO_DEV_HOLLYWOOD_AES) += hollywood-aes.o
+obj-$(CONFIG_CRYPTO_DEV_HOLLYWOOD_SHA1) += hollywood-sha1.o
