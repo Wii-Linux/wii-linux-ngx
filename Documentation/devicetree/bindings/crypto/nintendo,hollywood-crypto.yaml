@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/crypto/nintendo,hollywood-crypto.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: ATI/Nintendo Hollywood and Latte AES and SHA-1 engines
+
+maintainers:
+  - Michael "Techflash" Garofalo <officialTechflashYT@gmail.com>
+
+description: |
+  Independent DMA engines for AES-128 CBC and SHA-1 compression. Registers
+  are big-endian. AES uses IRQ 2 and SHA-1 uses IRQ 3 on the Hollywood
+  interrupt controller.
+
+properties:
+  compatible:
+    enum:
+      - nintendo,hollywood-aes
+      - nintendo,latte-aes
+      - nintendo,hollywood-sha1
+      - nintendo,latte-sha1
+  reg:
+    maxItems: 1
+  interrupts:
+    maxItems: 1
+  memory-region:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - memory-region
+
+additionalProperties: false
+
+examples:
+  - |
+    aes@d020000 {
+        compatible = "nintendo,hollywood-aes";
+        reg = <0x0d020000 0x14>;
+        interrupt-parent = <&PIC1>;
+        interrupts = <2>;
+    };
+  - |
+    sha1@d030000 {
+        compatible = "nintendo,hollywood-sha1";
+        reg = <0x0d030000 0x1c>;
+        interrupt-parent = <&PIC1>;
+        interrupts = <3>;
+    };
