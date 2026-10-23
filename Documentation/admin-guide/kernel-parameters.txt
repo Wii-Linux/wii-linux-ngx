@@ -2007,6 +2007,15 @@ Kernel parameters
 
 	hlt		[BUGS=ARM,SH]
 
+	hollywood_nand.write_enable=
+			[PPC,MTD] Permit program/erase on Hollywood/Latte NAND.
+			Default: 0 (read-only). Setting 1 unlocks all regions,
+			including bootloaders. Writing incorrect data may cause
+			the machine to become inoperable beyond the point of
+			software repair. Fixed at driver initialization. The
+			SFFS filesystem driver remains read-only regardless of
+			this setting, as it lacks write support.
+
 	hostname=	[KNL,EARLY] Set the hostname (aka UTS nodename).
 			Format: <string>
 			This allows setting the system's hostname during early
