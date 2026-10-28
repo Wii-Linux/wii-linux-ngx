@@ -84,8 +84,6 @@ int sffs_validate(struct sffs_metadata *m, const struct sffs_layout *layout,
 				goto out;
 		} else if (sffs_is_dir(layout, e)) {
 			while (sub != SFFS_END) {
-				other;
-
 				if (sub >= SFFS_ENTRIES || parents[sub] != SFFS_END ||
 				    tail == SFFS_ENTRIES)
 					goto out;
