@@ -17,6 +17,7 @@
 
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/mmc/host.h>
 #include "sdhci-pltfm.h"
 
@@ -47,6 +48,10 @@ static void sdhci_hlwd_writeb(struct sdhci_host *host, u8 val, int reg)
 	udelay(SDHCI_HLWD_WRITE_DELAY);
 }
 
+/*
+ * SD needs a small delay or else init fails with -84, but SDIO has no such
+ * problem.
+ */
 static const struct sdhci_ops sdhci_hlwd_ops = {
 	.read_l = sdhci_be32bs_readl,
 	.read_w = sdhci_be32bs_readw,
@@ -60,6 +65,19 @@ static const struct sdhci_ops sdhci_hlwd_ops = {
 	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
+static const struct sdhci_ops sdhci_hlwd_sdio_ops = {
+	.read_l = sdhci_be32bs_readl,
+	.read_w = sdhci_be32bs_readw,
+	.read_b = sdhci_be32bs_readb,
+	.write_l = sdhci_be32bs_writel,
+	.write_w = sdhci_be32bs_writew,
+	.write_b = sdhci_be32bs_writeb,
+	.set_clock = sdhci_set_clock,
+	.set_bus_width = sdhci_set_bus_width,
+	.reset = sdhci_reset,
+	.set_uhs_signaling = sdhci_set_uhs_signaling,
+};
+
 static const struct sdhci_pltfm_data sdhci_hlwd_pdata = {
 	.quirks = SDHCI_QUIRK_32BIT_DMA_ADDR |
 		  SDHCI_QUIRK_32BIT_DMA_SIZE,
@@ -67,8 +85,18 @@ static const struct sdhci_pltfm_data sdhci_hlwd_pdata = {
 	.ops = &sdhci_hlwd_ops,
 };
 
+static const struct sdhci_pltfm_data sdhci_hlwd_sdio_pdata = {
+	.quirks = SDHCI_QUIRK_32BIT_DMA_ADDR |
+		  SDHCI_QUIRK_32BIT_DMA_SIZE,
+	.quirks2 = SDHCI_QUIRK2_NO_BOUNCE_BUFFER,
+	.ops = &sdhci_hlwd_sdio_ops,
+};
+
 static int sdhci_hlwd_probe(struct platform_device *pdev)
 {
+	if (of_node_name_eq(pdev->dev.of_node, "sdio"))
+		return sdhci_pltfm_init_and_add_host(pdev, &sdhci_hlwd_sdio_pdata, 0);
+
 	return sdhci_pltfm_init_and_add_host(pdev, &sdhci_hlwd_pdata, 0);
 }
 
