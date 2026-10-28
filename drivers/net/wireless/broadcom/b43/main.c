@@ -2084,26 +2084,36 @@ static irqreturn_t b43_do_interrupt(struct b43_wldev *dev)
 
 	dev->dma_reason[0] = b43_read32(dev, B43_MMIO_DMA0_REASON)
 	    & 0x0001FC00;
-	dev->dma_reason[1] = b43_read32(dev, B43_MMIO_DMA1_REASON)
-	    & 0x0000DC00;
-	dev->dma_reason[2] = b43_read32(dev, B43_MMIO_DMA2_REASON)
-	    & 0x0000DC00;
-	dev->dma_reason[3] = b43_read32(dev, B43_MMIO_DMA3_REASON)
-	    & 0x0001DC00;
-	dev->dma_reason[4] = b43_read32(dev, B43_MMIO_DMA4_REASON)
-	    & 0x0000DC00;
-/* Unused ring
-	dev->dma_reason[5] = b43_read32(dev, B43_MMIO_DMA5_REASON)
-	    & 0x0000DC00;
-*/
+	if (!b43_using_pio_transfers(dev)) {
+		dev->dma_reason[1] = b43_read32(dev, B43_MMIO_DMA1_REASON)
+		    & 0x0000DC00;
+		dev->dma_reason[2] = b43_read32(dev, B43_MMIO_DMA2_REASON)
+		    & 0x0000DC00;
+		dev->dma_reason[3] = b43_read32(dev, B43_MMIO_DMA3_REASON)
+		    & 0x0001DC00;
+		dev->dma_reason[4] = b43_read32(dev, B43_MMIO_DMA4_REASON)
+		    & 0x0000DC00;
+	} else {
+		/* PIO only uses ring 0 (for RX_DONE). Every register access
+		 * is an SDIO transaction, which may be slow, so don't touch
+		 * the others. */
+		dev->dma_reason[1] = 0;
+		dev->dma_reason[2] = 0;
+		dev->dma_reason[3] = 0;
+		dev->dma_reason[4] = 0;
+	}
 
 	/* ACK the interrupt. */
 	b43_write32(dev, B43_MMIO_GEN_IRQ_REASON, reason);
 	b43_write32(dev, B43_MMIO_DMA0_REASON, dev->dma_reason[0]);
-	b43_write32(dev, B43_MMIO_DMA1_REASON, dev->dma_reason[1]);
-	b43_write32(dev, B43_MMIO_DMA2_REASON, dev->dma_reason[2]);
-	b43_write32(dev, B43_MMIO_DMA3_REASON, dev->dma_reason[3]);
-	b43_write32(dev, B43_MMIO_DMA4_REASON, dev->dma_reason[4]);
+	if (dev->dma_reason[1])
+		b43_write32(dev, B43_MMIO_DMA1_REASON, dev->dma_reason[1]);
+	if (dev->dma_reason[2])
+		b43_write32(dev, B43_MMIO_DMA2_REASON, dev->dma_reason[2]);
+	if (dev->dma_reason[3])
+		b43_write32(dev, B43_MMIO_DMA3_REASON, dev->dma_reason[3]);
+	if (dev->dma_reason[4])
+		b43_write32(dev, B43_MMIO_DMA4_REASON, dev->dma_reason[4]);
 /* Unused ring
 	b43_write32(dev, B43_MMIO_DMA5_REASON, dev->dma_reason[5]);
 */
@@ -3611,7 +3621,10 @@ static void b43_tx_work(struct work_struct *work)
 				err = b43_pio_tx(dev, skb);
 			else
 				err = b43_dma_tx(dev, skb);
-			if (err == -ENOSPC) {
+			/* The PIO path reports a full TX FIFO as -EBUSY (DMA uses
+			 * -ENOSPC). Either way the frame must be retried later,
+			 * not dropped. */
+			if (err == -ENOSPC || err == -EBUSY) {
 				wl->tx_queue_stopped[queue_num] = true;
 				b43_stop_queue(dev, queue_num);
 				skb_queue_head(&wl->tx_queue[queue_num], skb);

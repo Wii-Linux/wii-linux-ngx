@@ -138,7 +138,10 @@ static struct b43_pio_txqueue *b43_setup_pioqueue_tx(struct b43_wldev *dev,
 
 	q->free_packet_slots = B43_PIO_MAX_NR_TXPACKETS;
 	if (q->rev >= 8) {
-		q->buffer_size = 1920; //FIXME this constant is wrong.
+		/* The real size is unknown. 1920 only fits a single full-sized
+		 * frame, which serializes TX behind one status interrupt per
+		 * frame; 4096 is stable on a BCM4318 (core rev 9). */
+		q->buffer_size = 4096;
 	} else {
 		q->buffer_size = b43_piotx_read16(q, B43_PIO_TXQBUFSIZE);
 		q->buffer_size -= 80;
@@ -587,9 +590,12 @@ void b43_pio_handle_txstatus(struct b43_wldev *dev,
 	list_add(&pack->list, &q->packets_list);
 
 	if (q->stopped) {
-		b43_wake_queue(dev, q->queue_prio);
 		q->stopped = false;
+		dev->wl->tx_queue_stopped[q->queue_prio] = false;
+		b43_wake_queue(dev, q->queue_prio);
 	}
+	/* Frames may be waiting in the driver queue. */
+	ieee80211_queue_work(dev->wl->hw, &dev->wl->tx_work);
 }
 
 /* Returns whether we should fetch another frame. */
