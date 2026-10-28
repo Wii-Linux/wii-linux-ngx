@@ -39,24 +39,6 @@
  *
  */
 
-static void hlwd_pic_mask_and_ack(struct irq_data *d)
-{
-	int irq = irqd_to_hwirq(d);
-	void __iomem *io_base = irq_data_get_irq_chip_data(d);
-	u32 mask = 1 << irq;
-
-	clrbits32(io_base + HW_BROADWAY_IMR, mask);
-	out_be32(io_base + HW_BROADWAY_ICR, mask);
-}
-
-static void hlwd_pic_ack(struct irq_data *d)
-{
-	int irq = irqd_to_hwirq(d);
-	void __iomem *io_base = irq_data_get_irq_chip_data(d);
-
-	out_be32(io_base + HW_BROADWAY_ICR, 1 << irq);
-}
-
 static void hlwd_pic_mask(struct irq_data *d)
 {
 	int irq = irqd_to_hwirq(d);
@@ -70,6 +52,12 @@ static void hlwd_pic_unmask(struct irq_data *d)
 	int irq = irqd_to_hwirq(d);
 	void __iomem *io_base = irq_data_get_irq_chip_data(d);
 
+	/*
+	 * Some cause bits latch, and acking one has no effect while its source
+	 * is still asserted.  Ack here, after the handler has cleared the
+	 * source, rather than before it runs, or it may be delivered twice.
+	 */
+	out_be32(io_base + HW_BROADWAY_ICR, 1 << irq);
 	setbits32(io_base + HW_BROADWAY_IMR, 1 << irq);
 
 	/* Make sure the ARM (aka. Starlet) doesn't handle this interrupt. */
@@ -79,8 +67,6 @@ static void hlwd_pic_unmask(struct irq_data *d)
 
 static struct irq_chip hlwd_pic = {
 	.name		= "hlwd-pic",
-	.irq_ack	= hlwd_pic_ack,
-	.irq_mask_ack	= hlwd_pic_mask_and_ack,
 	.irq_mask	= hlwd_pic_mask,
 	.irq_unmask	= hlwd_pic_unmask,
 };
