@@ -74,6 +74,15 @@ int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args);
 int ipc_post_mini(u32 code, u32 tag, int num_args, ...);
 
 /*
+ * Like ipc_post_mini(), but Starlet is not told about the message.  That is
+ * done later by writing the value that ipc_kick_reg_mini() gives to the
+ * register that it returns (NULL if not using MINI).  For the PM request
+ * that needs to be sent after the caches have been turned off.
+ */
+int ipc_post_mini_nokick(u32 code, u32 tag, int num_args, ...);
+u32 __iomem *ipc_kick_reg_mini(u32 *val);
+
+/*
  * Receive a message from Starlet, filling in 'req' with
  * the message that has been received.
  *
@@ -109,5 +118,12 @@ int ipc_receive_tagged_mini(struct ipc_request_mini *req, u32 code, u32 tag, int
  */
 int ipc_exchange_mini(struct ipc_request_mini *req, u32 code, int max_recv_attempts, int max_attempts, int num_args, ...);
 
+/*
+ * Get the tag that the next ipc_exchange_mini() would use, for callers that
+ * need to split the exchange into a post and a later receive.  Call
+ * ipc_put_tag_mini() when the receive is done.
+ */
+u32 ipc_get_tag_mini(void);
+void ipc_put_tag_mini(void);
 
 #endif

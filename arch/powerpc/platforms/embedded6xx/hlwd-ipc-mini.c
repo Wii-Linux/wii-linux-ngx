@@ -243,7 +243,7 @@ static int inqueue_full(struct hlwd_ipc *ipc)
 	return peek_inhead(ipc) == ((state->in_tail + 1) & (state->in_size - 1));
 }
 
-int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
+static int __ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args, bool kick)
 {
 	struct hlwd_ipc *ipc;
 	struct mini_state *state;
@@ -287,12 +287,42 @@ int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
 
 	/* send it off */
 	poke_intail(ipc);
-	out_be32(&ipc->regs->ppcctrl, X1);
+	if (kick)
+		out_be32(&ipc->regs->ppcctrl, X1);
 
-	/* success, Starlet is processing it */
+	/* success, Starlet is processing it (or will once kicked) */
 	return 0;
 }
+
+int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
+{
+	return __ipc_vpost_mini(code, tag, num_args, args, true);
+}
 EXPORT_SYMBOL_GPL(ipc_vpost_mini);
+
+int ipc_post_mini_nokick(u32 code, u32 tag, int num_args, ...)
+{
+	va_list args;
+	int ret;
+
+	va_start(args, num_args);
+	ret = __ipc_vpost_mini(code, tag, num_args, args, false);
+	va_end(args);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ipc_post_mini_nokick);
+
+u32 __iomem *ipc_kick_reg_mini(u32 *val)
+{
+	struct hlwd_ipc *ipc = ipc_get_state();
+
+	if (!ipc || ipc->flavor != IPC_FLAVOR_MINI)
+		return NULL;
+	*val = X1;
+	return &ipc->regs->ppcctrl;
+}
+EXPORT_SYMBOL_GPL(ipc_kick_reg_mini);
 
 int ipc_post_mini(u32 code, u32 tag, int num_args, ...)
 {
@@ -420,3 +450,27 @@ out:
 	return error;
 }
 EXPORT_SYMBOL_GPL(ipc_exchange_mini);
+
+u32 ipc_get_tag_mini(void)
+{
+	struct hlwd_ipc *ipc = ipc_get_state();
+	struct mini_state *state;
+
+	if (!ipc || ipc->flavor != IPC_FLAVOR_MINI)
+		return 0;
+	state = ipc->flavor_state;
+	return state->cur_tag;
+}
+EXPORT_SYMBOL_GPL(ipc_get_tag_mini);
+
+void ipc_put_tag_mini(void)
+{
+	struct hlwd_ipc *ipc = ipc_get_state();
+	struct mini_state *state;
+
+	if (!ipc || ipc->flavor != IPC_FLAVOR_MINI)
+		return;
+	state = ipc->flavor_state;
+	state->cur_tag++;
+}
+EXPORT_SYMBOL_GPL(ipc_put_tag_mini);
