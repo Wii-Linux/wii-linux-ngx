@@ -15,6 +15,7 @@
 #include <linux/irqdomain.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/syscore_ops.h>
 #include <asm/io.h>
 
 #include "flipper-pic.h"
@@ -243,3 +244,40 @@ int flipper_is_reset_button_pressed(void)
 	return 0;
 }
 
+
+#ifdef CONFIG_PM_SLEEP
+static u32 flipper_pic_saved_imr;
+
+static int flipper_pic_suspend(void *data)
+{
+	void __iomem *io_base = flipper_irq_host->host_data;
+
+	flipper_pic_saved_imr = in_be32(io_base + FLIPPER_IMR);
+	return 0;
+}
+
+static void flipper_pic_resume(void *data)
+{
+	void __iomem *io_base = flipper_irq_host->host_data;
+
+	out_be32(io_base + FLIPPER_IMR, 0);
+	out_be32(io_base + FLIPPER_ICR, 0xffffffff);
+	out_be32(io_base + FLIPPER_IMR, flipper_pic_saved_imr);
+}
+
+static const struct syscore_ops flipper_pic_syscore_ops = {
+	.suspend = flipper_pic_suspend,
+	.resume = flipper_pic_resume,
+};
+static struct syscore flipper_pic_syscore = {
+	.ops = &flipper_pic_syscore_ops,
+};
+
+static int __init flipper_pic_pm_init(void)
+{
+	if (flipper_irq_host)
+		register_syscore(&flipper_pic_syscore);
+	return 0;
+}
+device_initcall(flipper_pic_pm_init);
+#endif
