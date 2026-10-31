@@ -1018,6 +1018,38 @@ static void si_of_shutdown(struct platform_device *odev)
 	}
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int si_suspend(struct device *dev)
+{
+	struct si_drvdata *drvdata = dev_get_drvdata(dev);
+
+	/*
+	 * Make sure no transfer is in flightwhile the hardware is powered off
+	 * underneath us.
+	 */
+	drvdata->flags |= SI_QUIESCE;
+	cancel_delayed_work_sync(&drvdata->hotplug_work);
+	out_be32(drvdata->io_base + SIPOLL, 0);
+
+	return 0;
+}
+
+static int si_resume(struct device *dev)
+{
+	struct si_drvdata *drvdata = dev_get_drvdata(dev);
+
+	/* SI came back from reset, so redo what probe did, then resume polling */
+	si_reset_all(drvdata->io_base);
+	drvdata->flags &= ~SI_QUIESCE;
+	si_scan_ports(drvdata);
+	schedule_delayed_work(&drvdata->hotplug_work, SI_HOTPLUG_TIME);
+
+	return 0;
+}
+#endif
+
+static DEFINE_SIMPLE_DEV_PM_OPS(si_pm_ops, si_suspend, si_resume);
+
 static const struct of_device_id si_of_match[] = {
 	{ .compatible = "nintendo,flipper-si" },
 	{ .compatible = "nintendo,hollywood-si" },
@@ -1033,6 +1065,7 @@ static struct platform_driver si_of_driver = {
 		.name = DRV_MODULE_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = si_of_match,
+		.pm = pm_sleep_ptr(&si_pm_ops),
 	},
 	.probe = si_of_probe,
 	.remove = si_of_remove,
