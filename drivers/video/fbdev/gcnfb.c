@@ -504,6 +504,7 @@ struct vi_ctl {
 	struct mutex mode_lock;
 	bool irq_requested;
 	bool interrupts_enabled;
+	bool resume_interrupts;
 	struct vifb_rgb_buffer *rgb_buffer;
 	spinlock_t lock;
 
@@ -997,6 +998,24 @@ static void vi_reset_video(struct vi_ctl *ctl)
 }
 
 /*
+ * What the hardware was last told by us to display, if anything, else what
+ * it's currently displaying.
+ */
+static enum vi_video_format vi_current_format(struct vi_ctl *ctl)
+{
+	if (ctl->mode)
+		return (ctl->mode->lines == 625) ? VI_FMT_PAL : VI_FMT_NTSC;
+	return vi_get_video_format(ctl);
+}
+
+static bool vi_current_progressive(struct vi_ctl *ctl, u16 dcr)
+{
+	if (ctl->mode)
+		return ctl->mode->flags & VI_VMF_PROGRESSIVE;
+	return vi_dcr_get_nin(dcr);
+}
+
+/*
  * Try to determine current TV video mode.
  */
 static int vi_detect_tv_mode(struct vi_ctl *ctl)
@@ -1017,7 +1036,7 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 					ctl->has_component_cable) ||
 	    (force_scan != VI_SCAN_INTERLACED &&
 					ctl->has_component_cable &&
-					vi_dcr_get_nin(dcr))) {
+					vi_current_progressive(ctl, dcr))) {
 		/* progressive modes */
 		ntsc_idx = VI_VM_NTSC_480p;
 		pal_idx = VI_VM_PAL_480p;
@@ -1026,7 +1045,7 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 		ntsc_idx = VI_VM_NTSC_480i;
 		if (force_rate == VI_RATE_50Hz ||
 		    (force_rate != VI_RATE_60Hz &&
-		     vi_dcr_get_fmt(dcr) == VI_FMT_PAL))
+		     vi_current_format(ctl) == VI_FMT_PAL))
 			pal_idx = VI_VM_PAL_576i50;
 		else
 			pal_idx = VI_VM_PAL_480i60;
@@ -1047,15 +1066,15 @@ static int vi_detect_tv_mode(struct vi_ctl *ctl)
 			dev_warn(ctl->dev, "could not get video format from AVE: %d\n", error);
 			/* initial guess before AVE is setup */
 			error = 0;
-			fmt = vi_get_video_format(ctl);
-			source = "DCR";
+			fmt = vi_current_format(ctl);
+			source = ctl->mode ? "previous mode" : "DCR";
 		} else {
 			source = "AVE";
 		}
 #else
 		error = 0;
-		fmt = vi_get_video_format(ctl);
-		source = "DCR";
+		fmt = vi_current_format(ctl);
+		source = ctl->mode ? "previous mode" : "DCR";
 #endif
 	}
 
@@ -1951,19 +1970,13 @@ static void gx_configure_mode(struct vi_ctl *ctl)
 	gx_setup_indirect_renderer(ctl);
 }
 
-static int gx_init(struct vi_ctl *ctl)
+static int gx_init_hw(struct vi_ctl *ctl)
 {
 	u32 fifo_base, fifo_end, fifo_hiwat, fifo_lowat;
 	u32 bus_clock = 243000000;
 	u32 clock_div;
 	u16 tmp;
 	int error, n;
-
-	ctl->fifo = dma_alloc_noncoherent(ctl->dev, GX_FIFO_SIZE,
-					  &ctl->fifo_dma, DMA_BIDIRECTIONAL,
-					  GFP_KERNEL);
-	if (!ctl->fifo)
-		return -ENOMEM;
 
 	fifo_base = (u32)ctl->fifo_dma;
 	fifo_end = fifo_base + GX_FIFO_SIZE - 4;
@@ -2063,6 +2076,17 @@ static int gx_init(struct vi_ctl *ctl)
 	if (error)
 		return error;
 	return 0;
+}
+
+static int gx_init(struct vi_ctl *ctl)
+{
+	ctl->fifo = dma_alloc_noncoherent(ctl->dev, GX_FIFO_SIZE,
+					  &ctl->fifo_dma, DMA_BIDIRECTIONAL,
+					  GFP_KERNEL);
+	if (!ctl->fifo)
+		return -ENOMEM;
+
+	return gx_init_hw(ctl);
 }
 
 static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
@@ -3471,6 +3495,61 @@ static void vifb_of_shutdown(struct platform_device *odev)
 }
 
 
+#ifdef CONFIG_PM_SLEEP
+static int vifb_suspend(struct device *dev)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct vi_ctl *ctl = info->par;
+
+	console_lock();
+	fb_set_suspend(info, 1);
+	console_unlock();
+
+	ctl->resume_interrupts = ctl->interrupts_enabled;
+	vi_enable_interrupts(ctl, 0);
+	synchronize_irq(ctl->irq);
+	if (!ctl->gx_faulted)
+		gx_wait_cp_idle(ctl);
+	return 0;
+}
+
+static int vifb_resume(struct device *dev)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct vi_ctl *ctl = info->par;
+	int error;
+
+	ctl->gx_faulted = false;
+	error = gx_init_hw(ctl);
+	if (error) {
+		ctl->gx_faulted = true;
+		dev_err(dev, "unable to restore GX on resume: %d\n", error);
+		return error;
+	}
+
+	/* vifb_apply_mode() puts the interrupt state back as it finds it */
+	ctl->interrupts_enabled = ctl->resume_interrupts;
+
+	/*
+	 * Keep the mode from before the suspend; VI was reset, so asking the
+	 * hardware would always give NTSC 480i.
+	 */
+	console_lock();
+	lock_fb_info(info);
+	error = vifb_apply_mode(ctl, false);
+	if (error)
+		dev_err(dev, "unable to restore video mode on resume: %d\n",
+			error);
+	fb_set_suspend(info, 0);
+	unlock_fb_info(info);
+	console_unlock();
+
+	return error;
+}
+#endif
+
+static DEFINE_SIMPLE_DEV_PM_OPS(vifb_pm_ops, vifb_suspend, vifb_resume);
+
 static struct of_device_id vifb_of_match[] = {
 	{ .compatible = "nintendo,flipper-vi", },
 	{ .compatible = "nintendo,hollywood-vi", },
@@ -3484,6 +3563,7 @@ static struct platform_driver vifb_of_driver = {
 		.name = DRV_MODULE_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = vifb_of_match,
+		.pm = pm_sleep_ptr(&vifb_pm_ops),
 	},
 	.probe = vifb_of_probe,
 	.remove = vifb_of_remove,
