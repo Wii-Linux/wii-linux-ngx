@@ -401,11 +401,19 @@ config ARCH_HIBERNATION_POSSIBLE
 	bool
 	default y
 
+config PPC_CPUOFF_SUSPEND
+	bool
+	depends on PPC_BOOK3S_32
+	help
+	  Support for suspend states where the CPU is completely powered off
+	  and later restarted at a given physical address by some external
+	  means (firmware, SMC, etc), with RAM preserved.
+
 config ARCH_SUSPEND_POSSIBLE
 	def_bool y
 	depends on ADB_PMU || PPC_EFIKA || PPC_LITE5200 || PPC_83xx || \
 		   (PPC_85xx && !PPC_E500MC) || PPC_86xx || PPC_PSERIES \
-		   || 44x
+		   || 44x || PPC_CPUOFF_SUSPEND
 
 config ARCH_SUSPEND_NONZERO_CPU
 	def_bool y
