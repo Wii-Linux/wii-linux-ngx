@@ -21,6 +21,7 @@
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/pm.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/initval.h>
@@ -136,6 +137,19 @@ static void ai_dsp_stop_sample(void __iomem *dsp_base)
 static int ai_dsp_get_remaining_byte_count(void __iomem *dsp_base)
 {
 	return in_be16(dsp_base + AI_DSP_DMA_LEFT) << 5;
+}
+
+/*
+ * De-assert the DSP's reset/halt bits if set, and tell it to boot from IROM.
+ */
+static void ai_dsp_boot(void __iomem *dsp_base)
+{
+	u16 csr;
+
+	csr = in_be16(dsp_base + AI_DSP_CSR);
+	csr &= ~(AI_CSR_HALT | AI_CSR_RES);
+	csr |= AI_CSR_BOOTMODE;
+	out_be16(dsp_base + AI_DSP_CSR, csr);
 }
 
 static void ai_enable_interrupts(void __iomem *dsp_base)
@@ -325,6 +339,7 @@ static int snd_gcn_trigger(struct snd_pcm_substream *substream, int cmd)
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
 		chip->stop_play = 1;
 		break;
 	default:
@@ -487,7 +502,7 @@ static int ai_of_probe(struct platform_device *odev)
 	struct snd_card *card;
 	struct snd_gcn *chip;
 	int retval = -ENODEV, irq;
-	u32 resets_val, csr;
+	u32 resets_val;
 
 	dev = &odev->dev;
 
@@ -529,11 +544,7 @@ static int ai_of_probe(struct platform_device *odev)
 		of_node_put(resets_np);
 	}
 
-	/* de-assert the DSP's own reset/halt bits if set, and tell it to boot from IROM */
-	csr = in_be16(dsp + AI_DSP_CSR);
-	csr &= ~(AI_CSR_HALT | AI_CSR_RES);
-	csr |= AI_CSR_BOOTMODE;
-	out_be16(dsp + AI_DSP_CSR, csr);
+	ai_dsp_boot(dsp);
 
 	irq = irq_of_parse_and_map(odev->dev.of_node, 0);
 
@@ -641,6 +652,39 @@ static void ai_of_shutdown(struct platform_device *odev)
 }
 
 
+#ifdef CONFIG_PM_SLEEP
+/*
+ * The DSP and the AI come back reset.  Any stream that was running is gone,
+ * so let ALSA suspend them and have userspace prepare them again.
+ */
+static int ai_suspend(struct device *dev)
+{
+	struct snd_gcn *chip = dev_get_drvdata(dev);
+
+	snd_power_change_state(chip->card, SNDRV_CTL_POWER_D3hot);
+	snd_pcm_suspend_all(chip->pcm);
+
+	chip->stop_play = 1;
+	ai_dsp_stop_sample(chip->dsp_base);
+	ai_disable_interrupts(chip->dsp_base);
+	synchronize_irq(chip->irq);
+	return 0;
+}
+
+static int ai_resume(struct device *dev)
+{
+	struct snd_gcn *chip = dev_get_drvdata(dev);
+
+	ai_dsp_boot(chip->dsp_base);
+	ai_enable_interrupts(chip->dsp_base);
+
+	snd_power_change_state(chip->card, SNDRV_CTL_POWER_D0);
+	return 0;
+}
+#endif
+
+static DEFINE_SIMPLE_DEV_PM_OPS(ai_pm_ops, ai_suspend, ai_resume);
+
 static struct of_device_id ai_of_match[] = {
 	{ .compatible = "nintendo,flipper-ai" },
 	{ .compatible = "nintendo,hollywood-ai" },
@@ -654,6 +698,7 @@ static struct platform_driver ai_of_driver = {
 		.name = DRV_MODULE_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = ai_of_match,
+		.pm = pm_sleep_ptr(&ai_pm_ops),
 	},
 	.probe = ai_of_probe,
 	.remove = ai_of_remove,
