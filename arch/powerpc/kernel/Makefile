@@ -108,6 +108,7 @@ obj-$(CONFIG_PRESERVE_FA_DUMP)	+= fadump.o
 obj-$(CONFIG_PPC_85xx)		+= idle_85xx.o
 obj-$(CONFIG_PPC_BOOK3S_32)	+= idle_6xx.o l2cr_6xx.o cpu_setup_6xx.o
 obj-$(CONFIG_TAU)		+= tau_6xx.o
+obj-$(CONFIG_PPC_CPUOFF_SUSPEND)	+= cpuoff.o cpuoff_32.o
 obj-$(CONFIG_HIBERNATION)	+= swsusp.o suspend.o
 ifdef CONFIG_PPC_85xx
 obj-$(CONFIG_HIBERNATION)	+= swsusp_85xx.o
