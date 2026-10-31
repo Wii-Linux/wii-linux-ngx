@@ -14,6 +14,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/syscore_ops.h>
 #include <asm/io.h>
 
 #include "hlwd-pic.h"
@@ -218,3 +219,48 @@ void hlwd_quiesce(void)
 	__hlwd_quiesce(io_base);
 }
 
+
+#ifdef CONFIG_PM_SLEEP
+
+/*
+ * The controller sits outside the CPU and is not necessarily kept alive
+ * across a suspend, so keep the masks and bring them back.
+ */
+static u32 hlwd_pic_saved_imr, hlwd_pic_saved_starlet_imr;
+
+static int hlwd_pic_suspend(void *data)
+{
+	void __iomem *io_base = hlwd_irq_host->host_data;
+
+	hlwd_pic_saved_imr = in_be32(io_base + HW_BROADWAY_IMR);
+	hlwd_pic_saved_starlet_imr = in_be32(io_base + HW_STARLET_IMR);
+	return 0;
+}
+
+static void hlwd_pic_resume(void *data)
+{
+	void __iomem *io_base = hlwd_irq_host->host_data;
+
+	out_be32(io_base + HW_BROADWAY_IMR, 0);
+	out_be32(io_base + HW_BROADWAY_ICR, 0xffffffff);
+	out_be32(io_base + HW_STARLET_IMR, hlwd_pic_saved_starlet_imr);
+	out_be32(io_base + HW_BROADWAY_IMR, hlwd_pic_saved_imr);
+}
+
+static const struct syscore_ops hlwd_pic_syscore_ops = {
+	.suspend = hlwd_pic_suspend,
+	.resume = hlwd_pic_resume,
+};
+static struct syscore hlwd_pic_syscore = {
+	.ops = &hlwd_pic_syscore_ops,
+};
+
+static int __init hlwd_pic_pm_init(void)
+{
+	if (hlwd_irq_host)
+		register_syscore(&hlwd_pic_syscore);
+	return 0;
+}
+device_initcall(hlwd_pic_pm_init);
+
+#endif /* CONFIG_PM_SLEEP */
