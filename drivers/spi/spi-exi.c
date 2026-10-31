@@ -1278,6 +1278,67 @@ static void exi_spi_remove(struct platform_device *pdev)
 }
 
 
+#ifdef CONFIG_PM_SLEEP
+static int exi_spi_suspend(struct device *dev)
+{
+	struct exi_spi *exi = dev_get_drvdata(dev);
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < 3; i++) {
+		ret = spi_controller_suspend(exi->channels[i].ctlr);
+		if (ret) {
+			while (i--)
+				spi_controller_resume(exi->channels[i].ctlr);
+			return ret;
+		}
+	}
+
+	/* a rescan can't run against the hardware while it is off */
+	cancel_work_sync(&exi->hotplug_work);
+	return 0;
+}
+
+static int exi_spi_resume(struct device *dev)
+{
+	struct exi_spi *exi = dev_get_drvdata(dev);
+	unsigned int channel, cs;
+
+	for (channel = 0; channel < 3; channel++) {
+		struct exi_channel *ch = &exi->channels[channel];
+
+		/* clears pending EXI/EXT interrupts and unmasks EXT again */
+		exi_init_channel(ch);
+
+		/* bring back the device interrupts that were enabled */
+		for (cs = 0; cs < 3; cs++) {
+			if (ch->devices[cs])
+				exi_set_device_irq(exi, channel,
+						   ch->devices[cs]->modalias,
+						   true);
+		}
+
+		/* the previous owner of the CS lines is gone */
+		for (cs = 0; cs < 3; cs++) {
+			ch->selected[cs] = false;
+			ch->clock_only[cs] = false;
+		}
+	}
+
+	for (channel = 0; channel < 3; channel++)
+		spi_controller_resume(exi->channels[channel].ctlr);
+
+	/* pick up anything inserted or removed in the meantime */
+	for (channel = 0; channel < 3; channel++)
+		set_bit(channel, &exi->pending_hotplug);
+	schedule_work(&exi->hotplug_work);
+
+	return 0;
+}
+#endif
+
+static DEFINE_SIMPLE_DEV_PM_OPS(exi_spi_pm_ops, exi_spi_suspend, exi_spi_resume);
+
 static const struct of_device_id exi_spi_of_match[] = {
 	{ .compatible = "nintendo,flipper-exi" },   /* GameCube */
 	{ .compatible = "nintendo,hollywood-exi" }, /* Wii */
@@ -1290,6 +1351,7 @@ static struct platform_driver exi_spi_driver = {
 	.driver = {
 		.name = "exi-spi",
 		.of_match_table = exi_spi_of_match,
+		.pm = pm_sleep_ptr(&exi_spi_pm_ops),
 	},
 	.probe  = exi_spi_probe,
 	.remove = exi_spi_remove,
