@@ -74,6 +74,14 @@ void ipc_cleanup_mini(struct hlwd_ipc *ipc)
 	ipc->flavor_state = NULL;
 }
 
+static void ipc_mini_wait(void)
+{
+	if (!irqs_disabled() && !in_atomic())
+		msleep(5);
+	else
+		mdelay(5);
+}
+
 int ipc_init_mini(struct hlwd_ipc *ipc)
 {
 	struct device_node *mini_np;
@@ -255,7 +263,7 @@ int ipc_vpost_mini(u32 code, u32 tag, int num_args, va_list args)
 	if (inqueue_full(ipc)) {
 		pr_warn("in queue full, this might be bad...\n");
 		while (inqueue_full(ipc)) {
-			msleep(5);
+			ipc_mini_wait();
 			i++;
 			if (i > 200 && i % 200 == 0) {
 				pr_err("Starlet is probably stuck!  Still waiting on inhead %d != %d\n",
@@ -319,7 +327,8 @@ int ipc_receive_mini(struct ipc_request_mini *req, int max_attempts)
 	state = (struct mini_state *)ipc->flavor_state;
 
 	while (peek_outtail(ipc) == state->out_head) {
-		msleep(5);
+		ipc_mini_wait();
+
 		i++;
 		if (i > 200 && i % 200 == 0) {
 			pr_warn("Starlet might be stuck!  Still waiting on outtail %d == %d\n",
