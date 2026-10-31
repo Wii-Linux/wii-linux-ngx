@@ -13,4 +13,5 @@ obj-$(CONFIG_GAMECUBE)		+= gamecube.o
 obj-$(CONFIG_WII)		+= wii.o hlwd-pic.o
 obj-$(CONFIG_WII_NETCFG_HANDOFF)	+= wii-netcfg-handoff.o
 obj-$(CONFIG_HLWD_IPC)		+= hlwd-ipc.o hlwd-ipc-mini.o
+obj-$(CONFIG_WII_PM)		+= wii-pm.o
 obj-$(CONFIG_MVME5100)		+= mvme5100.o
