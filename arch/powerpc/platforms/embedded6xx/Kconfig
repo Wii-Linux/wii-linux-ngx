@@ -67,6 +67,23 @@ config WII
 	  Select WII if configuring for the Nintendo Wii.
 	  More information at: <http://gc-linux.sourceforge.net/>
 
+config WII_PM
+	bool "Wii power management"
+	depends on WII
+	select HLWD_IPC
+	select PM
+	select PPC_CPUOFF_SUSPEND
+	default y
+	help
+	  Support power management functions on the Nintendo Wii by making use
+	  of the MINI firmware running on Starlet.  Currently this only
+	  provides suspend/resume functionality.
+
+	  This needs a recent enough version of the MINI firmware; if it is
+	  not found, suspending is not made available.
+
+	  If in doubt, say Y here.
+
 config WII_NETCFG_HANDOFF
 	bool "Wii bootloader network configuration handoff"
 	depends on WII
