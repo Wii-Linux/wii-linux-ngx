@@ -28,9 +28,19 @@
 #define IPC_MINI_CODE_PPC_BOOT_FILE 0x00060001
 
 /* only supported in downstream versions of MINI */
-#define IPC_MINI_CODE_PPC_CLK_SUPP  0x00068000
-#define IPC_MINI_CODE_PPC_CLK_LO    0x00068001
-#define IPC_MINI_CODE_PPC_CLK_HI    0x00068002
+#define IPC_MINI_CODE_PM_SUPP       0x00800000
+#define IPC_MINI_CODE_PM_SUSPEND    0x00800001
+
+#define IPC_MINI_PM_MAGIC           0x574c6e78 /* ASCII 'WLnx' */
+
+/* IPC_MINI_CODE_PM_SUSPEND wake events, and the reply's reason */
+#define IPC_MINI_PM_WAKE_POWER      BIT(0)  /* power button */
+#define IPC_MINI_PM_WAKE_TIMEOUT    BIT(1)  /* timeout elapsed */
+/* IPC_MINI_CODE_PM_SUSPEND options (high 16 bits of args[2]) */
+#define IPC_MINI_PM_OPT_LED_ON      BIT(0)
+#define IPC_MINI_PM_OPT_LED_BLINK   BIT(1)
+#define IPC_MINI_PM_OPT_KEEP_FAN    BIT(2)  /* MINI's default, like Nintendo's, is the fan off */
+#define IPC_MINI_PM_OPT_CLR_NORESET BIT(3)
 
 
 /*
