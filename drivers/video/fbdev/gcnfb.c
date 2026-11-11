@@ -530,12 +530,8 @@ struct vi_ctl {
 	unsigned int irq;
 	unsigned int pe_irq;
 
-	int in_vtrace;
-	wait_queue_head_t vtrace_waitq;
-
 	int visible_page;
 	unsigned long page_address[2];
-	unsigned long flip_pending;
 
 	struct vi_tv_mode *mode;
 	struct vi_mode_timings timings;
@@ -1221,17 +1217,6 @@ static void vi_set_framebuffer(struct vi_ctl *ctl, u32 addr)
 	out_be32(io_base + VI_BFBL, vi_bfbl_pob(1) | vi_bfbl_fba(bot >> 5));
 }
 
-/*
- * Swap the visible and back pages.
- */
-static inline void vi_flip_page(struct vi_ctl *ctl)
-{
-	ctl->visible_page ^= 1;
-	vi_set_framebuffer(ctl, ctl->page_address[ctl->visible_page]);
-
-	ctl->flip_pending = 0;
-}
-
 static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 {
 	void __iomem *io_base = ctl->io_base;
@@ -1239,26 +1224,15 @@ static void vi_enable_interrupts(struct vi_ctl *ctl, int enable)
 	ctl->interrupts_enabled = enable;
 
 	if (enable) {
-		/*
-		 * We use DI0 and DI1 to signal the retrace interval.
-		 */
-
-		/* start of the vertical retrace */
-		out_be32(io_base + VI_DI1,
+		/* DI0 signals the start of the vertical retrace. */
+		out_be32(io_base + VI_DI0,
 			 vi_dix_irq(1) | vi_dix_enb(1) |
 			 vi_dix_vct(ctl->timings.vtrap) |
 			 vi_dix_hct(ctl->timings.htrap));
-
-		/* end of the vertical retrace */
-		out_be32(io_base + VI_DI0,
-			 vi_dix_irq(1) | vi_dix_enb(1) |
-			 vi_dix_vct(1) |
-			 vi_dix_hct(1));
-	} else {
+	} else
 		out_be32(io_base + VI_DI0, 0);
-		out_be32(io_base + VI_DI1, 0);
-	}
-	/* these two are currently not used */
+	/* these three are currently not used */
+	out_be32(io_base + VI_DI1, 0);
 	out_be32(io_base + VI_DI2, 0);
 	out_be32(io_base + VI_DI3, 0);
 }
@@ -2121,27 +2095,12 @@ static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
 	error = gx_wait_pe_finish(ctl, "copy");
 	if (error)
 		goto fault;
-	dma_sync_single_for_cpu(ctl->dev, ctl->rgb_fb_dma,
-				ctl->rgb_fb_size, DMA_TO_DEVICE);
+
 	return;
 
 fault:
 	WRITE_ONCE(ctl->gx_faulted, true);
-	dma_sync_single_for_cpu(ctl->dev, ctl->rgb_fb_dma,
-				ctl->rgb_fb_size, DMA_TO_DEVICE);
 	dev_crit(ctl->dev, "disabling GX submissions after completion failure\n");
-}
-
-static void vi_dispatch_vtrace(struct vi_ctl *ctl)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ctl->lock, flags);
-	if (ctl->flip_pending)
-		vi_flip_page(ctl);
-	spin_unlock_irqrestore(&ctl->lock, flags);
-
-	wake_up_interruptible(&ctl->vtrace_waitq);
 }
 
 static irqreturn_t vi_irq_handler(int irq, void *dev)
@@ -2151,19 +2110,10 @@ static irqreturn_t vi_irq_handler(int irq, void *dev)
 	void __iomem *io_base = ctl->io_base;
 	u32 val;
 
-	/* DI0 and DI1 are used to account for the vertical retrace */
+	/* DI0 marks the start of the vertical retrace */
 	val = in_be32(io_base + VI_DI0);
 	if (vi_dix_get_irq(val)) {
-		ctl->in_vtrace = 0;
-
 		out_be32(io_base + VI_DI0, vi_dix_clear_irq(val));
-		return IRQ_HANDLED;
-	}
-	val = in_be32(io_base + VI_DI1);
-	if (vi_dix_get_irq(val)) {
-		ctl->in_vtrace = 1;
-
-		out_be32(io_base + VI_DI1, vi_dix_clear_irq(val));
 		return IRQ_WAKE_THREAD;
 	}
 
@@ -2176,7 +2126,6 @@ static irqreturn_t vi_irq_thread(int irq, void *dev)
 	struct vi_ctl *ctl = info->par;
 
 	gx_copy_efb_to_xfb(ctl);
-	vi_dispatch_vtrace(ctl);
 
 	return IRQ_HANDLED;
 }
@@ -2838,7 +2787,6 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	}
 	ctl->page_address[0] = ctl->page_address[1] = ctl->xfb_dma;
 	ctl->visible_page = 0;
-	ctl->flip_pending = 0;
 
 	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_rst(0, 1));
 	udelay(2);
@@ -3317,7 +3265,6 @@ static int vifb_of_probe(struct platform_device *odev)
 
 	mutex_init(&ctl->mode_lock);
 	spin_lock_init(&ctl->lock);
-	init_waitqueue_head(&ctl->vtrace_waitq);
 	vi_reset_video(ctl);
 	error = vi_detect_tv_mode(ctl);
 	if (error)
