@@ -10,6 +10,7 @@
 #define pr_fmt(fmt) DRV_MODULE_NAME ": " fmt
 
 #include <linux/kernel.h>
+#include <linux/dma-map-ops.h>
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/seq_file.h>
@@ -87,6 +88,9 @@ out:
 
 static void __init wii_setup_arch(void)
 {
+	/* Reserve some memory for gcnfb so it can switch modes consistently rather than taking our chances against fragmentation */
+	dma_contiguous_reserve(DMA_BIT_MASK(29) + 1);
+
 	hw_ctrl = wii_ioremap_hw_regs("hw_ctrl", HW_CTRL_COMPATIBLE);
 	hw_gpio = wii_ioremap_hw_regs("hw_gpio", HW_GPIO_COMPATIBLE);
 	if (hw_gpio) {

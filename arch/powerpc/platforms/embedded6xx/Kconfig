@@ -113,6 +113,7 @@ config MPC10X_BRIDGE
 
 config GAMECUBE_COMMON
 	select NOT_COHERENT_CACHE
+	select HAVE_DMA_CONTIGUOUS
 	default n
 	bool
 

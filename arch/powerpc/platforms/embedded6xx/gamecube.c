@@ -8,6 +8,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/dma-map-ops.h>
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/kexec.h>
@@ -56,6 +57,8 @@ static void gamecube_show_cpuinfo(struct seq_file *m)
 
 static void gamecube_setup_arch(void)
 {
+	/* See wii_setup_arch */
+	dma_contiguous_reserve(DMA_BIT_MASK(29) + 1);
 }
 
 static int __init gamecube_probe(void)
