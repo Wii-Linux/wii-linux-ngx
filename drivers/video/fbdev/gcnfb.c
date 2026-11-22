@@ -497,6 +497,9 @@ static struct vifb_rgb_buffer *vifb_rgb_alloc(struct device *dev, size_t size)
 	return buf;
 }
 
+#define VIFB_MAX_PAGES		2
+#define VIFB_VSYNC_TIMEOUT_MS	200
+
 /*
  * Video control data structure.
  */
@@ -516,13 +519,18 @@ struct vi_ctl {
 	phys_addr_t gx_fifo_base;
 	void *fifo;
 	dma_addr_t fifo_dma;
-	void *xfb;
-	dma_addr_t xfb_dma;
-	size_t xfb_size;
+	void *xfb[VIFB_MAX_PAGES];
+	dma_addr_t xfb_dma[VIFB_MAX_PAGES];
+	size_t xfb_size;		/* size of one XFB, and of one RGB page */
 	unsigned int xfb_stride;
+	unsigned int pages;		/* buffer pairs in use: 1 or 2 */
+	unsigned int front;		/* XFB that VI is currently scanning */
+	u32 pan_offset;			/* RGB byte offset GX samples next */
+	atomic_t vblank_count;		/* frames submitted by the IRQ thread */
+	wait_queue_head_t vblank_wait;
 	void *rgb_fb;
 	dma_addr_t rgb_fb_dma;
-	size_t rgb_fb_size;
+	size_t rgb_fb_size;		/* all RGB pages together */
 	void *indirect_map;
 	dma_addr_t indirect_map_dma;
 	bool gx_faulted;
@@ -530,12 +538,12 @@ struct vi_ctl {
 	unsigned int irq;
 	unsigned int pe_irq;
 
-	int visible_page;
-	unsigned long page_address[2];
-
 	struct vi_tv_mode *mode;
 	struct vi_mode_timings timings;
 	int has_component_cable:1;	/* at last detection time */
+
+	struct fb_var_screeninfo applied_var;	/* var last given to apply_mode */
+	bool applied_var_valid;
 
 	struct fb_info *info;
 #ifdef CONFIG_WII_AVE_RVL
@@ -1940,7 +1948,7 @@ static void gx_configure_mode(struct vi_ctl *ctl)
 		      GX_COORDS(ctl->mode->width - 1, ctl->mode->height - 1));
 	gx_bp_set_reg(ctl, BP_REG_XFB_STRIDE | (ctl->mode->width >> 4));
 	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR |
-		      GX_TEX_IMAGE_ADDR(ctl->xfb_dma));
+		      GX_TEX_IMAGE_ADDR(ctl->xfb_dma[0]));
 	gx_setup_indirect_renderer(ctl);
 }
 
@@ -2063,20 +2071,30 @@ static int gx_init(struct vi_ctl *ctl)
 	return gx_init_hw(ctl);
 }
 
-static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
+/*
+ * Render the RGB page at @rgb_offset into XFB @xfb_idx.  Returns 0 once the
+ * copy has completed, or -EIO if GX is (or has just become) faulted.
+ */
+static int gx_copy_efb_to_xfb(struct vi_ctl *ctl, unsigned int xfb_idx,
+			      u32 rgb_offset)
 {
 	u32 copy_mask = ctl->mode->height == GX_TALL_EFB_HEIGHT ?
 			PE_COPY_EXECUTE_YSCALE : 0;
+	dma_addr_t rgb_dma = ctl->rgb_fb_dma + rgb_offset;
 	int error;
 
 	if (READ_ONCE(ctl->gx_faulted))
-		return;
+		return -EIO;
 
-	dma_sync_single_for_device(ctl->dev, ctl->rgb_fb_dma,
-				   ctl->rgb_fb_size, DMA_TO_DEVICE);
+	dma_sync_single_for_device(ctl->dev, rgb_dma, ctl->xfb_size,
+				   DMA_TO_DEVICE);
 	error = gx_arm_pe_finish(ctl);
 	if (error)
 		goto fault;
+	/* Source page and destination XFB can change from frame to frame. */
+	gx_bp_set_reg(ctl, BP_REG_TEX_IMAGE3(0) | GX_TEX_IMAGE_ADDR(rgb_dma));
+	gx_bp_set_reg(ctl, BP_REG_XFB_ADDR |
+		      GX_TEX_IMAGE_ADDR(ctl->xfb_dma[xfb_idx]));
 	gx_draw_framebuffer(ctl);
 	gx_bp_set_reg(ctl, BP_REG_PE_DONE | PE_DONE_TRIGGER);
 	gx_flush(ctl);
@@ -2096,11 +2114,12 @@ static void gx_copy_efb_to_xfb(struct vi_ctl *ctl)
 	if (error)
 		goto fault;
 
-	return;
+	return 0;
 
 fault:
 	WRITE_ONCE(ctl->gx_faulted, true);
 	dev_crit(ctl->dev, "disabling GX submissions after completion failure\n");
+	return -EIO;
 }
 
 static irqreturn_t vi_irq_handler(int irq, void *dev)
@@ -2124,8 +2143,22 @@ static irqreturn_t vi_irq_thread(int irq, void *dev)
 {
 	struct fb_info *info = dev_get_drvdata((struct device *)dev);
 	struct vi_ctl *ctl = info->par;
+	unsigned int back = ctl->pages > 1 ? ctl->front ^ 1 : 0;
 
-	gx_copy_efb_to_xfb(ctl);
+	/*
+	 * pages/front only change with this IRQ quiesced (vifb_apply_mode()
+	 * calls synchronize_irq()), so plain reads are fine here.
+	 */
+	if (!gx_copy_efb_to_xfb(ctl, back, READ_ONCE(ctl->pan_offset)) &&
+	    ctl->pages > 1) {
+		/* VI picks this up at the start of the next field. */
+		vi_set_framebuffer(ctl, ctl->xfb_dma[back]);
+		ctl->front = back;
+	}
+
+	/* Waiters may now reuse the page that was displayed before the flip. */
+	atomic_inc(&ctl->vblank_count);
+	wake_up_interruptible_all(&ctl->vblank_wait);
 
 	return IRQ_HANDLED;
 }
@@ -2565,6 +2598,24 @@ static int vifb_format_is_fourcc(const struct fb_var_screeninfo *var)
 	return var->grayscale > 1;
 }
 
+/* Bytes in one RGB page, which is also the size of one XFB. */
+static inline size_t vifb_page_size(const struct vi_tv_mode *mode)
+{
+	return (size_t)mode->width * mode->height * TV_BYTES_PER_PIXEL;
+}
+
+/*
+ * One buffer pair covers the default (non-panning) case.  A second pair is
+ * used only when the requested virtual screen does not fit in the first.
+ */
+static inline unsigned int vifb_pages_for_virtual(const struct vi_tv_mode *mode,
+						  u32 xres_virtual,
+						  u32 yres_virtual)
+{
+	return (u64)xres_virtual * yres_virtual * sizeof(u16) >
+	       vifb_page_size(mode) ? 2 : 1;
+}
+
 
 /*
  * Check var and eventually tweak it to something supported.
@@ -2576,11 +2627,11 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	struct vi_tv_mode *mode = ctl->mode;
 	int error = -EINVAL;
 	__u32 xres, yres, xres_virtual, yres_virtual;
+	unsigned int pages;
 
-	/* no custom viewports, sorry */
-	if ((var->xoffset != 0) ||
-		(var->yoffset != 0)) {
-		dev_err(info->device, "Non-zero x/y offsets are not supported\n");
+	/* only vertical panning (page flipping) is supported */
+	if (var->xoffset != 0) {
+		dev_err(info->device, "Non-zero x offsets are not supported\n");
 		return -EINVAL;
 	}
 
@@ -2639,10 +2690,24 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	if (!xres_virtual || xres_virtual < xres)
 		xres_virtual = xres;
 
-	if (xres_virtual * yres_virtual * sizeof(u16) >
-	    ctl->rgb_fb_size) {
+	/* At most a second buffer pair, which is only allocated on request. */
+	if ((u64)xres_virtual * yres_virtual * sizeof(u16) >
+	    (u64)vifb_page_size(mode) * VIFB_MAX_PAGES) {
 		dev_err(info->device, "not enough memory for virtual resolution (%ux%ux%u)\n",
 			   xres_virtual, yres_virtual, var->bits_per_pixel);
+		return -EINVAL;
+	}
+	pages = vifb_pages_for_virtual(mode, xres_virtual, yres_virtual);
+	if (pages > 1 && xres_virtual != mode->width) {
+		/* GX samples each page with a fixed stride of one TV line. */
+		dev_err(info->device, "double buffering needs xres_virtual == %u\n",
+			mode->width);
+		return -EINVAL;
+	}
+	/* GX always samples a full TV frame starting at the pan offset. */
+	if ((u64)var->yoffset * xres_virtual * sizeof(u16) +
+	    vifb_page_size(mode) > (u64)pages * vifb_page_size(mode)) {
+		dev_err(info->device, "y offset %u out of range\n", var->yoffset);
 		return -EINVAL;
 	}
 
@@ -2669,15 +2734,18 @@ static int vifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 static void vifb_clear_all(struct fb_info *info)
 {
 	struct vi_ctl *ctl = info->par;
+	unsigned int page;
 	u32 *xfb;
 	int i;
 
 	memset(info->screen_buffer, 0, info->screen_size);
 
-	i = ctl->xfb_size >> 2;
-	xfb = ctl->xfb;
-	while (i--)
-		*(xfb++) = VI_YUYV_BLACK;
+	for (page = 0; page < ctl->pages; page++) {
+		i = ctl->xfb_size >> 2;
+		xfb = ctl->xfb[page];
+		while (i--)
+			*(xfb++) = VI_YUYV_BLACK;
+	}
 }
 
 /* Called with fbdev/console serialization; mode_lock also excludes file I/O. */
@@ -2689,10 +2757,10 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	struct vi_mode_timings old_timings;
 	struct fb_var_screeninfo old_var;
 	struct fb_fix_screeninfo old_fix;
-	void *old_xfb, *new_xfb = NULL;
-	dma_addr_t old_dma, new_dma = 0;
+	void *old_xfb[VIFB_MAX_PAGES], *new_xfb[VIFB_MAX_PAGES] = { };
+	dma_addr_t old_dma[VIFB_MAX_PAGES], new_dma[VIFB_MAX_PAGES] = { };
 	size_t old_size, new_size;
-	unsigned int old_stride, new_stride, y;
+	unsigned int old_stride, new_stride, old_pages, new_pages, y, i;
 	bool old_cable, enabled, resized = false;
 	u16 dcr;
 	int ave_error, error;
@@ -2704,8 +2772,11 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	old_var = info->var;
 	old_fix = info->fix;
 	old_rgb = ctl->rgb_buffer;
-	old_xfb = ctl->xfb;
-	old_dma = ctl->xfb_dma;
+	old_pages = ctl->pages;
+	for (i = 0; i < VIFB_MAX_PAGES; i++) {
+		old_xfb[i] = ctl->xfb[i];
+		old_dma[i] = ctl->xfb_dma[i];
+	}
 	old_size = ctl->xfb_size;
 	old_stride = ctl->xfb_stride;
 	enabled = ctl->interrupts_enabled;
@@ -2725,39 +2796,6 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	}
 	new_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
 	new_size = new_stride * ctl->mode->height;
-	if (new_stride != old_stride || new_size != old_size) {
-		if (atomic_read(&old_rgb->map_count)) {
-			error = -EBUSY;
-			goto restore;
-		}
-		new_xfb = dma_alloc_coherent(ctl->dev, new_size, &new_dma,
-					    GFP_KERNEL);
-		if (!new_xfb) {
-			error = -ENOMEM;
-			goto restore;
-		}
-		new_rgb = vifb_rgb_alloc(ctl->dev, new_size);
-		if (!new_rgb) {
-			error = -ENOMEM;
-			goto restore;
-		}
-		for (y = 0; y < new_size / sizeof(u32); y++)
-			((u32 *)new_xfb)[y] = VI_YUYV_BLACK;
-		for (y = 0; y < min_t(unsigned int, old_var.yres,
-					 ctl->mode->height); y++)
-			memcpy(new_rgb->cpu + y * new_stride,
-			       old_rgb->cpu + y * old_fix.line_length,
-			       min(old_fix.line_length, new_stride));
-		ctl->rgb_buffer = new_rgb;
-		ctl->rgb_fb = new_rgb->cpu;
-		ctl->rgb_fb_dma = new_rgb->dma;
-		ctl->rgb_fb_size = new_rgb->size;
-		ctl->xfb = new_xfb;
-		ctl->xfb_dma = new_dma;
-		ctl->xfb_size = new_size;
-		ctl->xfb_stride = new_stride;
-		resized = true;
-	}
 	if (ctl->mode != old_mode) {
 		info->var.xres = info->var.xres_virtual = ctl->mode->width;
 		info->var.yres = info->var.yres_virtual = ctl->mode->height;
@@ -2766,6 +2804,63 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	error = vifb_check_var(&info->var, info);
 	if (error)
 		goto restore;
+
+	/* A second buffer pair exists only while the var asks for one. */
+	new_pages = vifb_pages_for_virtual(ctl->mode, info->var.xres_virtual,
+					   info->var.yres_virtual);
+	if (new_stride != old_stride || new_size != old_size ||
+	    new_pages != old_pages) {
+		if (atomic_read(&old_rgb->map_count)) {
+			error = -EBUSY;
+			goto restore;
+		}
+		for (i = 0; i < new_pages; i++) {
+			/* Keep XFBs that are still the right size: they are big. */
+			if (i < old_pages && new_size == old_size &&
+			    new_stride == old_stride) {
+				new_xfb[i] = old_xfb[i];
+				new_dma[i] = old_dma[i];
+				continue;
+			}
+			new_xfb[i] = dma_alloc_coherent(ctl->dev, new_size,
+							&new_dma[i], GFP_KERNEL);
+			if (!new_xfb[i]) {
+				dev_err(ctl->dev, "unable to allocate %zu byte XFB %u\n",
+					new_size, i);
+				error = -ENOMEM;
+				goto restore;
+			}
+			for (y = 0; y < new_size / sizeof(u32); y++)
+				((u32 *)new_xfb[i])[y] = VI_YUYV_BLACK;
+		}
+		new_rgb = vifb_rgb_alloc(ctl->dev, new_size * new_pages);
+		if (!new_rgb) {
+			dev_err(ctl->dev, "unable to allocate %zu byte RGB buffer (%u page%s)\n",
+				new_size * new_pages, new_pages,
+				new_pages > 1 ? "s" : "");
+			error = -ENOMEM;
+			goto restore;
+		}
+		/* Carry over whatever page was on screen. */
+		for (y = 0; y < min_t(unsigned int, old_var.yres,
+					 ctl->mode->height); y++)
+			memcpy(new_rgb->cpu + y * new_stride,
+			       old_rgb->cpu +
+			       (old_var.yoffset + y) * old_fix.line_length,
+			       min(old_fix.line_length, new_stride));
+		ctl->rgb_buffer = new_rgb;
+		ctl->rgb_fb = new_rgb->cpu;
+		ctl->rgb_fb_dma = new_rgb->dma;
+		ctl->rgb_fb_size = new_rgb->size;
+		for (i = 0; i < VIFB_MAX_PAGES; i++) {
+			ctl->xfb[i] = new_xfb[i];
+			ctl->xfb_dma[i] = new_dma[i];
+		}
+		ctl->xfb_size = new_size;
+		ctl->xfb_stride = new_stride;
+		ctl->pages = new_pages;
+		resized = true;
+	}
 
 	info->fix.smem_start = ctl->rgb_fb_dma;
 	info->fix.line_length = info->var.xres_virtual * sizeof(u16);
@@ -2785,13 +2880,16 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 		out_be16(ctl->io_base + VI_DCR, dcr);
 		goto restore;
 	}
-	ctl->page_address[0] = ctl->page_address[1] = ctl->xfb_dma;
-	ctl->visible_page = 0;
+	ctl->front = 0;
+	WRITE_ONCE(ctl->pan_offset,
+		   info->var.yoffset * info->fix.line_length);
+	ctl->applied_var = info->var;
+	ctl->applied_var_valid = true;
 
 	out_be16(ctl->io_base + VI_DCR, vi_dcr_set_rst(0, 1));
 	udelay(2);
 	out_be16(ctl->io_base + VI_DCR, 0);
-	vi_set_framebuffer(ctl, ctl->xfb_dma);
+	vi_set_framebuffer(ctl, ctl->xfb_dma[0]);
 	vi_setup_tv_mode(ctl);
 #ifdef CONFIG_WII_AVE_RVL
 	if (ctl->i2c_client) {
@@ -2809,7 +2907,10 @@ static int vifb_apply_mode(struct vi_ctl *ctl, bool force_detect)
 	vi_enable_scanout(ctl);
 committed:
 	if (resized) {
-		dma_free_coherent(ctl->dev, old_size, old_xfb, old_dma);
+		for (i = 0; i < old_pages; i++)
+			if (old_xfb[i] != ctl->xfb[i])
+				dma_free_coherent(ctl->dev, old_size,
+						  old_xfb[i], old_dma[i]);
 		kref_put(&old_rgb->ref, vifb_rgb_release);
 	}
 	goto out;
@@ -2826,32 +2927,115 @@ restore:
 	ctl->rgb_fb_size = old_rgb->size;
 	info->screen_buffer = old_rgb->cpu;
 	info->screen_size = old_fix.smem_len;
-	ctl->xfb = old_xfb;
-	ctl->xfb_dma = old_dma;
+	for (i = 0; i < VIFB_MAX_PAGES; i++) {
+		ctl->xfb[i] = old_xfb[i];
+		ctl->xfb_dma[i] = old_dma[i];
+	}
 	ctl->xfb_size = old_size;
 	ctl->xfb_stride = old_stride;
+	ctl->pages = old_pages;
 	if (new_rgb)
 		kref_put(&new_rgb->ref, vifb_rgb_release);
-	if (new_xfb)
-		dma_free_coherent(ctl->dev, new_size, new_xfb, new_dma);
+	for (i = 0; i < VIFB_MAX_PAGES; i++)
+		if (new_xfb[i] && new_xfb[i] != old_xfb[i])
+			dma_free_coherent(ctl->dev, new_size, new_xfb[i],
+					  new_dma[i]);
 out:
 	vi_enable_interrupts(ctl, enabled);
 	mutex_unlock(&ctl->mode_lock);
 	return error;
 }
 
+/*
+ * Pan requests only select which RGB page GX samples at the next vertical
+ * retrace; the frame is then rendered into the idle XFB and VI is flipped to
+ * it, so the change is always applied on a vblank boundary.
+ */
+static int vifb_pan_display(struct fb_var_screeninfo *var, struct fb_info *info)
+{
+	struct vi_ctl *ctl = info->par;
+	u64 offset;
+
+	if (var->xoffset)
+		return -EINVAL;
+
+	/* GX reads one full TV frame starting at the offset. */
+	offset = (u64)var->yoffset * info->fix.line_length;
+	if (offset + ctl->xfb_size > ctl->rgb_fb_size)
+		return -EINVAL;
+
+	WRITE_ONCE(ctl->pan_offset, offset);
+	return 0;
+}
+
+static int vifb_wait_for_vsync(struct vi_ctl *ctl)
+{
+	int start = atomic_read(&ctl->vblank_count);
+	long ret;
+
+	ret = wait_event_interruptible_timeout(ctl->vblank_wait,
+			atomic_read(&ctl->vblank_count) - start > 0,
+			msecs_to_jiffies(VIFB_VSYNC_TIMEOUT_MS));
+	if (ret < 0)
+		return ret;
+	return ret ? 0 : -ETIMEDOUT;
+}
+
+static int vifb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+{
+	struct vi_ctl *ctl = info->par;
+	void __user *argp = (void __user *)arg;
+	struct fb_vblank vblank = { };
+	u32 crtc;
+
+	switch (cmd) {
+	case FBIO_WAITFORVSYNC:
+		if (get_user(crtc, (u32 __user *)argp))
+			return -EFAULT;
+		if (crtc)
+			return -ENODEV;
+		return vifb_wait_for_vsync(ctl);
+	case FBIOGET_VBLANK:
+		/* Only the frame counter is tracked, not the VBLANKING bit. */
+		vblank.flags = FB_VBLANK_HAVE_COUNT;
+		vblank.count = atomic_read(&ctl->vblank_count);
+		return copy_to_user(argp, &vblank, sizeof(vblank)) ?
+		       -EFAULT : 0;
+	default:
+		return -ENOTTY;
+	}
+}
+
+/* True if @new differs from @old only in the pan offsets and activate flags. */
+static bool vifb_var_same_but_offset(const struct fb_var_screeninfo *old,
+				     const struct fb_var_screeninfo *new)
+{
+	struct fb_var_screeninfo a = *old, b = *new;
+
+	a.xoffset = b.xoffset = a.yoffset = b.yoffset = 0;
+	a.activate = b.activate = 0;
+	return !memcmp(&a, &b, sizeof(a));
+}
+
 static int vifb_set_par(struct fb_info *info)
 {
 	struct vi_ctl *ctl = info->par;
 
-	if (want_ypan) {
-		info->fix.xpanstep = 2;
-		info->fix.ypanstep = 1;
+	/* Only vertical panning exists, but userspace must be able to use it. */
+	info->fix.xpanstep = 0;
+	info->fix.ypanstep = 1;
+	if (want_ypan)
 		info->flags |= FBINFO_HWACCEL_YPAN;
-	} else {
-		info->fix.xpanstep = 0;
-		info->fix.ypanstep = 0;
-	}
+
+	/*
+	 * Software that flips with FBIOPUT_VSCREENINFO (+FB_ACTIVATE_VBL)
+	 * must not trigger a full VI reset for every flip.
+	 */
+	if (ctl->applied_var_valid && !READ_ONCE(ctl->gx_faulted) &&
+	    ctl->has_component_cable == vi_has_component_cable(ctl) &&
+	    vifb_var_same_but_offset(&ctl->applied_var, &info->var))
+		return vifb_pan_display(&info->var, info);
+
 	return vifb_apply_mode(ctl, false);
 }
 
@@ -3121,7 +3305,8 @@ struct fb_ops vifb_ops = {
 	.fb_write = vifb_buffer_write,
 	.fb_mmap = vifb_mmap,
 	.fb_setcolreg = vifb_setcolreg,
-	/*.fb_ioctl = vifb_ioctl,*/
+	.fb_ioctl = vifb_ioctl,
+	.fb_pan_display = vifb_pan_display,
 	.fb_set_par = vifb_set_par,
 	.fb_check_var = vifb_check_var,
 	.fb_fillrect = sys_fillrect,
@@ -3265,6 +3450,8 @@ static int vifb_of_probe(struct platform_device *odev)
 
 	mutex_init(&ctl->mode_lock);
 	spin_lock_init(&ctl->lock);
+	init_waitqueue_head(&ctl->vblank_wait);
+	atomic_set(&ctl->vblank_count, 0);
 	vi_reset_video(ctl);
 	error = vi_detect_tv_mode(ctl);
 	if (error)
@@ -3277,9 +3464,10 @@ static int vifb_of_probe(struct platform_device *odev)
 
 	ctl->xfb_stride = ctl->mode->width * TV_BYTES_PER_PIXEL;
 	ctl->xfb_size = ctl->xfb_stride * ctl->mode->height;
-	ctl->xfb = dma_alloc_coherent(dev, ctl->xfb_size, &ctl->xfb_dma,
-				      GFP_KERNEL);
-	if (!ctl->xfb) {
+	ctl->pages = 1;
+	ctl->xfb[0] = dma_alloc_coherent(dev, ctl->xfb_size, &ctl->xfb_dma[0],
+					 GFP_KERNEL);
+	if (!ctl->xfb[0]) {
 		error = -ENOMEM;
 		goto err_release_info;
 	}
@@ -3326,7 +3514,7 @@ static int vifb_of_probe(struct platform_device *odev)
 
 	info->var.xres = ctl->mode->width;
 	info->var.yres = ctl->mode->height;
-	ctl->visible_page = 0;
+	ctl->front = 0;
 	ctl->gx_faulted = false;
 	init_completion(&ctl->pe_finished);
 	info->pseudo_palette = pseudo_palette;
@@ -3386,7 +3574,7 @@ err_free_indirect_map:
 err_free_rgb_fb:
 	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
 err_free_xfb:
-	dma_free_coherent(dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
+	dma_free_coherent(dev, ctl->xfb_size, ctl->xfb[0], ctl->xfb_dma[0]);
 err_release_info:
 	framebuffer_release(info);
 	return error;
@@ -3396,6 +3584,7 @@ static void vifb_of_remove(struct platform_device *odev)
 {
 	struct vi_ctl *ctl;
 	struct fb_info *info = dev_get_drvdata(&odev->dev);
+	unsigned int i;
 
 	if (!info)
 		return;
@@ -3415,7 +3604,9 @@ static void vifb_of_remove(struct platform_device *odev)
 			     DMA_TO_DEVICE);
 	kref_put(&ctl->rgb_buffer->ref, vifb_rgb_release);
 
-	dma_free_coherent(&odev->dev, ctl->xfb_size, ctl->xfb, ctl->xfb_dma);
+	for (i = 0; i < ctl->pages; i++)
+		dma_free_coherent(&odev->dev, ctl->xfb_size, ctl->xfb[i],
+				  ctl->xfb_dma[i]);
 
 	dev_set_drvdata(&odev->dev, NULL);
 
